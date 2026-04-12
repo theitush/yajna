@@ -58,6 +58,12 @@ const useAppStore = create((set, get) => ({
   markTaskDone: async (id) => {
     await get().updateTask(id, { status: 'done', doneDate: today() })
   },
+  markTaskActive: async (id) => {
+    await get().updateTask(id, { status: 'active', doneDate: null })
+  },
+  markTaskReviewed: async (id) => {
+    await get().updateTask(id, { status: 'reviewed', reviewedDate: today() })
+  },
   dismissTask: async (id) => {
     await get().updateTask(id, { status: 'dismissed', dismissedDate: today() })
   },
