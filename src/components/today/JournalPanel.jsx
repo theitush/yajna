@@ -1,6 +1,9 @@
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
+import Underline from '@tiptap/extension-underline'
+import Highlight from '@tiptap/extension-highlight'
+import TextAlign from '@tiptap/extension-text-align'
 import { Extension } from '@tiptap/core'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
@@ -8,6 +11,8 @@ import { useEffect, useCallback, useRef } from 'react'
 import useAppStore from '../../store/useAppStore'
 import { today, weekKey, formatDate } from '../../lib/dates'
 import VoiceButton from '../voice/VoiceButton'
+import EditorToolbar from '../editor/EditorToolbar'
+import { RTLExtension } from '../editor/RTLExtension'
 
 /**
  * Custom TipTap extension to highlight #hashtags inline
@@ -59,7 +64,11 @@ export default function JournalPanel({ onInsertText }) {
     extensions: [
       StarterKit,
       Placeholder.configure({ placeholder: 'Start writing…' }),
+      Underline,
+      Highlight.configure({ multicolor: true }),
+      TextAlign.configure({ types: ['heading', 'paragraph'] }),
       HashtagExtension,
+      RTLExtension,
     ],
     content,
     onUpdate: ({ editor }) => {
@@ -100,6 +109,7 @@ export default function JournalPanel({ onInsertText }) {
         </h2>
         <VoiceButton onTranscription={(text) => onInsertText?.current?.(text)} />
       </div>
+      <EditorToolbar editor={editor} />
       <div className="flex-1 overflow-y-auto px-4 py-3 text-sm text-gray-800 dark:text-gray-200">
         <EditorContent editor={editor} className="h-full" />
       </div>

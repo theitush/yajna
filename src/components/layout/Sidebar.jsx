@@ -14,9 +14,9 @@ export default function Sidebar() {
   const mode = useAppStore(s => s.mode)
 
   return (
-    <aside className="hidden md:flex flex-col w-56 shrink-0 border-r border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 h-full">
-      <div className="px-5 py-5 border-b border-gray-200 dark:border-gray-700">
-        <span className="font-bold text-lg text-gray-900 dark:text-white">yajna</span>
+    <aside className="hidden md:flex flex-col w-56 shrink-0 border-r border-zinc-200 dark:border-zinc-700/60 bg-zinc-50 dark:bg-zinc-900 h-full">
+      <div className="px-5 py-5 border-b border-zinc-200 dark:border-zinc-700/60">
+        <span className="font-bold text-lg text-zinc-900 dark:text-zinc-100">yajna</span>
         {syncing && (
           <span className="ml-2 text-xs text-violet-500 animate-pulse">syncing…</span>
         )}
@@ -35,7 +35,7 @@ export default function Sidebar() {
               `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
                 isActive
                   ? 'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 font-medium'
-                  : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
+                  : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800'
               }`
             }
           >

@@ -9,7 +9,7 @@ const tabs = [
 
 export default function BottomNav() {
   return (
-    <nav className="fixed bottom-0 left-0 right-0 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-700 flex md:hidden z-50">
+    <nav className="fixed bottom-0 left-0 right-0 bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-700/60 flex md:hidden z-50">
       {tabs.map(({ to, label, icon: Icon }) => (
         <NavLink
           key={to}
@@ -19,7 +19,7 @@ export default function BottomNav() {
             `flex-1 flex flex-col items-center py-2 gap-0.5 text-xs transition-colors ${
               isActive
                 ? 'text-violet-600 dark:text-violet-400'
-                : 'text-gray-500 dark:text-gray-400'
+                : 'text-zinc-500 dark:text-zinc-400'
             }`
           }
         >

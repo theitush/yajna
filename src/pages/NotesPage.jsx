@@ -2,10 +2,15 @@ import { useState, useEffect } from 'react'
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
+import Underline from '@tiptap/extension-underline'
+import Highlight from '@tiptap/extension-highlight'
+import TextAlign from '@tiptap/extension-text-align'
 import { Extension } from '@tiptap/core'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import useAppStore from '../store/useAppStore'
+import EditorToolbar from '../components/editor/EditorToolbar'
+import { RTLExtension } from '../components/editor/RTLExtension'
 
 const HashtagExtension = Extension.create({
   name: 'hashtag',
@@ -43,7 +48,11 @@ function NoteEditor({ note, onUpdate, onDelete }) {
     extensions: [
       StarterKit,
       Placeholder.configure({ placeholder: 'Write your note…' }),
+      Underline,
+      Highlight.configure({ multicolor: true }),
+      TextAlign.configure({ types: ['heading', 'paragraph'] }),
       HashtagExtension,
+      RTLExtension,
     ],
     content: note?.body || '',
     onUpdate: ({ editor }) => {
@@ -81,6 +90,7 @@ function NoteEditor({ note, onUpdate, onDelete }) {
           Delete
         </button>
       </div>
+      <EditorToolbar editor={editor} />
       <div className="flex-1 overflow-y-auto px-4 py-3 text-sm text-gray-800 dark:text-gray-200">
         <EditorContent editor={editor} />
       </div>
