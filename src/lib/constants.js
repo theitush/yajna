@@ -1,0 +1,31 @@
+export const DRIVE_FOLDER_NAME = 'journal-app'
+export const DRIVE_MIME_FOLDER = 'application/vnd.google-apps.folder'
+
+export const TASK_STATUS = {
+  ACTIVE: 'active',
+  DONE: 'done',
+  DISMISSED: 'dismissed',
+  BACKLOG: 'backlog',
+  SCHEDULED: 'scheduled',
+}
+
+export const DEFAULT_TEMPLATE = `## Morning
+
+## Working on
+
+## Thinking about
+
+## End of day
+
+`
+
+export const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
+export const SCOPES = 'https://www.googleapis.com/auth/drive.file'
+
+export const DB_NAME = 'yajna-db'
+export const DB_VERSION = 1
+export const STORE_TASKS = 'tasks'
+export const STORE_NOTES = 'notes'
+export const STORE_JOURNALS = 'journals'
+export const STORE_CONFIG = 'config'
+export const STORE_META = 'meta'
