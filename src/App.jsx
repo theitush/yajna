@@ -3,7 +3,9 @@ import { HashRouter, Routes, Route } from 'react-router-dom'
 import useAppStore from './store/useAppStore'
 import { loadGIS, loadGAPI, initGAPI, getStoredToken, requestToken, setAccessToken } from './services/auth'
 import { initDriveStructure } from './services/drive'
-import { GOOGLE_CLIENT_ID } from './lib/constants'
+import { getMeta, putMeta } from './services/db'
+import { requestStoragePersistence } from './services/storage'
+import { GOOGLE_CLIENT_ID, MODE_DRIVE, MODE_OFFLINE, MODE_KEY } from './lib/constants'
 import { weekKey, today } from './lib/dates'
 
 import LoginScreen from './components/auth/LoginScreen'
@@ -20,28 +22,47 @@ export default function App() {
   const {
     isAuthenticated, isInitializing,
     setAuthenticated, setInitializing,
-    runInitialSync, loadJournal,
+    setMode, runInitialSync, bootOffline, loadJournal,
   } = useAppStore()
   const [loginLoading, setLoginLoading] = useState(false)
   const [initError, setInitError] = useState(null)
 
   useEffect(() => {
     async function bootstrap() {
-      if (!GOOGLE_CLIENT_ID) {
-        setInitializing(false)
-        return
-      }
       try {
-        await Promise.all([loadGIS(), loadGAPI()])
-        await initGAPI()
-        const token = await getStoredToken()
-        if (token) {
-          setAccessToken(token)
-          await finishAuth()
+        // Check if a mode was already chosen in a previous session
+        const savedMode = await getMeta(MODE_KEY)
+
+        if (savedMode === MODE_OFFLINE) {
+          setMode(MODE_OFFLINE)
+          await bootOffline()
+          await loadJournal(weekKey(today()))
+          setAuthenticated(true)
+          return
+        }
+
+        if (savedMode === MODE_DRIVE && GOOGLE_CLIENT_ID) {
+          await Promise.all([loadGIS(), loadGAPI()])
+          await initGAPI()
+          const token = await getStoredToken()
+          if (token) {
+            setAccessToken(token)
+            await finishDriveAuth()
+            return
+          }
+          // Token expired — fall through to login screen
+        }
+
+        // No saved mode or no client id configured: show login
+        if (GOOGLE_CLIENT_ID) {
+          // Pre-load GIS/GAPI in the background so sign-in is faster
+          Promise.all([loadGIS(), loadGAPI()])
+            .then(() => initGAPI())
+            .catch(() => {})
         }
       } catch (e) {
         console.error('Bootstrap error', e)
-        setInitError('Failed to load Google APIs')
+        setInitError('Something went wrong loading the app.')
       } finally {
         setInitializing(false)
       }
@@ -49,7 +70,9 @@ export default function App() {
     bootstrap()
   }, [])
 
-  async function finishAuth() {
+  async function finishDriveAuth() {
+    setMode(MODE_DRIVE)
+    await putMeta(MODE_KEY, MODE_DRIVE)
     await initDriveStructure()
     await runInitialSync()
     await loadJournal(weekKey(today()))
@@ -60,15 +83,30 @@ export default function App() {
     setLoginLoading(true)
     setInitError(null)
     try {
+      // Make sure GIS/GAPI are loaded (may already be if pre-loaded)
+      await Promise.all([loadGIS(), loadGAPI()])
+      await initGAPI()
       const token = await requestToken()
       setAccessToken(token)
-      await finishAuth()
+      await finishDriveAuth()
     } catch (e) {
       console.error('Login failed', e)
       setInitError('Sign-in failed. Please try again.')
     } finally {
       setLoginLoading(false)
     }
+  }
+
+  const handleOffline = async () => {
+    setMode(MODE_OFFLINE)
+    await putMeta(MODE_KEY, MODE_OFFLINE)
+
+    // Request persistent storage — best effort
+    await requestStoragePersistence()
+
+    await bootOffline()
+    await loadJournal(weekKey(today()))
+    setAuthenticated(true)
   }
 
   if (isInitializing) {
@@ -87,7 +125,7 @@ export default function App() {
             {initError}
           </div>
         )}
-        <LoginScreen onLogin={handleLogin} loading={loginLoading} />
+        <LoginScreen onLogin={handleLogin} onOffline={handleOffline} loading={loginLoading} />
       </div>
     )
   }

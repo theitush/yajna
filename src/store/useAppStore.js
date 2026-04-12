@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
 import { today, weekKey, isVisibleToday } from '../lib/dates'
-import { DEFAULT_TEMPLATE } from '../lib/constants'
+import { DEFAULT_TEMPLATE, MODE_OFFLINE } from '../lib/constants'
 import {
   getTasks, putTask, putTasks, deleteTask as dbDeleteTask,
   getNotes, putNote, putNotes, deleteNote as dbDeleteNote,
@@ -10,11 +10,18 @@ import {
 import { pushTasks, pushNotes, pushJournal, pushConfig, initialSync } from '../services/sync'
 
 const useAppStore = create((set, get) => ({
-  // Auth
+  // Auth / mode
   isAuthenticated: false,
   isInitializing: true,
+  mode: null, // 'drive' | 'offline'
   setAuthenticated: (v) => set({ isAuthenticated: v }),
   setInitializing: (v) => set({ isInitializing: v }),
+  setMode: (mode) => set({ mode }),
+
+  // Helper: should we push to Drive?
+  get driveEnabled() {
+    return get().mode !== MODE_OFFLINE
+  },
 
   // Tasks
   tasks: [],
@@ -36,7 +43,7 @@ const useAppStore = create((set, get) => ({
     }
     await putTask(task)
     set(s => ({ tasks: [...s.tasks, task] }))
-    pushTasks().catch(console.error)
+    if (get().mode !== MODE_OFFLINE) pushTasks().catch(console.error)
     return task
   },
   updateTask: async (id, updates) => {
@@ -46,7 +53,7 @@ const useAppStore = create((set, get) => ({
     const updated = { ...task, ...updates }
     await putTask(updated)
     set(s => ({ tasks: s.tasks.map(t => t.id === id ? updated : t) }))
-    pushTasks().catch(console.error)
+    if (get().mode !== MODE_OFFLINE) pushTasks().catch(console.error)
   },
   markTaskDone: async (id) => {
     await get().updateTask(id, { status: 'done', doneDate: today() })
@@ -63,10 +70,7 @@ const useAppStore = create((set, get) => ({
   deleteTask: async (id) => {
     await dbDeleteTask(id)
     set(s => ({ tasks: s.tasks.filter(t => t.id !== id) }))
-    pushTasks().catch(console.error)
-  },
-  get todayTasks() {
-    return get().tasks.filter(isVisibleToday)
+    if (get().mode !== MODE_OFFLINE) pushTasks().catch(console.error)
   },
 
   // Notes
@@ -88,7 +92,7 @@ const useAppStore = create((set, get) => ({
     }
     await putNote(note)
     set(s => ({ notes: [...s.notes, note] }))
-    pushNotes().catch(console.error)
+    if (get().mode !== MODE_OFFLINE) pushNotes().catch(console.error)
     return note
   },
   updateNote: async (id, updates) => {
@@ -100,31 +104,32 @@ const useAppStore = create((set, get) => ({
     const updated = { ...note, ...updates, title, updatedAt: new Date().toISOString() }
     await putNote(updated)
     set(s => ({ notes: s.notes.map(n => n.id === id ? updated : n) }))
-    pushNotes().catch(console.error)
+    if (get().mode !== MODE_OFFLINE) pushNotes().catch(console.error)
   },
   deleteNote: async (id) => {
     await dbDeleteNote(id)
     set(s => ({ notes: s.notes.filter(n => n.id !== id) }))
-    pushNotes().catch(console.error)
+    if (get().mode !== MODE_OFFLINE) pushNotes().catch(console.error)
   },
 
   // Journals
-  currentJournal: null, // { week, entries: { [date]: { content, createdAt, updatedAt } } }
+  currentJournal: null,
   loadJournal: async (week) => {
     let doc = await getJournal(week)
     if (!doc) {
       doc = { week, entries: {} }
     }
-    // Ensure today's entry exists
     const t = today()
+    const config = get().config
+    const template = config?.journalTemplate || DEFAULT_TEMPLATE
     if (!doc.entries[t]) {
       doc.entries[t] = {
-        content: DEFAULT_TEMPLATE,
+        content: template,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       }
       await putJournal(doc)
-      pushJournal(doc).catch(console.error)
+      if (get().mode !== MODE_OFFLINE) pushJournal(doc).catch(console.error)
     }
     set({ currentJournal: doc })
     return doc
@@ -146,7 +151,7 @@ const useAppStore = create((set, get) => ({
     }
     await putJournal(updated)
     set({ currentJournal: updated })
-    pushJournal(updated).catch(console.error)
+    if (get().mode !== MODE_OFFLINE) pushJournal(updated).catch(console.error)
   },
 
   // Config
@@ -159,17 +164,16 @@ const useAppStore = create((set, get) => ({
     const config = { ...get().config, ...updates }
     await putConfig(config)
     set({ config })
-    pushConfig().catch(console.error)
+    if (get().mode !== MODE_OFFLINE) pushConfig().catch(console.error)
   },
 
-  // Sync
+  // Sync (Drive mode only)
   syncing: false,
   lastSync: null,
   runInitialSync: async () => {
     set({ syncing: true })
     try {
       await initialSync()
-      // Reload all local data after sync
       const [tasks, notes, config] = await Promise.all([
         getTasks(), getNotes(), getConfig(),
       ])
@@ -179,6 +183,14 @@ const useAppStore = create((set, get) => ({
     } finally {
       set({ syncing: false })
     }
+  },
+
+  // Offline mode boot: just load from IDB
+  bootOffline: async () => {
+    const [tasks, notes, config] = await Promise.all([
+      getTasks(), getNotes(), getConfig(),
+    ])
+    set({ tasks, notes, config: config || {} })
   },
 }))
 

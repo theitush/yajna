@@ -11,6 +11,7 @@ const items = [
 
 export default function Sidebar() {
   const syncing = useAppStore(s => s.syncing)
+  const mode = useAppStore(s => s.mode)
 
   return (
     <aside className="hidden md:flex flex-col w-56 shrink-0 border-r border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 h-full">
@@ -18,6 +19,9 @@ export default function Sidebar() {
         <span className="font-bold text-lg text-gray-900 dark:text-white">yajna</span>
         {syncing && (
           <span className="ml-2 text-xs text-violet-500 animate-pulse">syncing…</span>
+        )}
+        {mode === 'offline' && !syncing && (
+          <span className="ml-2 text-xs text-amber-500" title="Offline mode — data stored locally">offline</span>
         )}
       </div>
 

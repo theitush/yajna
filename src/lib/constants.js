@@ -29,3 +29,7 @@ export const STORE_NOTES = 'notes'
 export const STORE_JOURNALS = 'journals'
 export const STORE_CONFIG = 'config'
 export const STORE_META = 'meta'
+
+export const MODE_DRIVE = 'drive'
+export const MODE_OFFLINE = 'offline'
+export const MODE_KEY = 'yajna_mode'
