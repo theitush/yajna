@@ -1,47 +1,83 @@
 export default function LoginScreen({ onLogin, onOffline, loading }) {
   return (
-    <div className="flex flex-col items-center justify-center h-full gap-8 p-8">
-      <div className="text-center">
-        <h1 className="text-4xl font-bold text-gray-900 dark:text-white mb-2">yajna</h1>
-        <p className="text-gray-500 dark:text-gray-400 text-sm">
-          yet another journaling and notes app
+    <div style={{
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      height: '100%', gap: '32px', padding: '32px',
+      background: 'var(--bg-primary)',
+    }}>
+      <div style={{ textAlign: 'center' }}>
+        <h1 style={{
+          fontFamily: 'var(--font-display)',
+          fontSize: '48px', fontWeight: 400,
+          letterSpacing: '-1px',
+          color: 'var(--text-primary)',
+          lineHeight: 1, marginBottom: '8px',
+        }}>
+          Yajna
+        </h1>
+        <p style={{ color: 'var(--text-tertiary)', fontSize: '13px', letterSpacing: '0.3px' }}>
+          journal · notes · todos
         </p>
       </div>
 
-      <div className="flex flex-col items-center gap-3 w-full max-w-xs">
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', width: '100%', maxWidth: '280px' }}>
         <button
           onClick={onLogin}
           disabled={loading}
-          className="flex items-center gap-3 w-full justify-center px-6 py-3 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl shadow-sm hover:shadow-md transition-shadow text-gray-700 dark:text-gray-200 font-medium disabled:opacity-50"
+          style={{
+            display: 'flex', alignItems: 'center', gap: '10px',
+            width: '100%', justifyContent: 'center',
+            padding: '12px 20px',
+            background: 'var(--bg-secondary)',
+            border: '1px solid var(--border-mid)',
+            borderRadius: '10px',
+            color: 'var(--text-primary)',
+            fontSize: '14px', fontWeight: 500,
+            fontFamily: 'var(--font-body)',
+            cursor: loading ? 'not-allowed' : 'pointer',
+            opacity: loading ? 0.5 : 1,
+            transition: 'background 0.15s',
+          }}
         >
           <GoogleIcon />
           {loading ? 'Connecting…' : 'Sign in with Google'}
         </button>
 
-        <div className="flex items-center gap-3 w-full">
-          <hr className="flex-1 border-gray-200 dark:border-gray-700" />
-          <span className="text-xs text-gray-400">or</span>
-          <hr className="flex-1 border-gray-200 dark:border-gray-700" />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%' }}>
+          <hr style={{ flex: 1, border: 'none', borderTop: '1px solid var(--border-light)' }} />
+          <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>or</span>
+          <hr style={{ flex: 1, border: 'none', borderTop: '1px solid var(--border-light)' }} />
         </div>
 
         <button
           onClick={onOffline}
           disabled={loading}
-          className="flex items-center gap-3 w-full justify-center px-6 py-3 bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-gray-600 dark:text-gray-300 font-medium disabled:opacity-50"
+          style={{
+            display: 'flex', alignItems: 'center', gap: '10px',
+            width: '100%', justifyContent: 'center',
+            padding: '12px 20px',
+            background: 'var(--bg-secondary)',
+            border: '1px solid var(--border-light)',
+            borderRadius: '10px',
+            color: 'var(--text-secondary)',
+            fontSize: '14px', fontWeight: 500,
+            fontFamily: 'var(--font-body)',
+            cursor: loading ? 'not-allowed' : 'pointer',
+            opacity: loading ? 0.5 : 1,
+            transition: 'background 0.15s',
+          }}
         >
           <OfflineIcon />
           Continue offline
         </button>
       </div>
 
-      <div className="text-center max-w-xs space-y-2">
-        <p className="text-xs text-gray-400">
-          <span className="font-medium text-gray-500 dark:text-gray-400">Google sign-in</span>
-          {' '}— syncs to your Drive. Access from any device.
+      <div style={{ textAlign: 'center', maxWidth: '280px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
+          <span style={{ color: 'var(--text-secondary)' }}>Google sign-in</span> — syncs to your Drive. Access from any device.
         </p>
-        <p className="text-xs text-gray-400">
-          <span className="font-medium text-gray-500 dark:text-gray-400">Offline mode</span>
-          {' '}— local only. Data lives in this browser. You can connect Drive later.
+        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
+          <span style={{ color: 'var(--text-secondary)' }}>Offline mode</span> — local only. Data lives in this browser.
         </p>
       </div>
     </div>

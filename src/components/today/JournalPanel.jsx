@@ -14,9 +14,6 @@ import VoiceButton from '../voice/VoiceButton'
 import EditorToolbar from '../editor/EditorToolbar'
 import { RTLExtension } from '../editor/RTLExtension'
 
-/**
- * Custom TipTap extension to highlight #hashtags inline
- */
 const HashtagExtension = Extension.create({
   name: 'hashtag',
   addProseMirrorPlugins() {
@@ -27,7 +24,7 @@ const HashtagExtension = Extension.create({
           decorations(state) {
             const { doc } = state
             const decorations = []
-            const regex = /#[\w\u0590-\u05FF]+/g // includes Hebrew chars
+            const regex = /#[\w\u0590-\u05FF]+/g
             doc.descendants((node, pos) => {
               if (!node.isText) return
               let match
@@ -80,7 +77,6 @@ export default function JournalPanel({ onInsertText }) {
     },
   })
 
-  // Re-set content when journal loads
   useEffect(() => {
     if (!editor || !currentJournal) return
     const entry = currentJournal.entries?.[todayStr]
@@ -91,7 +87,6 @@ export default function JournalPanel({ onInsertText }) {
     }
   }, [currentJournal?.week])
 
-  // Expose insert method to parent
   useEffect(() => {
     if (!onInsertText) return
     onInsertText.current = (text) => {
@@ -102,16 +97,23 @@ export default function JournalPanel({ onInsertText }) {
   }, [editor, onInsertText])
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
-        <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {/* Header */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '12px 20px',
+        borderBottom: '1px solid var(--border-light)',
+      }}>
+        <span style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-primary)' }}>
           {formatDate(todayStr)}
-        </h2>
+        </span>
         <VoiceButton onTranscription={(text) => onInsertText?.current?.(text)} />
       </div>
+
       <EditorToolbar editor={editor} />
-      <div className="flex-1 overflow-y-auto px-4 py-3 text-sm text-gray-800 dark:text-gray-200">
-        <EditorContent editor={editor} className="h-full" />
+
+      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px' }}>
+        <EditorContent editor={editor} style={{ height: '100%' }} />
       </div>
     </div>
   )

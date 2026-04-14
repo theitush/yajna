@@ -15,6 +15,7 @@ export default function TasksPanel() {
     const y = d.toISOString().slice(0, 10)
     return { today: t, yesterday: y }
   })()
+
   const todayTasks = tasks.filter(task => {
     if (task.status === 'active') return true
     if (task.status === 'done' && (task.doneDate === today || task.doneDate === yesterday)) return true
@@ -31,52 +32,103 @@ export default function TasksPanel() {
   }
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-200 dark:border-zinc-700/60">
-        <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
-          Today's Tasks
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {/* Header */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '12px 16px',
+        borderBottom: '1px solid var(--border-light)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
+          <span style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)' }}>Today's todos</span>
           {todayTasks.length > 0 && (
-            <span className="ml-2 text-xs bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 px-1.5 py-0.5 rounded-full">
+            <span style={{
+              fontSize: '12px', color: 'var(--text-tertiary)',
+              background: 'var(--bg-secondary)',
+              padding: '1px 8px', borderRadius: '20px',
+            }}>
               {todayTasks.length}
             </span>
           )}
-        </h2>
+        </div>
         <button
           onClick={() => setShowAdd(s => !s)}
-          className="text-xs px-3 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
+          style={{
+            fontSize: '12px', fontWeight: 500,
+            color: 'var(--accent)',
+            background: 'var(--accent-light)',
+            border: 'none', padding: '5px 14px',
+            borderRadius: '8px', cursor: 'pointer',
+            fontFamily: 'var(--font-body)',
+            transition: 'background 0.15s',
+          }}
         >
           + Add
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-3">
+      <div style={{ flex: 1, overflowY: 'auto', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
         {showAdd && (
-          <div className="bg-zinc-50 dark:bg-zinc-800 rounded-xl p-3 border border-zinc-200 dark:border-zinc-700 space-y-2">
+          <div style={{
+            background: 'var(--bg-secondary)',
+            borderRadius: '12px',
+            padding: '12px',
+            border: '1px solid var(--border-mid)',
+            display: 'flex', flexDirection: 'column', gap: '8px',
+          }}>
             <input
               autoFocus
               value={title}
               onChange={e => setTitle(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleAdd()}
               placeholder="Task title…"
-              className="w-full text-sm bg-white dark:bg-zinc-700 border border-zinc-200 dark:border-zinc-600 rounded-lg px-3 py-2 text-zinc-900 dark:text-white placeholder-zinc-400 outline-none focus:ring-2 focus:ring-violet-500"
+              style={{
+                width: '100%', fontSize: '13px',
+                background: 'var(--bg-tertiary)',
+                border: '1px solid var(--border-mid)',
+                borderRadius: '8px', padding: '8px 12px',
+                color: 'var(--text-primary)',
+                fontFamily: 'var(--font-body)',
+                outline: 'none',
+              }}
             />
             <textarea
               value={explanation}
               onChange={e => setExplanation(e.target.value)}
               placeholder="Explanation (optional)…"
               rows={2}
-              className="w-full text-sm bg-white dark:bg-zinc-700 border border-zinc-200 dark:border-zinc-600 rounded-lg px-3 py-2 text-zinc-900 dark:text-white placeholder-zinc-400 outline-none focus:ring-2 focus:ring-violet-500 resize-none"
+              style={{
+                width: '100%', fontSize: '12px',
+                background: 'var(--bg-tertiary)',
+                border: '1px solid var(--border-mid)',
+                borderRadius: '8px', padding: '8px 12px',
+                color: 'var(--text-secondary)',
+                fontFamily: 'var(--font-body)',
+                outline: 'none', resize: 'none',
+              }}
             />
-            <div className="flex gap-2">
+            <div style={{ display: 'flex', gap: '8px' }}>
               <button
                 onClick={handleAdd}
-                className="text-xs px-3 py-1.5 bg-violet-600 text-white rounded-lg hover:bg-violet-700"
+                style={{
+                  fontSize: '12px', fontWeight: 500,
+                  color: 'var(--accent)',
+                  background: 'var(--accent-light)',
+                  border: 'none', padding: '5px 14px',
+                  borderRadius: '8px', cursor: 'pointer',
+                  fontFamily: 'var(--font-body)',
+                }}
               >
                 Add task
               </button>
               <button
                 onClick={() => setShowAdd(false)}
-                className="text-xs px-3 py-1.5 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+                style={{
+                  fontSize: '12px',
+                  color: 'var(--text-tertiary)',
+                  background: 'none', border: 'none',
+                  cursor: 'pointer', fontFamily: 'var(--font-body)',
+                }}
               >
                 Cancel
               </button>
@@ -85,9 +137,9 @@ export default function TasksPanel() {
         )}
 
         {todayTasks.length === 0 && !showAdd && (
-          <div className="text-center py-12 text-zinc-400 dark:text-zinc-500">
-            <p className="text-sm">No tasks for today</p>
-            <p className="text-xs mt-1">Add a task or schedule something for today</p>
+          <div style={{ textAlign: 'center', padding: '48px 0', color: 'var(--text-tertiary)' }}>
+            <p style={{ fontSize: '13px' }}>No tasks for today</p>
+            <p style={{ fontSize: '12px', marginTop: '4px' }}>Add a task or schedule something for today</p>
           </div>
         )}
 

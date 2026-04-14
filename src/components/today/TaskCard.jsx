@@ -20,7 +20,6 @@ export default function TaskCard({ task }) {
     setEditFeedback(task.feedback || '')
   }, [task.explanation, task.feedback])
 
-  // Collapse + save when clicking outside
   const handleClickOutside = useCallback((e) => {
     if (cardRef.current && !cardRef.current.contains(e.target)) {
       updateTask(task.id, {
@@ -93,29 +92,59 @@ export default function TaskCard({ task }) {
     }, 0)
   }
 
+  const cardStyle = {
+    borderRadius: '12px',
+    border: isDone
+      ? '1px solid rgba(16,185,129,0.25)'
+      : '1px solid var(--border-light)',
+    background: isDone
+      ? 'linear-gradient(135deg, rgba(16,185,129,0.08) 0%, rgba(16,185,129,0.04) 100%)'
+      : 'var(--bg-primary)',
+    position: 'relative',
+    transition: 'border-color 0.2s',
+  }
+
+  const textareaStyle = {
+    width: '100%',
+    fontSize: '12px',
+    background: 'var(--bg-secondary)',
+    border: '1px solid var(--border-light)',
+    borderRadius: '8px',
+    padding: '8px 12px',
+    color: 'var(--text-secondary)',
+    fontFamily: 'var(--font-body)',
+    outline: 'none',
+    resize: 'none',
+  }
+
   return (
-    <div
-      ref={cardRef}
-      className={`rounded-xl border shadow-sm transition-colors ${
-        isDone ? 'bg-emerald-950/40 border-emerald-800/50' : 'bg-zinc-800 border-zinc-700'
-      }`}
-    >
+    <div ref={cardRef} style={cardStyle}>
       {/* Header row */}
-      <div className="flex items-start gap-3 p-4 pb-2">
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '14px 16px', paddingBottom: expanded || task.explanation || task.feedback ? '8px' : '14px' }}>
+        {/* Checkmark */}
         <button
           onClick={handleCheckmark}
-          className={`mt-0.5 w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center transition-all ${
-            isDone ? 'bg-emerald-500 border-emerald-500' : 'border-zinc-500 hover:border-emerald-400'
-          }`}
+          style={{
+            width: 22, height: 22,
+            borderRadius: '50%',
+            border: isDone ? 'none' : '2px solid var(--border-mid)',
+            background: isDone ? 'var(--green-500)' : 'transparent',
+            flexShrink: 0,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer',
+            boxShadow: isDone ? '0 0 0 3px rgba(16,185,129,0.2), 0 2px 12px rgba(16,185,129,0.35)' : 'none',
+            transition: 'all 0.2s',
+          }}
           aria-label={isDone ? 'Mark as active' : 'Mark as done'}
         >
           {isDone && (
-            <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
               <polyline points="20 6 9 17 4 12" />
             </svg>
           )}
         </button>
 
+        {/* Title */}
         <span
           ref={titleRef}
           contentEditable
@@ -123,99 +152,132 @@ export default function TaskCard({ task }) {
           onFocus={() => setExpanded(true)}
           onBlur={handleTitleBlur}
           onKeyDown={handleTitleKey}
-          className={`text-sm font-medium flex-1 leading-snug outline-none cursor-text ${
-            isDone ? 'text-emerald-200 line-through decoration-emerald-600' : 'text-zinc-100'
-          }`}
+          style={{
+            flex: 1,
+            fontSize: '14px',
+            fontWeight: 500,
+            color: isDone ? 'var(--green-800)' : 'var(--text-primary)',
+            lineHeight: 1.4,
+            outline: 'none',
+            cursor: 'text',
+            textDecoration: isDone ? 'line-through' : 'none',
+          }}
         >
           {task.title}
         </span>
 
-        {/* X button — always visible */}
-        {task.status !== 'dismissed' && task.status !== 'reviewed' && (
-          <button
-            onClick={handleX}
-            className="flex-shrink-0 text-zinc-600 hover:text-red-400 transition-colors mt-0.5"
-            aria-label={isDone ? 'Mark as reviewed' : 'Delete task'}
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-            </svg>
-          </button>
-        )}
-
-        {/* Status badges — when collapsed */}
+        {/* Status badges */}
         {!expanded && task.status === 'scheduled' && (
-          <span className="text-xs px-2 py-0.5 rounded-full font-medium shrink-0 bg-amber-900/50 text-amber-300 border border-amber-700/50">
+          <span style={{
+            fontSize: '11px', padding: '2px 8px', borderRadius: '20px', fontWeight: 500, flexShrink: 0,
+            background: 'rgba(245,158,11,0.15)', color: '#FCD34D', border: '1px solid rgba(245,158,11,0.3)',
+          }}>
             {task.scheduledDate}
           </span>
         )}
         {!expanded && task.status === 'backlog' && (
-          <span className="text-xs px-2 py-0.5 rounded-full font-medium shrink-0 bg-zinc-700 text-zinc-400 border border-zinc-600">
+          <span style={{
+            fontSize: '11px', padding: '2px 8px', borderRadius: '20px', fontWeight: 500, flexShrink: 0,
+            background: 'var(--bg-secondary)', color: 'var(--text-tertiary)', border: '1px solid var(--border-light)',
+          }}>
             backlog
           </span>
+        )}
+
+        {/* X button */}
+        {task.status !== 'dismissed' && task.status !== 'reviewed' && (
+          <button
+            onClick={handleX}
+            style={{
+              flexShrink: 0,
+              color: isDone ? 'var(--green-400)' : 'var(--text-tertiary)',
+              background: 'none', border: 'none', cursor: 'pointer',
+              fontSize: '16px', lineHeight: 1,
+              transition: 'color 0.15s',
+            }}
+            aria-label={isDone ? 'Mark as reviewed' : 'Delete task'}
+          >
+            ×
+          </button>
         )}
       </div>
 
       {/* Delete confirmation */}
       {confirmDelete && (
-        <div className="px-4 pb-3 pl-12 flex items-center gap-2">
-          <p className="text-xs text-red-400 flex-1">Delete this task?</p>
+        <div style={{ padding: '0 16px 12px', paddingLeft: '50px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <p style={{ fontSize: '12px', color: '#FCA5A5', flex: 1 }}>Delete this task?</p>
           <button
             onClick={() => deleteTask(task.id)}
-            className="text-xs px-2.5 py-1 rounded-lg bg-red-900/60 text-red-300 hover:bg-red-800/70 border border-red-700/50 transition-colors"
+            style={{
+              fontSize: '12px', padding: '4px 10px', borderRadius: '8px',
+              background: 'rgba(239,68,68,0.15)', color: '#FCA5A5',
+              border: '1px solid rgba(239,68,68,0.3)', cursor: 'pointer',
+              fontFamily: 'var(--font-body)',
+            }}
           >
             Delete
           </button>
           <button
             onClick={() => setConfirmDelete(false)}
-            className="text-xs px-2.5 py-1 rounded-lg bg-zinc-700 text-zinc-400 hover:bg-zinc-600 border border-zinc-600 transition-colors"
+            style={{
+              fontSize: '12px', padding: '4px 10px', borderRadius: '8px',
+              background: 'var(--bg-secondary)', color: 'var(--text-secondary)',
+              border: '1px solid var(--border-light)', cursor: 'pointer',
+              fontFamily: 'var(--font-body)',
+            }}
           >
             Cancel
           </button>
         </div>
       )}
 
-      {/* Collapsed: explanation + feedback preview */}
+      {/* Collapsed preview */}
       {!expanded && !confirmDelete && (task.explanation || task.feedback) && (
-        <button onClick={openExpanded} className="w-full text-left px-4 pb-3 pl-12 space-y-1.5">
+        <button onClick={openExpanded} style={{ width: '100%', textAlign: 'left', padding: '0 16px 12px', paddingLeft: '50px', background: 'none', border: 'none', cursor: 'pointer' }}>
           {task.explanation && (
-            <p className="text-xs text-zinc-400 leading-relaxed line-clamp-2">{task.explanation}</p>
+            <p style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+              {task.explanation}
+            </p>
           )}
           {task.feedback && (
-            <p className="text-xs text-zinc-500 leading-relaxed line-clamp-2">
-              <span className="font-medium text-zinc-500">Feedback: </span>{task.feedback}
+            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5, marginTop: '4px', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+              <span style={{ fontWeight: 500, color: isDone ? 'var(--green-600)' : 'var(--text-tertiary)' }}>Feedback: </span>{task.feedback}
             </p>
           )}
         </button>
       )}
 
-      {/* Expanded: editable fields + actions */}
+      {/* Expanded editable */}
       {expanded && (
-        <div className="px-4 pb-4 pl-12 space-y-2">
+        <div style={{ padding: '0 16px 14px', paddingLeft: '50px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
           <textarea
             value={editExplanation}
             onChange={e => setEditExplanation(e.target.value)}
             rows={2}
-            className="w-full text-xs bg-zinc-700 border border-zinc-600 rounded-lg px-3 py-2 text-zinc-300 placeholder-zinc-500 outline-none focus:ring-2 focus:ring-violet-500 resize-none"
             placeholder="Explanation…"
+            style={textareaStyle}
           />
-
           <div>
-            <p className="text-xs text-zinc-500 font-medium mb-1">Feedback</p>
+            <p style={{ fontSize: '11px', color: 'var(--text-tertiary)', textTransform: 'lowercase', marginBottom: '4px' }}>feedback</p>
             <textarea
               value={editFeedback}
               onChange={e => setEditFeedback(e.target.value)}
               rows={2}
-              className="w-full text-xs bg-zinc-700/60 border border-zinc-600/60 rounded-lg px-3 py-2 text-zinc-300 placeholder-zinc-500 outline-none focus:ring-2 focus:ring-violet-500 resize-none"
               placeholder="Feedback…"
+              style={{ ...textareaStyle, opacity: 0.8 }}
             />
           </div>
 
           {!isDone && (
-            <div className="flex flex-wrap gap-1.5 pt-1">
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', paddingTop: '4px' }}>
               <button
                 onClick={() => setShowReschedule(s => !s)}
-                className="text-xs px-2.5 py-1 rounded-lg bg-sky-900/50 text-sky-300 hover:bg-sky-900/70 transition-colors border border-sky-700/50"
+                style={{
+                  fontSize: '12px', padding: '4px 10px', borderRadius: '8px',
+                  background: 'rgba(107,163,214,0.1)', color: 'var(--accent)',
+                  border: '1px solid rgba(107,163,214,0.25)', cursor: 'pointer',
+                  fontFamily: 'var(--font-body)',
+                }}
               >
                 Reschedule
               </button>
@@ -223,25 +285,43 @@ export default function TaskCard({ task }) {
           )}
 
           {showReschedule && (
-            <div className="space-y-1.5">
-              <div className="flex gap-2">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div style={{ display: 'flex', gap: '8px' }}>
                 <input
                   type="date"
                   value={scheduleDate}
                   min={today()}
                   onChange={e => setScheduleDate(e.target.value)}
-                  className="text-xs border border-zinc-600 rounded-lg px-2 py-1 flex-1 bg-zinc-700 text-zinc-200"
+                  style={{
+                    flex: 1, fontSize: '12px',
+                    background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border-mid)',
+                    borderRadius: '8px', padding: '6px 10px',
+                    color: 'var(--text-primary)',
+                    fontFamily: 'var(--font-body)',
+                    outline: 'none',
+                  }}
                 />
                 <button
                   onClick={handleSchedule}
-                  className="text-xs px-3 py-1 bg-sky-600 text-white rounded-lg hover:bg-sky-700"
+                  style={{
+                    fontSize: '12px', padding: '6px 12px', borderRadius: '8px',
+                    background: 'rgba(107,163,214,0.15)', color: 'var(--accent)',
+                    border: '1px solid rgba(107,163,214,0.3)', cursor: 'pointer',
+                    fontFamily: 'var(--font-body)',
+                  }}
                 >
                   Set date
                 </button>
               </div>
               <button
                 onClick={() => { moveToBacklog(task.id); setShowReschedule(false) }}
-                className="text-xs px-2.5 py-1 rounded-lg bg-zinc-700 text-zinc-400 hover:bg-zinc-600 hover:text-zinc-200 transition-colors border border-zinc-600"
+                style={{
+                  fontSize: '12px', padding: '4px 10px', borderRadius: '8px',
+                  background: 'var(--bg-secondary)', color: 'var(--text-secondary)',
+                  border: '1px solid var(--border-light)', cursor: 'pointer',
+                  fontFamily: 'var(--font-body)', textAlign: 'left',
+                }}
               >
                 Move to backlog
               </button>

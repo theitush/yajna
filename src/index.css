@@ -1,31 +1,44 @@
 @import "tailwindcss";
 
 :root {
-  color-scheme: light dark;
+  --bg-primary: #1A1A1E;
+  --bg-secondary: #222226;
+  --bg-tertiary: #2A2A2F;
+  --bg-elevated: #2E2E33;
+  --text-primary: #E8E6E1;
+  --text-secondary: #9A9790;
+  --text-tertiary: #6B6963;
+  --border-light: rgba(255,255,255,0.07);
+  --border-mid: rgba(255,255,255,0.14);
+  --accent: #6BA3D6;
+  --accent-light: rgba(107,163,214,0.12);
+  --green-400: #34D399;
+  --green-500: #10B981;
+  --green-600: #34D399;
+  --green-700: #6EE7B7;
+  --green-800: #A7F3D0;
+  --font-body: 'DM Sans', system-ui, sans-serif;
+  --font-display: 'Instrument Serif', serif;
+  color-scheme: dark;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-body {
-  margin: 0;
-  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
-  background: #ffffff;
-  color: #1f2937;
-}
+* { margin: 0; padding: 0; box-sizing: border-box; }
 
-@media (prefers-color-scheme: dark) {
-  body {
-    background: #18181b;
-    color: #f4f4f5;
-  }
+body {
+  font-family: var(--font-body);
+  background: var(--bg-primary);
+  color: var(--text-primary);
 }
 
 #root {
   height: 100dvh;
   display: flex;
   flex-direction: column;
+  background: var(--bg-primary);
 }
 
 /* TipTap editor styles */
@@ -37,32 +50,41 @@ body {
 .tiptap p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
   float: left;
-  color: #9ca3af;
+  color: var(--text-tertiary);
   pointer-events: none;
   height: 0;
 }
 
 .tiptap h1 {
+  font-family: var(--font-display);
   font-size: 1.5rem;
-  font-weight: 700;
+  font-weight: 400;
   margin: 1.25rem 0 0.25rem;
+  color: var(--text-primary);
 }
 
 .tiptap h2 {
-  font-size: 1.2rem;
-  font-weight: 600;
+  font-size: 1.1rem;
+  font-weight: 500;
   margin: 1rem 0 0.25rem;
+  color: var(--text-primary);
 }
 
 .tiptap h3 {
-  font-size: 1rem;
-  font-weight: 600;
+  font-size: 0.95rem;
+  font-weight: 500;
   margin: 0.75rem 0 0.25rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.7rem;
 }
 
 .tiptap p {
   margin: 0.25rem 0;
-  line-height: 1.6;
+  line-height: 1.7;
+  color: var(--text-primary);
+  font-size: 0.875rem;
 }
 
 /* RTL for paragraphs/headings that start with Hebrew */
@@ -81,17 +103,9 @@ body {
 }
 
 .tiptap .hashtag {
-  color: #7c3aed;
+  color: var(--accent);
   font-weight: 500;
   cursor: pointer;
-}
-
-@media (prefers-color-scheme: dark) {
-  .tiptap h1,
-  .tiptap h2,
-  .tiptap h3 {
-    color: #f3f4f6;
-  }
 }
 
 /* Scrollbar */
@@ -102,6 +116,6 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #d1d5db;
+  background: var(--border-mid);
   border-radius: 2px;
 }

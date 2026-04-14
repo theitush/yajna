@@ -5,6 +5,40 @@ import { getStorageEstimate, getStoragePersistence, requestStoragePersistence, e
 import { getMeta, putMeta } from '../services/db'
 import { MODE_OFFLINE, MODE_DRIVE, MODE_KEY } from '../lib/constants'
 
+const sectionHeadStyle = {
+  fontSize: '11px', fontWeight: 500, color: 'var(--text-tertiary)',
+  textTransform: 'uppercase', letterSpacing: '0.6px', marginBottom: '12px',
+}
+
+const inputStyle = {
+  width: '100%', fontSize: '13px',
+  background: 'var(--bg-secondary)',
+  border: '1px solid var(--border-light)',
+  borderRadius: '8px', padding: '8px 12px',
+  color: 'var(--text-primary)',
+  fontFamily: 'var(--font-body)',
+  outline: 'none',
+}
+
+const btnPrimaryStyle = {
+  fontSize: '13px', fontWeight: 500,
+  color: 'var(--accent)', background: 'var(--accent-light)',
+  border: 'none', padding: '8px 18px', borderRadius: '8px',
+  cursor: 'pointer', fontFamily: 'var(--font-body)',
+  transition: 'background 0.15s',
+}
+
+const btnSecondaryStyle = {
+  fontSize: '13px',
+  color: 'var(--text-secondary)',
+  background: 'var(--bg-secondary)',
+  border: '1px solid var(--border-light)',
+  padding: '8px 18px', borderRadius: '8px',
+  cursor: 'pointer', fontFamily: 'var(--font-body)',
+  transition: 'background 0.15s',
+  textAlign: 'left',
+}
+
 export default function SettingsPage() {
   const config = useAppStore(s => s.config)
   const updateConfig = useAppStore(s => s.updateConfig)
@@ -63,7 +97,6 @@ export default function SettingsPage() {
   }
 
   const handleConnectDrive = async () => {
-    // Clear offline mode — next reload will show login screen
     await putMeta(MODE_KEY, null)
     setAuthenticated(false)
   }
@@ -71,25 +104,29 @@ export default function SettingsPage() {
   const isOffline = mode === MODE_OFFLINE
 
   return (
-    <div className="flex flex-col h-full overflow-y-auto">
-      <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
-        <h1 className="text-base font-semibold text-gray-900 dark:text-white">Settings</h1>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflowY: 'auto', background: 'var(--bg-primary)' }}>
+      <div style={{
+        padding: '12px 16px',
+        borderBottom: '1px solid var(--border-light)',
+      }}>
+        <h1 style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-primary)' }}>Settings</h1>
       </div>
 
-      <div className="p-4 space-y-6 max-w-lg">
+      <div style={{ padding: '20px 16px', display: 'flex', flexDirection: 'column', gap: '28px', maxWidth: '520px' }}>
 
         {/* Mode banner */}
-        <div className={`rounded-xl px-4 py-3 text-sm flex items-start gap-3 ${
-          isOffline
-            ? 'bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800'
-            : 'bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-800'
-        }`}>
-          <span className="mt-0.5 shrink-0">{isOffline ? '💾' : '☁️'}</span>
+        <div style={{
+          borderRadius: '10px', padding: '12px 16px', fontSize: '13px',
+          display: 'flex', alignItems: 'flex-start', gap: '12px',
+          background: isOffline ? 'rgba(245,158,11,0.08)' : 'var(--accent-light)',
+          border: `1px solid ${isOffline ? 'rgba(245,158,11,0.2)' : 'rgba(107,163,214,0.2)'}`,
+        }}>
+          <span style={{ marginTop: '2px', flexShrink: 0 }}>{isOffline ? '💾' : '☁️'}</span>
           <div>
-            <p className="font-medium text-gray-800 dark:text-gray-200">
+            <p style={{ fontWeight: 500, color: 'var(--text-primary)', marginBottom: '2px' }}>
               {isOffline ? 'Offline mode' : 'Google Drive sync'}
             </p>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+            <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
               {isOffline
                 ? 'Data is stored locally in this browser only.'
                 : 'Data syncs to your Google Drive automatically.'}
@@ -100,35 +137,35 @@ export default function SettingsPage() {
         {/* Offline: storage health */}
         {isOffline && (
           <section>
-            <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Local storage</h2>
+            <h2 style={sectionHeadStyle}>Local storage</h2>
 
             {storageInfo && (
-              <div className="mb-3">
-                <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400 mb-1">
+              <div style={{ marginBottom: '12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>
                   <span>{storageInfo.used} MB used</span>
                   <span>{storageInfo.quota} MB quota</span>
                 </div>
-                <div className="h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-violet-500 rounded-full transition-all"
-                    style={{ width: `${Math.min(storageInfo.percent, 100)}%` }}
-                  />
+                <div style={{ height: 4, background: 'var(--bg-secondary)', borderRadius: '4px', overflow: 'hidden' }}>
+                  <div style={{
+                    height: '100%', background: 'var(--accent)', borderRadius: '4px',
+                    width: `${Math.min(storageInfo.percent, 100)}%`, transition: 'width 0.3s',
+                  }} />
                 </div>
               </div>
             )}
 
-            <div className="flex items-center gap-2 mb-3">
-              <span className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-medium ${
-                persistence === 'granted'
-                  ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'
-                  : persistence === 'denied'
-                  ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300'
-                  : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300'
-              }`}>
-                <span className={`w-1.5 h-1.5 rounded-full ${
-                  persistence === 'granted' ? 'bg-green-500' :
-                  persistence === 'denied' ? 'bg-red-500' : 'bg-gray-400'
-                }`} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', gap: '6px',
+                fontSize: '12px', padding: '3px 10px', borderRadius: '20px', fontWeight: 500,
+                background: persistence === 'granted' ? 'rgba(16,185,129,0.1)' : persistence === 'denied' ? 'rgba(239,68,68,0.1)' : 'var(--bg-secondary)',
+                color: persistence === 'granted' ? 'var(--green-400)' : persistence === 'denied' ? '#FCA5A5' : 'var(--text-tertiary)',
+                border: `1px solid ${persistence === 'granted' ? 'rgba(16,185,129,0.2)' : persistence === 'denied' ? 'rgba(239,68,68,0.2)' : 'var(--border-light)'}`,
+              }}>
+                <span style={{
+                  width: 6, height: 6, borderRadius: '50%',
+                  background: persistence === 'granted' ? 'var(--green-500)' : persistence === 'denied' ? '#EF4444' : 'var(--border-mid)',
+                }} />
                 {persistence === 'granted' ? 'Storage protected' :
                  persistence === 'denied' ? 'Protection denied' :
                  persistence === 'unsupported' ? 'Persistence unsupported' :
@@ -137,34 +174,42 @@ export default function SettingsPage() {
             </div>
 
             {persistence !== 'granted' && persistence !== 'unsupported' && (
-              <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3 mb-3">
-                <p className="text-xs text-amber-800 dark:text-amber-300 mb-2">
-                  Without protection, the browser may clear your data under storage pressure. Request persistent storage to prevent this.
+              <div style={{
+                background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)',
+                borderRadius: '8px', padding: '12px', marginBottom: '12px',
+              }}>
+                <p style={{ fontSize: '12px', color: '#FCD34D', marginBottom: '8px', lineHeight: 1.5 }}>
+                  Without protection, the browser may clear your data under storage pressure.
                 </p>
                 <button
                   onClick={handleRequestPersistence}
                   disabled={persistRequesting}
-                  className="text-xs px-3 py-1.5 bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50"
+                  style={{
+                    fontSize: '12px', fontWeight: 500,
+                    color: '#FCD34D', background: 'rgba(245,158,11,0.15)',
+                    border: '1px solid rgba(245,158,11,0.3)',
+                    padding: '5px 12px', borderRadius: '8px',
+                    cursor: persistRequesting ? 'not-allowed' : 'pointer',
+                    fontFamily: 'var(--font-body)', opacity: persistRequesting ? 0.5 : 1,
+                  }}
                 >
                   {persistRequesting ? 'Requesting…' : 'Request persistent storage'}
                 </button>
               </div>
             )}
 
-            <div className="flex flex-col gap-2">
-              <button
-                onClick={handleExport}
-                className="text-sm px-4 py-2 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors text-left"
-              >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <button onClick={handleExport} style={btnSecondaryStyle}>
                 Export data as JSON
-                <span className="block text-xs text-gray-400 mt-0.5">Download a backup of all your tasks, notes, and journal</span>
+                <span style={{ display: 'block', fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                  Download a backup of all your tasks, notes, and journal
+                </span>
               </button>
-              <button
-                onClick={handleConnectDrive}
-                className="text-sm px-4 py-2 border border-violet-200 dark:border-violet-800 text-violet-700 dark:text-violet-300 rounded-lg hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors text-left"
-              >
+              <button onClick={handleConnectDrive} style={{ ...btnSecondaryStyle, color: 'var(--accent)', borderColor: 'rgba(107,163,214,0.25)' }}>
                 Connect Google Drive
-                <span className="block text-xs text-gray-400 mt-0.5">Sign in to sync your local data to Drive</span>
+                <span style={{ display: 'block', fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                  Sign in to sync your local data to Drive
+                </span>
               </button>
             </div>
           </section>
@@ -172,9 +217,9 @@ export default function SettingsPage() {
 
         {/* Voice */}
         <section>
-          <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Voice & AI</h2>
-          <label className="block">
-            <span className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">
+          <h2 style={sectionHeadStyle}>Voice & AI</h2>
+          <label style={{ display: 'block' }}>
+            <span style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>
               Groq API key (for Whisper transcription)
             </span>
             <input
@@ -182,9 +227,9 @@ export default function SettingsPage() {
               value={groqKey}
               onChange={e => setGroqKey(e.target.value)}
               placeholder="gsk_…"
-              className="w-full text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-gray-900 dark:text-white placeholder-gray-400 outline-none focus:ring-2 focus:ring-violet-500"
+              style={inputStyle}
             />
-            <p className="text-xs text-gray-400 mt-1">
+            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '6px' }}>
               {isOffline
                 ? 'Stored locally in this browser only.'
                 : 'Stored in your Google Drive (config.json). Never leaves your account.'}
@@ -194,40 +239,44 @@ export default function SettingsPage() {
 
         {/* Journal template */}
         <section>
-          <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Journal template</h2>
+          <h2 style={sectionHeadStyle}>Journal template</h2>
           <textarea
             value={template}
             onChange={e => setTemplate(e.target.value)}
             rows={8}
             placeholder={`## Morning\n\n## Working on\n\n## Thinking about\n`}
-            className="w-full text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-gray-900 dark:text-white placeholder-gray-400 outline-none focus:ring-2 focus:ring-violet-500 font-mono resize-none"
+            style={{ ...inputStyle, resize: 'none', fontFamily: 'monospace', lineHeight: 1.6 }}
           />
-          <p className="text-xs text-gray-400 mt-1">
+          <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '6px' }}>
             Used for new daily entries. Markdown headings become sections.
           </p>
         </section>
 
-        <div className="flex items-center gap-3">
-          <button
-            onClick={handleSave}
-            className="text-sm px-4 py-2 bg-violet-600 text-white rounded-lg hover:bg-violet-700 transition-colors"
-          >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <button onClick={handleSave} style={btnPrimaryStyle}>
             Save settings
           </button>
           {saved && (
-            <span className="text-xs text-green-600 dark:text-green-400">Saved!</span>
+            <span style={{ fontSize: '12px', color: 'var(--green-400)' }}>Saved!</span>
           )}
         </div>
 
-        {/* Account (Drive mode only) */}
+        {/* Account */}
         {!isOffline && (
           <>
-            <hr className="border-gray-200 dark:border-gray-700" />
+            <hr style={{ border: 'none', borderTop: '1px solid var(--border-light)' }} />
             <section>
-              <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Account</h2>
+              <h2 style={sectionHeadStyle}>Account</h2>
               <button
                 onClick={handleSignOut}
-                className="text-sm px-4 py-2 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                style={{
+                  fontSize: '13px',
+                  color: '#FCA5A5',
+                  background: 'rgba(239,68,68,0.08)',
+                  border: '1px solid rgba(239,68,68,0.2)',
+                  padding: '8px 18px', borderRadius: '8px',
+                  cursor: 'pointer', fontFamily: 'var(--font-body)',
+                }}
               >
                 Sign out
               </button>

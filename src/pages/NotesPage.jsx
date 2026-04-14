@@ -74,24 +74,34 @@ function NoteEditor({ note, onUpdate, onDelete }) {
   }, [note?.id])
 
   if (!note) return (
-    <div className="flex-1 flex items-center justify-center text-gray-400 dark:text-gray-500 text-sm">
+    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: '13px' }}>
       Select a note or create a new one
     </div>
   )
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
-        <span className="text-sm font-medium text-gray-700 dark:text-gray-300 truncate">{note.title}</span>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '12px 20px', borderBottom: '1px solid var(--border-light)',
+      }}>
+        <span style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {note.title || 'Untitled'}
+        </span>
         <button
           onClick={() => onDelete(note.id)}
-          className="text-xs text-red-400 hover:text-red-600 px-2 py-1"
+          style={{
+            fontSize: '12px', color: '#FCA5A5',
+            background: 'none', border: 'none', cursor: 'pointer',
+            padding: '4px 8px', fontFamily: 'var(--font-body)',
+            transition: 'color 0.15s',
+          }}
         >
           Delete
         </button>
       </div>
       <EditorToolbar editor={editor} />
-      <div className="flex-1 overflow-y-auto px-4 py-3 text-sm text-gray-800 dark:text-gray-200">
+      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', fontSize: '14px', color: 'var(--text-primary)' }}>
         <EditorContent editor={editor} />
       </div>
     </div>
@@ -105,15 +115,10 @@ export default function NotesPage() {
   const deleteNote = useAppStore(s => s.deleteNote)
   const [selectedTag, setSelectedTag] = useState(null)
   const [selectedNoteId, setSelectedNoteId] = useState(null)
-  const [mobileView, setMobileView] = useState('list') // 'list' | 'editor'
+  const [mobileView, setMobileView] = useState('list')
 
-  // Collect all unique tags
   const allTags = [...new Set(notes.flatMap(n => n.tags || []))].sort()
-
-  const filteredNotes = selectedTag
-    ? notes.filter(n => n.tags?.includes(selectedTag))
-    : notes
-
+  const filteredNotes = selectedTag ? notes.filter(n => n.tags?.includes(selectedTag)) : notes
   const selectedNote = notes.find(n => n.id === selectedNoteId) || null
 
   const handleNew = async () => {
@@ -133,34 +138,35 @@ export default function NotesPage() {
     setMobileView('list')
   }
 
+  const sidebarItemStyle = (isActive) => ({
+    width: '100%', textAlign: 'left',
+    padding: '8px 12px', fontSize: '12px',
+    background: isActive ? 'var(--bg-secondary)' : 'transparent',
+    borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
+    color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
+    border: 'none', cursor: 'pointer',
+    transition: 'all 0.15s',
+  })
+
   return (
-    <div className="flex h-full overflow-hidden">
+    <div style={{ display: 'flex', height: '100%', overflow: 'hidden', background: 'var(--bg-primary)' }}>
       {/* Tags sidebar */}
-      <div className={`w-36 shrink-0 border-r border-gray-200 dark:border-gray-700 flex flex-col ${mobileView !== 'list' ? 'hidden md:flex' : 'flex'}`}>
-        <div className="px-3 py-2 border-b border-gray-200 dark:border-gray-700">
-          <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Tags</span>
+      <div style={{
+        width: '130px', flexShrink: 0,
+        borderRight: '1px solid var(--border-light)',
+        display: 'flex', flexDirection: 'column',
+      }} className={mobileView !== 'list' ? 'hidden md:flex' : ''}>
+        <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-light)' }}>
+          <span style={{ fontSize: '10px', fontWeight: 500, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.8px' }}>
+            Tags
+          </span>
         </div>
-        <div className="flex-1 overflow-y-auto">
-          <button
-            onClick={() => setSelectedTag(null)}
-            className={`w-full text-left px-3 py-2 text-xs transition-colors ${
-              selectedTag === null
-                ? 'bg-violet-50 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300'
-                : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'
-            }`}
-          >
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          <button onClick={() => setSelectedTag(null)} style={sidebarItemStyle(selectedTag === null)}>
             All notes
           </button>
           {allTags.map(tag => (
-            <button
-              key={tag}
-              onClick={() => setSelectedTag(tag)}
-              className={`w-full text-left px-3 py-2 text-xs transition-colors ${
-                selectedTag === tag
-                  ? 'bg-violet-50 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300'
-                  : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'
-              }`}
-            >
+            <button key={tag} onClick={() => setSelectedTag(tag)} style={sidebarItemStyle(selectedTag === tag)}>
               #{tag}
             </button>
           ))}
@@ -168,33 +174,55 @@ export default function NotesPage() {
       </div>
 
       {/* Notes list */}
-      <div className={`w-48 md:w-56 shrink-0 border-r border-gray-200 dark:border-gray-700 flex flex-col ${mobileView !== 'list' ? 'hidden md:flex' : 'flex'}`}>
-        <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-700">
-          <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Notes</span>
+      <div style={{
+        width: '180px', flexShrink: 0,
+        borderRight: '1px solid var(--border-light)',
+        display: 'flex', flexDirection: 'column',
+      }} className={mobileView !== 'list' ? 'hidden md:flex' : ''}>
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '10px 12px', borderBottom: '1px solid var(--border-light)',
+        }}>
+          <span style={{ fontSize: '10px', fontWeight: 500, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.8px' }}>
+            Notes
+          </span>
           <button
             onClick={handleNew}
-            className="text-xs px-2 py-1 bg-violet-600 text-white rounded-lg hover:bg-violet-700"
+            style={{
+              fontSize: '14px', color: 'var(--accent)',
+              background: 'var(--accent-light)',
+              border: 'none', width: '22px', height: '22px',
+              borderRadius: '6px', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontFamily: 'var(--font-body)',
+            }}
           >
             +
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto">
+        <div style={{ flex: 1, overflowY: 'auto' }}>
           {filteredNotes.length === 0 && (
-            <p className="text-xs text-gray-400 dark:text-gray-500 px-3 py-4">No notes yet</p>
+            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', padding: '12px' }}>No notes yet</p>
           )}
           {filteredNotes.map(note => (
             <button
               key={note.id}
               onClick={() => handleSelect(note.id)}
-              className={`w-full text-left px-3 py-2.5 border-b border-gray-100 dark:border-gray-800 transition-colors ${
-                note.id === selectedNoteId
-                  ? 'bg-violet-50 dark:bg-violet-900/30'
-                  : 'hover:bg-gray-50 dark:hover:bg-gray-800'
-              }`}
+              style={{
+                width: '100%', textAlign: 'left',
+                padding: '10px 12px',
+                borderBottom: '1px solid var(--border-light)',
+                background: note.id === selectedNoteId ? 'var(--bg-secondary)' : 'transparent',
+                borderLeft: note.id === selectedNoteId ? '2px solid var(--accent)' : '2px solid transparent',
+                border: 'none', cursor: 'pointer',
+                transition: 'background 0.15s',
+              }}
             >
-              <p className="text-xs font-medium text-gray-800 dark:text-gray-200 truncate">{note.title || 'Untitled'}</p>
+              <p style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {note.title || 'Untitled'}
+              </p>
               {note.tags?.length > 0 && (
-                <p className="text-xs text-violet-500 mt-0.5 truncate">
+                <p style={{ fontSize: '11px', color: 'var(--accent)', marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {note.tags.map(t => `#${t}`).join(' ')}
                 </p>
               )}
@@ -204,11 +232,17 @@ export default function NotesPage() {
       </div>
 
       {/* Editor */}
-      <div className={`flex-1 flex flex-col overflow-hidden ${mobileView !== 'editor' ? 'hidden md:flex' : 'flex'}`}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }} className={mobileView !== 'editor' ? 'hidden md:flex' : ''}>
         {mobileView === 'editor' && (
           <button
             onClick={() => setMobileView('list')}
-            className="md:hidden text-left px-4 py-2 text-xs text-violet-600 dark:text-violet-400 border-b border-gray-200 dark:border-gray-700"
+            style={{
+              textAlign: 'left', padding: '8px 16px', fontSize: '12px',
+              color: 'var(--accent)', background: 'none', border: 'none',
+              borderBottom: '1px solid var(--border-light)', cursor: 'pointer',
+              fontFamily: 'var(--font-body)',
+            }}
+            className="md:hidden"
           >
             ← Back
           </button>

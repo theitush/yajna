@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import useAppStore from '../store/useAppStore'
 import TaskCard from '../components/today/TaskCard'
-import { today } from '../lib/dates'
 
 const SECTIONS = [
   { key: 'active', label: 'Active' },
@@ -35,41 +34,73 @@ export default function TasksPage() {
 
   const toggle = (key) => setOpenSections(s => ({ ...s, [key]: !s[key] }))
 
+  const inputStyle = {
+    width: '100%', fontSize: '13px',
+    background: 'var(--bg-tertiary)',
+    border: '1px solid var(--border-mid)',
+    borderRadius: '8px', padding: '8px 12px',
+    color: 'var(--text-primary)',
+    fontFamily: 'var(--font-body)',
+    outline: 'none',
+  }
+
   return (
-    <div className="flex flex-col h-full overflow-y-auto">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-200 dark:border-zinc-700/60 sticky top-0 bg-white dark:bg-zinc-900 z-10">
-        <h1 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">Tasks</h1>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflowY: 'auto', background: 'var(--bg-primary)' }}>
+      {/* Header */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '12px 16px',
+        borderBottom: '1px solid var(--border-light)',
+        position: 'sticky', top: 0,
+        background: 'var(--bg-primary)', zIndex: 10,
+      }}>
+        <h1 style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-primary)' }}>Tasks</h1>
         <button
           onClick={() => setShowAdd(s => !s)}
-          className="text-xs px-3 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
+          style={{
+            fontSize: '12px', fontWeight: 500,
+            color: 'var(--accent)', background: 'var(--accent-light)',
+            border: 'none', padding: '5px 14px', borderRadius: '8px',
+            cursor: 'pointer', fontFamily: 'var(--font-body)',
+          }}
         >
           + Add task
         </button>
       </div>
 
-      <div className="p-4 space-y-4">
+      <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
         {showAdd && (
-          <div className="bg-zinc-50 dark:bg-zinc-800 rounded-xl p-3 border border-zinc-200 dark:border-zinc-700 space-y-2">
+          <div style={{
+            background: 'var(--bg-secondary)', borderRadius: '12px',
+            padding: '12px', border: '1px solid var(--border-mid)',
+            display: 'flex', flexDirection: 'column', gap: '8px',
+          }}>
             <input
-              autoFocus
-              value={title}
+              autoFocus value={title}
               onChange={e => setTitle(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleAdd()}
               placeholder="Task title…"
-              className="w-full text-sm bg-white dark:bg-zinc-700 border border-zinc-200 dark:border-zinc-600 rounded-lg px-3 py-2 text-zinc-900 dark:text-white placeholder-zinc-400 outline-none focus:ring-2 focus:ring-violet-500"
+              style={inputStyle}
             />
             <textarea
               value={explanation}
               onChange={e => setExplanation(e.target.value)}
               placeholder="Explanation (optional)…"
               rows={2}
-              className="w-full text-sm bg-white dark:bg-zinc-700 border border-zinc-200 dark:border-zinc-600 rounded-lg px-3 py-2 text-zinc-900 dark:text-white placeholder-zinc-400 outline-none focus:ring-2 focus:ring-violet-500 resize-none"
+              style={{ ...inputStyle, resize: 'none', color: 'var(--text-secondary)', fontSize: '12px' }}
             />
-            <div className="flex gap-2">
-              <button onClick={handleAdd} className="text-xs px-3 py-1.5 bg-violet-600 text-white rounded-lg hover:bg-violet-700">
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button onClick={handleAdd} style={{
+                fontSize: '12px', fontWeight: 500, color: 'var(--accent)',
+                background: 'var(--accent-light)', border: 'none', padding: '5px 14px',
+                borderRadius: '8px', cursor: 'pointer', fontFamily: 'var(--font-body)',
+              }}>
                 Add task
               </button>
-              <button onClick={() => setShowAdd(false)} className="text-xs px-3 py-1.5 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300">
+              <button onClick={() => setShowAdd(false)} style={{
+                fontSize: '12px', color: 'var(--text-tertiary)', background: 'none',
+                border: 'none', cursor: 'pointer', fontFamily: 'var(--font-body)',
+              }}>
                 Cancel
               </button>
             </div>
@@ -83,20 +114,40 @@ export default function TasksPage() {
             <div key={key}>
               <button
                 onClick={() => toggle(key)}
-                className="flex items-center gap-2 w-full text-left mb-2"
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '8px',
+                  width: '100%', textAlign: 'left', marginBottom: '8px',
+                  background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                }}
               >
-                <span className="text-xs font-semibold text-gray-500 dark:text-zinc-400 uppercase tracking-wide">
+                <span style={{
+                  fontSize: '10px', fontWeight: 500, color: 'var(--text-tertiary)',
+                  textTransform: 'uppercase', letterSpacing: '0.8px',
+                }}>
                   {label}
                 </span>
-                <span className="text-xs bg-gray-100 dark:bg-zinc-700 text-gray-500 dark:text-zinc-400 px-1.5 py-0.5 rounded-full">
+                <span style={{
+                  fontSize: '11px', color: 'var(--text-tertiary)',
+                  background: 'var(--bg-secondary)',
+                  padding: '1px 7px', borderRadius: '20px',
+                }}>
                   {group.length}
                 </span>
-                <ChevronIcon open={openSections[key] !== false} />
+                <svg
+                  width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}
+                  style={{
+                    marginLeft: 'auto', color: 'var(--text-tertiary)',
+                    transform: openSections[key] !== false ? 'none' : 'rotate(-90deg)',
+                    transition: 'transform 0.15s',
+                  }}
+                >
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
               </button>
               {openSections[key] !== false && (
-                <div className="space-y-2">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   {group.length === 0 && (
-                    <p className="text-xs text-gray-400 dark:text-zinc-500 px-1">None</p>
+                    <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', padding: '0 4px' }}>None</p>
                   )}
                   {group.map(task => (
                     <TaskCard key={task.id} task={task} />
@@ -108,16 +159,5 @@ export default function TasksPage() {
         })}
       </div>
     </div>
-  )
-}
-
-function ChevronIcon({ open }) {
-  return (
-    <svg
-      className={`w-3 h-3 text-zinc-400 transition-transform ml-auto ${open ? '' : '-rotate-90'}`}
-      fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}
-    >
-      <polyline points="6 9 12 15 18 9"/>
-    </svg>
   )
 }

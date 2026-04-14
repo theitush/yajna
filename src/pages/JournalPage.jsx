@@ -11,10 +11,8 @@ import { getJournal } from '../services/db'
 import { pullJournal } from '../services/sync'
 
 function buildWeekDates(week) {
-  // Parse YYYY-WWW
   const [year, w] = week.split('-W')
   const y = parseInt(year), wn = parseInt(w)
-  // ISO week: find Jan 4th, get Monday of week 1
   const jan4 = new Date(y, 0, 4)
   const startOfWeek1 = new Date(jan4)
   startOfWeek1.setDate(jan4.getDate() - ((jan4.getDay() + 6) % 7))
@@ -73,7 +71,7 @@ function EntryEditor({ content, onSave }) {
   }, [content])
 
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-3 text-sm text-gray-800 dark:text-gray-200">
+    <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', fontSize: '14px', color: 'var(--text-primary)' }}>
       <EditorContent editor={editor} />
     </div>
   )
@@ -91,18 +89,14 @@ export default function JournalPage() {
 
   useEffect(() => {
     async function load() {
-      // Try local first, then Drive
       let doc = await getJournal(viewedWeek)
-      if (!doc) {
-        doc = await pullJournal(viewedWeek)
-      }
+      if (!doc) doc = await pullJournal(viewedWeek)
       if (!doc) doc = { week: viewedWeek, entries: {} }
       setWeekDoc(doc)
     }
     load()
   }, [viewedWeek])
 
-  // If current week, use store (stays in sync with TodayPage edits)
   const effectiveDoc = viewedWeek === weekKey(todayStr) ? currentJournal : weekDoc
   const weekDates = buildWeekDates(viewedWeek)
 
@@ -116,9 +110,6 @@ export default function JournalPage() {
   }
 
   const goWeek = (delta) => {
-    const [y, w] = viewedWeek.split('-W')
-    const newW = parseInt(w) + delta
-    // simple: just shift by 7 days from first day of week
     const dates = buildWeekDates(viewedWeek)
     const anchor = new Date(dates[0] + 'T12:00:00')
     anchor.setDate(anchor.getDate() + delta * 7)
@@ -130,19 +121,33 @@ export default function JournalPage() {
   const entry = effectiveDoc?.entries?.[selectedDate]
 
   return (
-    <div className="flex h-full">
-      {/* Date list */}
-      <div className="w-40 md:w-48 shrink-0 border-r border-gray-200 dark:border-gray-700 flex flex-col">
-        <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-700">
-          <button onClick={() => goWeek(-1)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1">
+    <div style={{ display: 'flex', height: '100%', background: 'var(--bg-primary)' }}>
+      {/* Date sidebar */}
+      <div style={{
+        width: '160px', flexShrink: 0,
+        borderRight: '1px solid var(--border-light)',
+        display: 'flex', flexDirection: 'column',
+      }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '8px 12px',
+          borderBottom: '1px solid var(--border-light)',
+        }}>
+          <button
+            onClick={() => goWeek(-1)}
+            style={{ color: 'var(--text-tertiary)', background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}
+          >
             <ChevronLeft />
           </button>
-          <span className="text-xs font-medium text-gray-600 dark:text-gray-400">{viewedWeek}</span>
-          <button onClick={() => goWeek(1)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1">
+          <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontWeight: 500 }}>{viewedWeek}</span>
+          <button
+            onClick={() => goWeek(1)}
+            style={{ color: 'var(--text-tertiary)', background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}
+          >
             <ChevronRight />
           </button>
         </div>
-        <div className="overflow-y-auto flex-1">
+        <div style={{ flex: 1, overflowY: 'auto' }}>
           {weekDates.map(date => {
             const hasEntry = !!effectiveDoc?.entries?.[date]?.content
             const isToday = date === todayStr
@@ -151,18 +156,24 @@ export default function JournalPage() {
               <button
                 key={date}
                 onClick={() => setSelectedDate(date)}
-                className={`w-full text-left px-3 py-2 text-xs transition-colors flex items-center gap-2 ${
-                  isSelected
-                    ? 'bg-violet-50 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300'
-                    : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'
-                }`}
+                style={{
+                  width: '100%', textAlign: 'left',
+                  padding: '8px 12px', fontSize: '12px',
+                  display: 'flex', alignItems: 'center', gap: '8px',
+                  background: isSelected ? 'var(--bg-secondary)' : 'transparent',
+                  borderLeft: isSelected ? '2px solid var(--accent)' : '2px solid transparent',
+                  color: isSelected ? 'var(--text-primary)' : 'var(--text-secondary)',
+                  border: 'none', cursor: 'pointer',
+                  transition: 'all 0.15s',
+                }}
               >
-                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                  hasEntry ? 'bg-violet-400' : 'bg-gray-200 dark:bg-gray-600'
-                }`} />
+                <span style={{
+                  width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+                  background: hasEntry ? 'var(--accent)' : 'var(--border-mid)',
+                }} />
                 <span>
                   {new Date(date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
-                  {isToday && <span className="ml-1 text-violet-500">·</span>}
+                  {isToday && <span style={{ marginLeft: '4px', color: 'var(--accent)' }}>·</span>}
                 </span>
               </button>
             )
@@ -171,9 +182,9 @@ export default function JournalPage() {
       </div>
 
       {/* Editor */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
-          <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--border-light)' }}>
+          <h2 style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-primary)' }}>
             {formatDate(selectedDate)}
           </h2>
         </div>
@@ -188,8 +199,8 @@ export default function JournalPage() {
 }
 
 function ChevronLeft() {
-  return <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><polyline points="15 18 9 12 15 6"/></svg>
+  return <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><polyline points="15 18 9 12 15 6"/></svg>
 }
 function ChevronRight() {
-  return <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><polyline points="9 18 15 12 9 6"/></svg>
+  return <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><polyline points="9 18 15 12 9 6"/></svg>
 }

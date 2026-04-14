@@ -5,7 +5,7 @@ import TasksPanel from '../components/today/TasksPanel'
 
 export default function TodayPage() {
   const insertTextRef = useRef(null)
-  const [panel, setPanel] = useState('journal') // 'journal' | 'tasks'
+  const [panel, setPanel] = useState('journal')
 
   const swipeHandlers = useSwipeable({
     onSwipedLeft: () => setPanel('tasks'),
@@ -16,42 +16,48 @@ export default function TodayPage() {
   return (
     <>
       {/* Desktop: side-by-side */}
-      <div className="hidden md:flex h-full">
-        <div className="flex-1 border-r border-gray-200 dark:border-zinc-700/60 overflow-hidden">
+      <div className="hidden md:flex h-full" style={{ background: 'var(--bg-primary)' }}>
+        <div style={{ flex: 1, borderRight: '1px solid var(--border-light)', overflow: 'hidden' }}>
           <JournalPanel onInsertText={insertTextRef} />
         </div>
-        <div className="w-80 xl:w-96 overflow-hidden">
+        <div style={{ width: '340px', flexShrink: 0, overflow: 'hidden' }}>
           <TasksPanel />
         </div>
       </div>
 
       {/* Mobile: swipeable panels */}
-      <div className="md:hidden flex flex-col h-full" {...swipeHandlers}>
-        {/* Tab switcher */}
-        <div className="flex border-b border-gray-200 dark:border-zinc-700/60">
+      <div className="md:hidden flex flex-col h-full" style={{ background: 'var(--bg-primary)' }} {...swipeHandlers}>
+        <div style={{ display: 'flex', borderBottom: '1px solid var(--border-light)' }}>
           <button
             onClick={() => setPanel('journal')}
-            className={`flex-1 py-2 text-sm font-medium transition-colors ${
-              panel === 'journal'
-                ? 'text-violet-600 dark:text-violet-400 border-b-2 border-violet-600 dark:border-violet-400'
-                : 'text-zinc-500 dark:text-zinc-400'
-            }`}
+            style={{
+              flex: 1, padding: '10px 0', fontSize: '13px', fontWeight: 500,
+              fontFamily: 'var(--font-body)',
+              color: panel === 'journal' ? 'var(--text-primary)' : 'var(--text-tertiary)',
+              borderBottom: panel === 'journal' ? '2px solid var(--accent)' : '2px solid transparent',
+              background: 'none', border: 'none', cursor: 'pointer',
+              borderBottom: panel === 'journal' ? `2px solid var(--accent)` : '2px solid transparent',
+              transition: 'color 0.15s',
+            }}
           >
             Journal
           </button>
           <button
             onClick={() => setPanel('tasks')}
-            className={`flex-1 py-2 text-sm font-medium transition-colors ${
-              panel === 'tasks'
-                ? 'text-violet-600 dark:text-violet-400 border-b-2 border-violet-600 dark:border-violet-400'
-                : 'text-zinc-500 dark:text-zinc-400'
-            }`}
+            style={{
+              flex: 1, padding: '10px 0', fontSize: '13px', fontWeight: 500,
+              fontFamily: 'var(--font-body)',
+              color: panel === 'tasks' ? 'var(--text-primary)' : 'var(--text-tertiary)',
+              borderBottom: panel === 'tasks' ? `2px solid var(--accent)` : '2px solid transparent',
+              background: 'none', border: 'none', cursor: 'pointer',
+              transition: 'color 0.15s',
+            }}
           >
             Tasks
           </button>
         </div>
 
-        <div className="flex-1 overflow-hidden">
+        <div style={{ flex: 1, overflow: 'hidden' }}>
           {panel === 'journal' ? (
             <JournalPanel onInsertText={insertTextRef} />
           ) : (
