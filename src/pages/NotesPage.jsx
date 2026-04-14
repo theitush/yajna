@@ -43,6 +43,8 @@ function extractTags(text) {
 
 function NoteEditor({ note, onUpdate, onDelete }) {
   const saveTimeout = { current: null }
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [titleValue, setTitleValue] = useState(note?.title || '')
 
   const editor = useEditor({
     extensions: [
@@ -71,6 +73,8 @@ function NoteEditor({ note, onUpdate, onDelete }) {
     if (current !== note.body) {
       editor.commands.setContent(note.body || '', false)
     }
+    setTitleValue(note.title || '')
+    setEditingTitle(false)
   }, [note?.id])
 
   if (!note) return (
@@ -85,9 +89,36 @@ function NoteEditor({ note, onUpdate, onDelete }) {
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '12px 20px', borderBottom: '1px solid var(--border-light)',
       }}>
-        <span style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {note.title || 'Untitled'}
-        </span>
+        {editingTitle ? (
+          <input
+            autoFocus
+            value={titleValue}
+            onChange={e => setTitleValue(e.target.value)}
+            onBlur={() => {
+              setEditingTitle(false)
+              onUpdate(note.id, { title: titleValue.trim() || 'Untitled' })
+              setTitleValue(titleValue.trim() || 'Untitled')
+            }}
+            onKeyDown={e => {
+              if (e.key === 'Enter' || e.key === 'Escape') e.target.blur()
+            }}
+            style={{
+              fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)',
+              background: 'var(--bg-secondary)', border: '1px solid var(--border-mid)',
+              borderRadius: '4px', padding: '2px 6px',
+              fontFamily: 'var(--font-body)', outline: 'none',
+              flex: 1, minWidth: 0,
+            }}
+          />
+        ) : (
+          <span
+            onClick={() => { setEditingTitle(true); setTitleValue(note.title || '') }}
+            title="Click to edit title"
+            style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'text', flex: 1, minWidth: 0 }}
+          >
+            {note.title || 'Untitled'}
+          </span>
+        )}
         <button
           onClick={() => onDelete(note.id)}
           style={{

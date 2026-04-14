@@ -3,8 +3,8 @@ import useAppStore from '../../store/useAppStore'
 
 const items = [
   { to: '/', label: 'Today', icon: BookIcon },
-  { to: '/journal', label: 'History', icon: CalendarIcon },
   { to: '/notes', label: 'Notes', icon: HashIcon },
+  { to: '/journal', label: 'History', icon: CalendarIcon },
   { to: '/tasks', label: 'Todos', icon: CheckIcon },
 ]
 

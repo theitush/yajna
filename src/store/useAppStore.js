@@ -86,7 +86,7 @@ const useAppStore = create((set, get) => ({
     set({ notes })
   },
   addNote: async (body = '', tags = []) => {
-    const lines = body.split('\n').filter(Boolean)
+    const lines = body.replace(/<[^>]+>/g, '\n').split('\n').map(s => s.trim()).filter(Boolean)
     const title = lines[0]?.replace(/^#+\s*/, '') || 'Untitled'
     const note = {
       id: uuid(),
@@ -105,8 +105,12 @@ const useAppStore = create((set, get) => ({
     const notes = get().notes
     const note = notes.find(n => n.id === id)
     if (!note) return
-    const lines = (updates.body ?? note.body).split('\n').filter(Boolean)
-    const title = lines[0]?.replace(/^#+\s*/, '') || note.title
+    let title
+    if ('title' in updates) {
+      title = updates.title || 'Untitled'
+    } else {
+      title = note.title
+    }
     const updated = { ...note, ...updates, title, updatedAt: new Date().toISOString() }
     await putNote(updated)
     set(s => ({ notes: s.notes.map(n => n.id === id ? updated : n) }))
