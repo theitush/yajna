@@ -75,23 +75,22 @@ export async function clearStoredToken() {
  */
 export function requestToken() {
   return new Promise((resolve, reject) => {
-    if (!tokenClient) {
-      tokenClient = window.google.accounts.oauth2.initTokenClient({
-        client_id: GOOGLE_CLIENT_ID,
-        scope: SCOPES,
-        callback: (response) => {
-          if (response.error) return reject(new Error(response.error))
-          accessToken = response.access_token
-          storeToken(response.access_token, response.expires_in)
-            .then(() => resolve(response.access_token))
-            .catch(() => resolve(response.access_token))
-        },
-        error_callback: (err) => {
-          tokenClient = null  // reset so next attempt creates a fresh client
-          reject(new Error(err?.type || 'token_request_failed'))
-        },
-      })
-    }
+    // Always create a fresh client so the callback captures the current promise's resolve/reject
+    tokenClient = window.google.accounts.oauth2.initTokenClient({
+      client_id: GOOGLE_CLIENT_ID,
+      scope: SCOPES,
+      callback: (response) => {
+        if (response.error) return reject(new Error(response.error))
+        accessToken = response.access_token
+        storeToken(response.access_token, response.expires_in)
+          .then(() => resolve(response.access_token))
+          .catch(() => resolve(response.access_token))
+      },
+      error_callback: (err) => {
+        tokenClient = null
+        reject(new Error(err?.type || 'token_request_failed'))
+      },
+    })
     tokenClient.requestAccessToken({ prompt: '' })
   })
 }

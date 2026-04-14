@@ -95,7 +95,7 @@ export default function App() {
       await finishDriveAuth()
     } catch (e) {
       console.error('Login failed', e)
-      const msg = e?.message === 'popup_closed_by_user'
+      const msg = (e?.message === 'popup_closed_by_user' || e?.message === 'popup_closed')
         ? 'Sign-in cancelled.'
         : 'Sign-in failed. Please try again.'
       setInitError(msg)
