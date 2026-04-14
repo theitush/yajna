@@ -77,17 +77,26 @@ export async function clearStoredToken() {
 export function requestToken(selectAccount = false) {
   return new Promise((resolve, reject) => {
     // Always create a fresh client so the callback captures the current promise's resolve/reject
+    let settled = false
     tokenClient = window.google.accounts.oauth2.initTokenClient({
       client_id: GOOGLE_CLIENT_ID,
       scope: SCOPES,
       callback: (response) => {
-        if (response.error) return reject(new Error(response.error))
+        if (response.error) {
+          settled = true
+          return reject(new Error(response.error))
+        }
+        settled = true
         accessToken = response.access_token
         storeToken(response.access_token, response.expires_in)
           .then(() => resolve(response.access_token))
           .catch(() => resolve(response.access_token))
       },
       error_callback: (err) => {
+        // GIS sometimes fires error_callback with popup_closed even after a
+        // successful auth (e.g. after 2FA). Ignore if the success callback
+        // already resolved the promise.
+        if (settled) return
         tokenClient = null
         reject(new Error(err?.type || 'token_request_failed'))
       },
