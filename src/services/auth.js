@@ -86,6 +86,10 @@ export function requestToken() {
             .then(() => resolve(response.access_token))
             .catch(() => resolve(response.access_token))
         },
+        error_callback: (err) => {
+          tokenClient = null  // reset so next attempt creates a fresh client
+          reject(new Error(err?.type || 'token_request_failed'))
+        },
       })
     }
     tokenClient.requestAccessToken({ prompt: '' })

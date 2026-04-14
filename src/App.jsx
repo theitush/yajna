@@ -81,6 +81,11 @@ export default function App() {
   const handleLogin = async () => {
     setLoginLoading(true)
     setInitError(null)
+    // Safety timeout: if login takes more than 60s, unblock the UI
+    const timeout = setTimeout(() => {
+      setLoginLoading(false)
+      setInitError('Sign-in timed out. Please try again.')
+    }, 60_000)
     try {
       // Make sure GIS/GAPI are loaded (may already be if pre-loaded)
       await Promise.all([loadGIS(), loadGAPI()])
@@ -90,8 +95,12 @@ export default function App() {
       await finishDriveAuth()
     } catch (e) {
       console.error('Login failed', e)
-      setInitError('Sign-in failed. Please try again.')
+      const msg = e?.message === 'popup_closed_by_user'
+        ? 'Sign-in cancelled.'
+        : 'Sign-in failed. Please try again.'
+      setInitError(msg)
     } finally {
+      clearTimeout(timeout)
       setLoginLoading(false)
     }
   }
