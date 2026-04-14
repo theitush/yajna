@@ -10,36 +10,13 @@ const items = [
   { to: '/tasks', label: 'Todos', icon: CheckIcon },
 ]
 
-export default function Sidebar() {
-  const syncing = useAppStore(s => s.syncing)
-  const mode = useAppStore(s => s.mode)
-  const setAuthenticated = useAppStore(s => s.setAuthenticated)
-  const isOnline = mode !== MODE_OFFLINE
-
-  const handleConnectDrive = async () => {
-    await putMeta(MODE_KEY, null)
-    setAuthenticated(false)
-  }
-
+function SidebarContent({ onNav, isOnline, syncing, handleConnectDrive }) {
   return (
-    <aside style={{
-      width: '200px',
-      flexShrink: 0,
-      borderRight: '1px solid var(--border-light)',
-      background: 'var(--bg-primary)',
-      display: 'flex',
-      flexDirection: 'column',
-      height: '100%',
-    }} className="hidden md:flex">
-      {/* Brand */}
+    <>
       <div style={{ padding: '20px 20px 16px', borderBottom: '1px solid var(--border-light)' }}>
         <div style={{
-          fontFamily: 'var(--font-display)',
-          fontSize: '26px',
-          fontWeight: 400,
-          letterSpacing: '-0.5px',
-          color: 'var(--text-primary)',
-          lineHeight: 1,
+          fontFamily: 'var(--font-display)', fontSize: '26px', fontWeight: 400,
+          letterSpacing: '-0.5px', color: 'var(--text-primary)', lineHeight: 1,
         }}>
           Yajna
         </div>
@@ -56,80 +33,104 @@ export default function Sidebar() {
             {syncing ? 'syncing…' : isOnline ? 'online' : 'offline'}
           </span>
           {!isOnline && (
-            <button
-              onClick={handleConnectDrive}
-              title="Connect Google Drive"
-              style={{
-                marginLeft: '2px',
-                padding: '1px 4px',
-                fontSize: '10px',
-                color: 'var(--accent)',
-                background: 'transparent',
-                border: '1px solid var(--accent)',
-                borderRadius: '3px',
-                cursor: 'pointer',
-                lineHeight: 1.4,
-                fontFamily: 'var(--font-body)',
-              }}
-            >
-              connect
-            </button>
+            <button onClick={handleConnectDrive} title="Connect Google Drive" style={{
+              marginLeft: '2px', padding: '1px 4px', fontSize: '10px',
+              color: 'var(--accent)', background: 'transparent',
+              border: '1px solid var(--accent)', borderRadius: '3px',
+              cursor: 'pointer', lineHeight: 1.4, fontFamily: 'var(--font-body)',
+            }}>connect</button>
           )}
         </div>
       </div>
 
-      {/* Nav */}
       <nav style={{ padding: '8px 0', flex: 1, display: 'flex', flexDirection: 'column' }}>
         <div style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.8px', color: 'var(--text-tertiary)', padding: '10px 20px 4px', fontWeight: 500 }}>
           Navigate
         </div>
         {items.map(({ to, label, icon: Icon }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={to === '/'}
+          <NavLink key={to} to={to} end={to === '/'} onClick={onNav}
             style={({ isActive }) => ({
-              display: 'flex',
-              alignItems: 'center',
-              gap: '10px',
-              padding: '9px 20px',
+              display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 20px',
               fontSize: '13px',
               color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
               fontWeight: isActive ? 500 : 400,
               background: isActive ? 'var(--bg-secondary)' : 'transparent',
               borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
-              textDecoration: 'none',
-              transition: 'all 0.15s',
+              textDecoration: 'none', transition: 'all 0.15s',
             })}
           >
-            <Icon />
-            {label}
+            <Icon />{label}
           </NavLink>
         ))}
       </nav>
 
-      {/* Settings at bottom */}
-      <NavLink
-        to="/settings"
+      <NavLink to="/settings" onClick={onNav}
         style={({ isActive }) => ({
-          display: 'flex',
-          alignItems: 'center',
-          gap: '10px',
-          padding: '9px 20px',
+          display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 20px',
           fontSize: '13px',
           color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
           fontWeight: isActive ? 500 : 400,
           background: isActive ? 'var(--bg-secondary)' : 'transparent',
           borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
-          textDecoration: 'none',
-          transition: 'all 0.15s',
+          textDecoration: 'none', transition: 'all 0.15s',
           borderTop: '1px solid var(--border-light)',
         })}
       >
-        <GearIcon />
-        Settings
+        <GearIcon />Settings
       </NavLink>
-    </aside>
+    </>
+  )
+}
+
+export default function Sidebar({ open, onClose }) {
+  const syncing = useAppStore(s => s.syncing)
+  const mode = useAppStore(s => s.mode)
+  const setAuthenticated = useAppStore(s => s.setAuthenticated)
+  const isOnline = mode !== MODE_OFFLINE
+
+  const handleConnectDrive = async () => {
+    await putMeta(MODE_KEY, null)
+    setAuthenticated(false)
+  }
+
+  const props = { isOnline, syncing, handleConnectDrive }
+
+  return (
+    <>
+      {/* Mobile overlay */}
+      {open && (
+        <div onClick={onClose} className="mobile-only" style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 300,
+        }} />
+      )}
+
+      {/* Mobile drawer */}
+      <aside className="mobile-only" style={{
+        position: 'fixed', top: 0, left: 0, bottom: 0, width: '220px',
+        background: 'var(--bg-primary)', borderRight: '1px solid var(--border-light)',
+        display: 'flex', flexDirection: 'column', zIndex: 400,
+        transform: open ? 'translateX(0)' : 'translateX(-100%)',
+        transition: 'transform 0.25s ease',
+      }}>
+        <button onClick={onClose} style={{
+          position: 'absolute', top: '12px', right: '12px',
+          background: 'none', border: 'none', cursor: 'pointer',
+          color: 'var(--text-tertiary)', padding: '4px', lineHeight: 1,
+        }}>
+          <CloseIcon />
+        </button>
+        <SidebarContent {...props} onNav={onClose} />
+      </aside>
+
+      {/* Desktop sidebar */}
+      <aside className="hidden md:flex" style={{
+        width: '200px', flexShrink: 0,
+        borderRight: '1px solid var(--border-light)',
+        background: 'var(--bg-primary)', flexDirection: 'column', height: '100%',
+      }}>
+        <SidebarContent {...props} onNav={null} />
+      </aside>
+    </>
   )
 }
 
@@ -147,4 +148,7 @@ function CheckIcon() {
 }
 function GearIcon() {
   return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} style={{ opacity: 0.6, flexShrink: 0 }}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+}
+function CloseIcon() {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
 }

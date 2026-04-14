@@ -173,6 +173,7 @@ export default function TaskCard({ task }) {
           onBlur={handleTitleBlur}
           onKeyDown={handleTitleKey}
           onDoubleClick={handleTitleDoubleClick}
+          onClick={expanded && !editingTitle ? handleTitleDoubleClick : undefined}
           style={{
             flex: 1,
             fontSize: '14px',

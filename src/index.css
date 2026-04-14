@@ -108,6 +108,12 @@ body {
   cursor: pointer;
 }
 
+/* Mobile-only: hide on md+ screens. Use this class instead of md:hidden when
+   the element also has an inline display style (inline styles beat Tailwind). */
+@media (min-width: 768px) {
+  .mobile-only { display: none !important; }
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
   width: 4px;

@@ -80,6 +80,11 @@ export default function TasksPanel() {
       const clientX = e.touches ? e.touches[0].clientX : e.clientX
       const clientY = e.touches ? e.touches[0].clientY : e.clientY
 
+      // Prevent page scroll while dragging on touch
+      if (e.touches && (draggingIdRef.current || pendingDragRef.current)) {
+        e.preventDefault()
+      }
+
       // Check if we should activate a pending drag
       if (!draggingIdRef.current && pendingDragRef.current) {
         const { id, startX, startY, rect } = pendingDragRef.current
@@ -121,7 +126,7 @@ export default function TasksPanel() {
       }
     }
     window.addEventListener('mousemove', onMove)
-    window.addEventListener('touchmove', onMove, { passive: true })
+    window.addEventListener('touchmove', onMove, { passive: false })
     return () => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('touchmove', onMove)

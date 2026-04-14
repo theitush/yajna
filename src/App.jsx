@@ -25,6 +25,7 @@ export default function App() {
   } = useAppStore()
   const [loginLoading, setLoginLoading] = useState(false)
   const [initError, setInitError] = useState(null)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   useEffect(() => {
     async function bootstrap() {
@@ -142,16 +143,46 @@ export default function App() {
   return (
     <HashRouter>
       <div className="flex h-full overflow-hidden">
-        <Sidebar />
-        <main className="flex-1 overflow-hidden flex flex-col pb-16 md:pb-0">
-          <Routes>
-            <Route path="/" element={<TodayPage />} />
-            <Route path="/journal" element={<JournalPage />} />
-            <Route path="/notes" element={<NotesPage />} />
-            <Route path="/tasks" element={<TasksPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-          </Routes>
-        </main>
+        <Sidebar open={sidebarOpen} onOpen={() => setSidebarOpen(true)} onClose={() => setSidebarOpen(false)} />
+        <div className="flex-1 overflow-hidden flex flex-col">
+          {/* Mobile top bar */}
+          <div className="mobile-only" style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            padding: '0 16px',
+            height: '48px',
+            borderBottom: '1px solid var(--border-light)',
+            flexShrink: 0,
+          }}>
+            <button
+              onClick={() => setSidebarOpen(true)}
+              style={{
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                color: 'var(--text-secondary)',
+                padding: '4px',
+                display: 'flex',
+                alignItems: 'center',
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+              </svg>
+            </button>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: '20px', fontWeight: 400, color: 'var(--text-primary)' }}>Yajna</span>
+          </div>
+          <main className="flex-1 overflow-hidden flex flex-col">
+            <Routes>
+              <Route path="/" element={<TodayPage />} />
+              <Route path="/journal" element={<JournalPage />} />
+              <Route path="/notes" element={<NotesPage />} />
+              <Route path="/tasks" element={<TasksPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
+            </Routes>
+          </main>
+        </div>
       </div>
     </HashRouter>
   )
