@@ -1,5 +1,7 @@
 import { NavLink } from 'react-router-dom'
 import useAppStore from '../../store/useAppStore'
+import { putMeta } from '../../services/db'
+import { MODE_KEY, MODE_OFFLINE } from '../../lib/constants'
 
 const items = [
   { to: '/', label: 'Today', icon: BookIcon },
@@ -11,7 +13,13 @@ const items = [
 export default function Sidebar() {
   const syncing = useAppStore(s => s.syncing)
   const mode = useAppStore(s => s.mode)
-  const isOnline = mode !== 'offline'
+  const setAuthenticated = useAppStore(s => s.setAuthenticated)
+  const isOnline = mode !== MODE_OFFLINE
+
+  const handleConnectDrive = async () => {
+    await putMeta(MODE_KEY, null)
+    setAuthenticated(false)
+  }
 
   return (
     <aside style={{
@@ -80,6 +88,31 @@ export default function Sidebar() {
         ))}
       </nav>
 
+      {/* Connect Google Drive (offline mode only) */}
+      {!isOnline && (
+        <button
+          onClick={handleConnectDrive}
+          style={{
+            display: 'flex', alignItems: 'center', gap: '10px',
+            padding: '9px 20px',
+            fontSize: '13px',
+            color: 'var(--accent)',
+            background: 'transparent',
+            border: 'none',
+            borderTop: '1px solid var(--border-light)',
+            borderLeft: '2px solid transparent',
+            cursor: 'pointer',
+            fontFamily: 'var(--font-body)',
+            width: '100%',
+            textAlign: 'left',
+            transition: 'background 0.15s',
+          }}
+        >
+          <CloudIcon />
+          Connect Drive
+        </button>
+      )}
+
       {/* Settings at bottom */}
       <NavLink
         to="/settings"
@@ -119,4 +152,7 @@ function CheckIcon() {
 }
 function GearIcon() {
   return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} style={{ opacity: 0.6, flexShrink: 0 }}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+}
+function CloudIcon() {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} style={{ flexShrink: 0 }}><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
 }
