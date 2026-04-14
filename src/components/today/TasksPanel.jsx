@@ -12,12 +12,14 @@ export default function TasksPanel() {
 
   const [draggingId, setDraggingId] = useState(null)
   const [cloneStyle, setCloneStyle] = useState(null)
+  const [shifts, setShifts] = useState({}) // id -> px shift for transform
 
   const draggingIdRef = useRef(null)
   const overIdRef = useRef(null)
   const itemEls = useRef({})
   const offsetRef = useRef({ x: 0, y: 0 })
   const pendingDragRef = useRef(null) // { id, startX, startY } — drag not yet committed
+  const todayTasksRef = useRef([])
   const DRAG_THRESHOLD = 5 // px movement before drag starts
 
   const { today, yesterday } = (() => {
@@ -36,36 +38,28 @@ export default function TasksPanel() {
     })
     .sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity))
 
-  const getIds = () => todayTasks.map(t => t.id)
+  todayTasksRef.current = todayTasks
+
+  const getIds = useCallback(() => todayTasksRef.current.map(t => t.id), [])
 
   const applyTransforms = useCallback((fromId, toId) => {
     const ids = getIds()
     const fromIdx = ids.indexOf(fromId)
     const toIdx = ids.indexOf(toId)
     if (fromIdx === -1 || toIdx === -1) return
+    const draggedEl = itemEls.current[fromId]
+    if (!draggedEl) return
+    const draggedH = draggedEl.offsetHeight + 8
+    const next = {}
     ids.forEach((id, i) => {
-      const el = itemEls.current[id]
-      if (!el || id === fromId) return
-      const draggedEl = itemEls.current[fromId]
-      if (!draggedEl) return
-      const draggedH = draggedEl.offsetHeight + 8
+      if (id === fromId) return
       let shift = 0
       if (fromIdx < toIdx && i > fromIdx && i <= toIdx) shift = -draggedH
       else if (fromIdx > toIdx && i >= toIdx && i < fromIdx) shift = draggedH
-      el.style.transition = 'transform 0.15s ease'
-      el.style.transform = shift ? `translateY(${shift}px)` : 'none'
+      next[id] = shift
     })
-  }, [todayTasks])
-
-  const clearTransforms = useCallback(() => {
-    getIds().forEach(id => {
-      const el = itemEls.current[id]
-      if (el) {
-        el.style.transition = 'transform 0.15s ease'
-        el.style.transform = 'none'
-      }
-    })
-  }, [todayTasks])
+    setShifts(next)
+  }, [getIds])
 
   const handleMouseDown = (e, id) => {
     const tag = e.target.tagName.toLowerCase()
@@ -138,7 +132,15 @@ export default function TasksPanel() {
     pendingDragRef.current = null
     const from = draggingIdRef.current
     const to = overIdRef.current
-    clearTransforms()
+    draggingIdRef.current = null
+    overIdRef.current = null
+
+    // Clear clone and shifts, reorder, and hide ghost all in one batch.
+    // We clear shifts without transition (draggingId going null disables transition)
+    // so the reordered positions are the source of truth — no animation back to zero.
+    setCloneStyle(null)
+    setShifts({})
+
     if (from && to && from !== to) {
       const ids = getIds()
       const fromIdx = ids.indexOf(from)
@@ -150,11 +152,9 @@ export default function TasksPanel() {
         reorderTasks(reordered)
       }
     }
-    draggingIdRef.current = null
-    overIdRef.current = null
+
     setDraggingId(null)
-    setCloneStyle(null)
-  }, [todayTasks, reorderTasks, clearTransforms])
+  }, [getIds, reorderTasks])
 
   useEffect(() => {
     window.addEventListener('mouseup', commitDrop)
@@ -315,6 +315,8 @@ export default function TasksPanel() {
               opacity: draggingId === task.id ? 0.25 : 1,
               userSelect: 'none',
               willChange: 'transform',
+              transform: shifts[task.id] ? `translateY(${shifts[task.id]}px)` : 'none',
+              transition: draggingId ? 'transform 0.15s ease' : 'none',
             }}
           >
             <TaskCard task={task} />
