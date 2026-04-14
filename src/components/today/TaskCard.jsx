@@ -136,11 +136,11 @@ export default function TaskCard({ task }) {
           // Single click on the header (not on interactive elements) expands if there's content
           const tag = e.target.tagName.toLowerCase()
           if (tag === 'button' || e.target.isContentEditable || editingTitle) return
-          if (!expanded && (task.explanation || task.feedback)) {
+          if (!expanded) {
             setExpanded(true)
           }
         }}
-        style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '14px 16px', paddingBottom: expanded || task.explanation || task.feedback ? '8px' : '14px' }}
+        style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '14px 16px', paddingBottom: expanded ? '8px' : '14px' }}
       >
         {/* Checkmark */}
         <button
