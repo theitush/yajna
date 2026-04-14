@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import useAppStore from '../../store/useAppStore'
 import TaskCard from './TaskCard'
 
@@ -9,9 +9,14 @@ export default function TasksPanel() {
   const [showAdd, setShowAdd] = useState(false)
   const [title, setTitle] = useState('')
   const [explanation, setExplanation] = useState('')
+
   const [draggingId, setDraggingId] = useState(null)
+  const [cloneStyle, setCloneStyle] = useState(null)
+
+  const draggingIdRef = useRef(null)
   const overIdRef = useRef(null)
-  const dragId = useRef(null)
+  const itemEls = useRef({})
+  const offsetRef = useRef({ x: 0, y: 0 })
 
   const { today, yesterday } = (() => {
     const t = new Date().toISOString().slice(0, 10)
@@ -29,31 +34,97 @@ export default function TasksPanel() {
     })
     .sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity))
 
+  const getIds = () => todayTasks.map(t => t.id)
 
-  const handleDragStart = (e, id) => {
-    // Suppress the ghost image
-    const empty = document.createElement('div')
-    empty.style.position = 'absolute'
-    empty.style.top = '-9999px'
-    document.body.appendChild(empty)
-    e.dataTransfer.setDragImage(empty, 0, 0)
-    setTimeout(() => document.body.removeChild(empty), 0)
+  const applyTransforms = useCallback((fromId, toId) => {
+    const ids = getIds()
+    const fromIdx = ids.indexOf(fromId)
+    const toIdx = ids.indexOf(toId)
+    if (fromIdx === -1 || toIdx === -1) return
+    ids.forEach((id, i) => {
+      const el = itemEls.current[id]
+      if (!el || id === fromId) return
+      const draggedEl = itemEls.current[fromId]
+      if (!draggedEl) return
+      const draggedH = draggedEl.offsetHeight + 8
+      let shift = 0
+      if (fromIdx < toIdx && i > fromIdx && i <= toIdx) shift = -draggedH
+      else if (fromIdx > toIdx && i >= toIdx && i < fromIdx) shift = draggedH
+      el.style.transition = 'transform 0.15s ease'
+      el.style.transform = shift ? `translateY(${shift}px)` : 'none'
+    })
+  }, [todayTasks])
 
-    dragId.current = id
+  const clearTransforms = useCallback(() => {
+    getIds().forEach(id => {
+      const el = itemEls.current[id]
+      if (el) {
+        el.style.transition = 'transform 0.15s ease'
+        el.style.transform = 'none'
+      }
+    })
+  }, [todayTasks])
+
+  // Follow the mouse with the clone
+  useEffect(() => {
+    if (!draggingId) return
+    const onMove = (e) => {
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY
+      setCloneStyle(s => s ? {
+        ...s,
+        left: clientX - offsetRef.current.x,
+        top: clientY - offsetRef.current.y,
+      } : s)
+
+      // Update which item we're over
+      const id = draggingIdRef.current
+      for (const [tid, el] of Object.entries(itemEls.current)) {
+        if (!el || tid === id) continue
+        const rect = el.getBoundingClientRect()
+        if (clientY >= rect.top && clientY <= rect.bottom) {
+          if (tid !== overIdRef.current) {
+            overIdRef.current = tid
+            applyTransforms(id, tid)
+          }
+          break
+        }
+      }
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('touchmove', onMove, { passive: true })
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('touchmove', onMove)
+    }
+  }, [draggingId, applyTransforms])
+
+  const handleMouseDown = (e, id) => {
+    const tag = e.target.tagName.toLowerCase()
+    if (tag === 'button' || tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return
+    e.preventDefault()
+
+    const el = itemEls.current[id]
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    offsetRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+
+    draggingIdRef.current = id
     overIdRef.current = id
     setDraggingId(id)
+    setCloneStyle({
+      width: rect.width,
+      left: e.clientX - offsetRef.current.x,
+      top: e.clientY - offsetRef.current.y,
+    })
   }
 
-  const handleDragOver = (e, id) => {
-    e.preventDefault()
-    overIdRef.current = id
-  }
-
-  const handleDrop = () => {
-    const from = dragId.current
+  const commitDrop = useCallback(() => {
+    const from = draggingIdRef.current
     const to = overIdRef.current
+    clearTransforms()
     if (from && to && from !== to) {
-      const ids = todayTasks.map(t => t.id)
+      const ids = getIds()
       const fromIdx = ids.indexOf(from)
       const toIdx = ids.indexOf(to)
       if (fromIdx !== -1 && toIdx !== -1) {
@@ -63,16 +134,21 @@ export default function TasksPanel() {
         reorderTasks(reordered)
       }
     }
-    dragId.current = null
+    draggingIdRef.current = null
     overIdRef.current = null
     setDraggingId(null)
-  }
+    setCloneStyle(null)
+  }, [todayTasks, reorderTasks, clearTransforms])
 
-  const handleDragEnd = () => {
-    dragId.current = null
-    overIdRef.current = null
-    setDraggingId(null)
-  }
+  useEffect(() => {
+    if (!draggingId) return
+    window.addEventListener('mouseup', commitDrop)
+    window.addEventListener('touchend', commitDrop)
+    return () => {
+      window.removeEventListener('mouseup', commitDrop)
+      window.removeEventListener('touchend', commitDrop)
+    }
+  }, [draggingId, commitDrop])
 
   const handleAdd = async () => {
     if (!title.trim()) return
@@ -82,8 +158,27 @@ export default function TasksPanel() {
     setShowAdd(false)
   }
 
+  const draggingTask = draggingId ? todayTasks.find(t => t.id === draggingId) : null
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {/* Floating clone */}
+      {draggingTask && cloneStyle && (
+        <div style={{
+          position: 'fixed',
+          left: cloneStyle.left,
+          top: cloneStyle.top,
+          width: cloneStyle.width,
+          pointerEvents: 'none',
+          zIndex: 1000,
+          opacity: 0.95,
+          boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+          borderRadius: '12px',
+        }}>
+          <TaskCard task={draggingTask} />
+        </div>
+      )}
+
       {/* Header */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -197,16 +292,13 @@ export default function TasksPanel() {
         {todayTasks.map(task => (
           <div
             key={task.id}
-            draggable
-            onDragStart={e => handleDragStart(e, task.id)}
-            onDragOver={e => handleDragOver(e, task.id)}
-            onDrop={handleDrop}
-            onDragEnd={handleDragEnd}
+            ref={el => { itemEls.current[task.id] = el }}
+            onMouseDown={e => handleMouseDown(e, task.id)}
             style={{
               cursor: draggingId === task.id ? 'grabbing' : 'grab',
-              opacity: draggingId === task.id ? 0.4 : 1,
-              transition: 'opacity 0.1s',
+              opacity: draggingId === task.id ? 0.25 : 1,
               userSelect: 'none',
+              willChange: 'transform',
             }}
           >
             <TaskCard task={task} />
