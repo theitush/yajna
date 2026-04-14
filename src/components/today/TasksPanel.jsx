@@ -1,13 +1,17 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import useAppStore from '../../store/useAppStore'
 import TaskCard from './TaskCard'
 
 export default function TasksPanel() {
   const tasks = useAppStore(s => s.tasks)
   const addTask = useAppStore(s => s.addTask)
+  const reorderTasks = useAppStore(s => s.reorderTasks)
   const [showAdd, setShowAdd] = useState(false)
   const [title, setTitle] = useState('')
   const [explanation, setExplanation] = useState('')
+  const [draggingId, setDraggingId] = useState(null)
+  const overIdRef = useRef(null)
+  const dragId = useRef(null)
 
   const { today, yesterday } = (() => {
     const t = new Date().toISOString().slice(0, 10)
@@ -16,12 +20,59 @@ export default function TasksPanel() {
     return { today: t, yesterday: y }
   })()
 
-  const todayTasks = tasks.filter(task => {
-    if (task.status === 'active') return true
-    if (task.status === 'done' && (task.doneDate === today || task.doneDate === yesterday)) return true
-    if (task.status === 'scheduled' && task.scheduledDate && task.scheduledDate <= today) return true
-    return false
-  })
+  const todayTasks = tasks
+    .filter(task => {
+      if (task.status === 'active') return true
+      if (task.status === 'done' && (task.doneDate === today || task.doneDate === yesterday)) return true
+      if (task.status === 'scheduled' && task.scheduledDate && task.scheduledDate <= today) return true
+      return false
+    })
+    .sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity))
+
+
+  const handleDragStart = (e, id) => {
+    // Suppress the ghost image
+    const empty = document.createElement('div')
+    empty.style.position = 'absolute'
+    empty.style.top = '-9999px'
+    document.body.appendChild(empty)
+    e.dataTransfer.setDragImage(empty, 0, 0)
+    setTimeout(() => document.body.removeChild(empty), 0)
+
+    dragId.current = id
+    overIdRef.current = id
+    setDraggingId(id)
+  }
+
+  const handleDragOver = (e, id) => {
+    e.preventDefault()
+    overIdRef.current = id
+  }
+
+  const handleDrop = () => {
+    const from = dragId.current
+    const to = overIdRef.current
+    if (from && to && from !== to) {
+      const ids = todayTasks.map(t => t.id)
+      const fromIdx = ids.indexOf(from)
+      const toIdx = ids.indexOf(to)
+      if (fromIdx !== -1 && toIdx !== -1) {
+        const reordered = [...ids]
+        reordered.splice(fromIdx, 1)
+        reordered.splice(toIdx, 0, from)
+        reorderTasks(reordered)
+      }
+    }
+    dragId.current = null
+    overIdRef.current = null
+    setDraggingId(null)
+  }
+
+  const handleDragEnd = () => {
+    dragId.current = null
+    overIdRef.current = null
+    setDraggingId(null)
+  }
 
   const handleAdd = async () => {
     if (!title.trim()) return
@@ -144,7 +195,22 @@ export default function TasksPanel() {
         )}
 
         {todayTasks.map(task => (
-          <TaskCard key={task.id} task={task} />
+          <div
+            key={task.id}
+            draggable
+            onDragStart={e => handleDragStart(e, task.id)}
+            onDragOver={e => handleDragOver(e, task.id)}
+            onDrop={handleDrop}
+            onDragEnd={handleDragEnd}
+            style={{
+              cursor: draggingId === task.id ? 'grabbing' : 'grab',
+              opacity: draggingId === task.id ? 0.4 : 1,
+              transition: 'opacity 0.1s',
+              userSelect: 'none',
+            }}
+          >
+            <TaskCard task={task} />
+          </div>
         ))}
       </div>
     </div>

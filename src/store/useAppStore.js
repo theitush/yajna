@@ -78,6 +78,16 @@ const useAppStore = create((set, get) => ({
     set(s => ({ tasks: s.tasks.filter(t => t.id !== id) }))
     if (get().mode !== MODE_OFFLINE) pushTasks().catch(console.error)
   },
+  reorderTasks: async (orderedIds) => {
+    const tasks = get().tasks
+    const updated = tasks.map(t => {
+      const idx = orderedIds.indexOf(t.id)
+      return idx === -1 ? t : { ...t, order: idx }
+    })
+    await putTasks(updated)
+    set({ tasks: updated })
+    if (get().mode !== MODE_OFFLINE) pushTasks().catch(console.error)
+  },
 
   // Notes
   notes: [],

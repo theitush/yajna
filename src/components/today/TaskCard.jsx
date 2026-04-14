@@ -13,7 +13,7 @@ export default function TaskCard({ task }) {
   const cardRef = useRef(null)
   const titleRef = useRef(null)
 
-  const isDone = task.status === 'done'
+  const isDone = task.status === 'done' || task.status === 'reviewed'
 
   useEffect(() => {
     setEditExplanation(task.explanation || '')
@@ -240,9 +240,12 @@ export default function TaskCard({ task }) {
             </p>
           )}
           {task.feedback && (
-            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5, marginTop: '4px', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-              <span style={{ fontWeight: 500, color: isDone ? 'var(--green-600)' : 'var(--text-tertiary)' }}>Feedback: </span>{task.feedback}
-            </p>
+            <>
+              <hr style={{ border: 'none', borderTop: '1px solid var(--border-light)', margin: '6px 0 4px' }} />
+              <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                {task.feedback}
+              </p>
+            </>
           )}
         </button>
       )}
