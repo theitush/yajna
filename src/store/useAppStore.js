@@ -7,7 +7,7 @@ import {
   getNotes, putNote, putNotes, deleteNote as dbDeleteNote,
   getJournal, putJournal, getConfig, putConfig,
 } from '../services/db'
-import { pushTasks, pushNotes, pushJournal, pushConfig, initialSync } from '../services/sync'
+import { pushTasks, pushNotes, pushJournal, pushConfig, initialSync, mergeAndPushJournal } from '../services/sync'
 
 const useAppStore = create((set, get) => ({
   // Auth / mode
@@ -30,6 +30,7 @@ const useAppStore = create((set, get) => ({
     set({ tasks })
   },
   addTask: async (title, explanation = '') => {
+    const now = new Date().toISOString()
     const task = {
       id: uuid(),
       title,
@@ -40,6 +41,8 @@ const useAppStore = create((set, get) => ({
       doneDate: null,
       dismissedDate: null,
       scheduledDate: null,
+      createdAt: now,
+      updatedAt: now,
     }
     await putTask(task)
     set(s => ({ tasks: [...s.tasks, task] }))
@@ -50,7 +53,7 @@ const useAppStore = create((set, get) => ({
     const tasks = get().tasks
     const task = tasks.find(t => t.id === id)
     if (!task) return
-    const updated = { ...task, ...updates }
+    const updated = { ...task, ...updates, updatedAt: new Date().toISOString() }
     await putTask(updated)
     set(s => ({ tasks: s.tasks.map(t => t.id === id ? updated : t) }))
     if (get().mode !== MODE_OFFLINE) pushTasks().catch(console.error)
@@ -80,9 +83,10 @@ const useAppStore = create((set, get) => ({
   },
   reorderTasks: (orderedIds) => {
     const tasks = get().tasks
+    const now = new Date().toISOString()
     const updated = tasks.map(t => {
       const idx = orderedIds.indexOf(t.id)
-      return idx === -1 ? t : { ...t, order: idx }
+      return idx === -1 ? t : { ...t, order: idx, updatedAt: now }
     })
     set({ tasks: updated })
     putTasks(updated).then(() => {
@@ -149,9 +153,15 @@ const useAppStore = create((set, get) => ({
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       }
-      await putJournal(doc)
-      if (get().mode !== MODE_OFFLINE) pushJournal(doc).catch(console.error)
     }
+    if (get().mode !== MODE_OFFLINE) {
+      // Merge with Drive (covers first-connect and multi-device), then push merged result
+      const merged = await mergeAndPushJournal(doc).catch(() => doc)
+      await putJournal(merged)
+      set({ currentJournal: merged })
+      return merged
+    }
+    await putJournal(doc)
     set({ currentJournal: doc })
     return doc
   },
@@ -194,10 +204,11 @@ const useAppStore = create((set, get) => ({
   runInitialSync: async () => {
     set({ syncing: true })
     try {
-      await initialSync()
-      const [tasks, notes, config] = await Promise.all([
-        getTasks(), getNotes(), getConfig(),
-      ])
+      const result = await initialSync()
+      // mergeWithDrive returns merged data directly; fall back to reading IDB if needed
+      const [tasks, notes, config] = result
+        ? [result.mergedTasks, result.mergedNotes, result.mergedConfig]
+        : await Promise.all([getTasks(), getNotes(), getConfig()])
       set({ tasks, notes, config: config || {}, lastSync: Date.now() })
     } catch (e) {
       console.error('Sync failed', e)

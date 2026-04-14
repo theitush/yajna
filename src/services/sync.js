@@ -1,21 +1,99 @@
 /**
  * Sync service: bidirectional sync between IndexedDB and Google Drive.
- * Strategy: Drive is source of truth on load; local writes queue and flush when online.
+ * Strategy: merge local + Drive on connect (newer updatedAt wins per id);
+ * local writes push to Drive immediately when online.
  */
 import {
-  getTasks, putTasks, getNotes, putNotes, getJournal, putJournal, getConfig, putConfig,
-  getMeta, putMeta,
+  getTasks, putTasks, getNotes, putNotes, putJournal, getConfig, putConfig,
+  putMeta,
 } from './db'
 import {
-  getDriveFileIds, initDriveStructure, readJsonFile, writeJsonFile,
+  getDriveFileIds, readJsonFile, writeJsonFile,
   findFile, writeJsonFile as driveWrite,
 } from './drive'
 
-const PENDING_KEY = 'pending_sync'
 const LAST_SYNC_KEY = 'last_sync'
 
 /**
- * Pull all data from Drive into IndexedDB
+ * Merge two arrays by id. For items present on both sides, newer updatedAt wins.
+ * Items only on one side are always kept.
+ */
+function mergeById(local, remote) {
+  const map = new Map()
+  for (const item of local) map.set(item.id, item)
+  for (const item of remote) {
+    const existing = map.get(item.id)
+    if (!existing) {
+      map.set(item.id, item)
+    } else {
+      const localTime = new Date(existing.updatedAt || existing.createdAt || 0).getTime()
+      const remoteTime = new Date(item.updatedAt || item.createdAt || 0).getTime()
+      if (remoteTime > localTime) map.set(item.id, item)
+    }
+  }
+  return Array.from(map.values())
+}
+
+/**
+ * Merge two journal week docs. Per date entry, newer updatedAt wins.
+ */
+function mergeJournalDocs(local, remote) {
+  const entries = { ...(local?.entries || {}) }
+  for (const [date, remoteEntry] of Object.entries(remote?.entries || {})) {
+    const localEntry = entries[date]
+    if (!localEntry) {
+      entries[date] = remoteEntry
+    } else {
+      const localTime = new Date(localEntry.updatedAt || localEntry.createdAt || 0).getTime()
+      const remoteTime = new Date(remoteEntry.updatedAt || remoteEntry.createdAt || 0).getTime()
+      if (remoteTime > localTime) entries[date] = remoteEntry
+    }
+  }
+  return { ...remote, entries }
+}
+
+/**
+ * Merge Drive data with local IndexedDB data, write result back to both.
+ */
+export async function mergeWithDrive() {
+  const ids = await getDriveFileIds()
+  if (!ids) return
+
+  const [remoteTasks, remoteNotes, remoteConfig] = await Promise.all([
+    readJsonFile(ids.tasksFileId),
+    readJsonFile(ids.notesFileId),
+    readJsonFile(ids.configFileId),
+  ])
+
+  const [localTasks, localNotes, localConfig] = await Promise.all([
+    getTasks(),
+    getNotes(),
+    getConfig(),
+  ])
+
+  const mergedTasks = mergeById(localTasks, Array.isArray(remoteTasks) ? remoteTasks : [])
+  const mergedNotes = mergeById(localNotes, Array.isArray(remoteNotes) ? remoteNotes : [])
+  const mergedConfig = { ...(localConfig || {}), ...(remoteConfig || {}) }
+
+  // Write merged data back to local and Drive
+  await Promise.all([
+    putTasks(mergedTasks),
+    putNotes(mergedNotes),
+    putConfig(mergedConfig),
+  ])
+  await Promise.all([
+    writeJsonFile(ids.rootId, 'tasks.json', mergedTasks, ids.tasksFileId),
+    writeJsonFile(ids.rootId, 'notes.json', mergedNotes, ids.notesFileId),
+    writeJsonFile(ids.rootId, 'config.json', mergedConfig, ids.configFileId),
+  ])
+
+  await putMeta(LAST_SYNC_KEY, Date.now())
+  return { mergedTasks, mergedNotes, mergedConfig }
+}
+
+/**
+ * Pull a fresh copy from Drive (used for subsequent syncs, not first connect).
+ * Does NOT merge — assumes Drive is authoritative after initial merge.
  */
 export async function pullFromDrive() {
   const ids = await getDriveFileIds()
@@ -92,8 +170,25 @@ export async function pullJournal(week) {
 }
 
 /**
- * Full initial sync: pull everything from Drive
+ * Initial sync on connect: merge local data with Drive, then push merged result.
  */
 export async function initialSync() {
-  await pullFromDrive()
+  return mergeWithDrive()
+}
+
+/**
+ * Merge a single journal week doc with Drive and push merged result.
+ */
+export async function mergeAndPushJournal(weekDoc) {
+  const ids = await getDriveFileIds()
+  if (!ids) return weekDoc
+  const filename = `${weekDoc.week}.json`
+  const existingId = await findFile(ids.journalsFolderId, filename)
+  let merged = weekDoc
+  if (existingId) {
+    const remote = await readJsonFile(existingId)
+    if (remote) merged = mergeJournalDocs(weekDoc, remote)
+  }
+  await driveWrite(ids.journalsFolderId, filename, merged, existingId)
+  return merged
 }
