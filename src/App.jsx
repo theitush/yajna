@@ -10,7 +10,6 @@ import { weekKey, today } from './lib/dates'
 
 import LoginScreen from './components/auth/LoginScreen'
 import Sidebar from './components/layout/Sidebar'
-import BottomNav from './components/layout/BottomNav'
 
 import TodayPage from './pages/TodayPage'
 import JournalPage from './pages/JournalPage'
@@ -144,7 +143,6 @@ export default function App() {
             <Route path="/settings" element={<SettingsPage />} />
           </Routes>
         </main>
-        <BottomNav />
       </div>
     </HashRouter>
   )
