@@ -72,8 +72,9 @@ export async function clearStoredToken() {
 
 /**
  * Initiate OAuth token request. Returns a promise that resolves with the access token.
+ * @param {boolean} selectAccount - If true, always show account chooser (use for manual sign-in)
  */
-export function requestToken() {
+export function requestToken(selectAccount = false) {
   return new Promise((resolve, reject) => {
     // Always create a fresh client so the callback captures the current promise's resolve/reject
     tokenClient = window.google.accounts.oauth2.initTokenClient({
@@ -91,7 +92,10 @@ export function requestToken() {
         reject(new Error(err?.type || 'token_request_failed'))
       },
     })
-    tokenClient.requestAccessToken({ prompt: '' })
+    // Use 'select_account' for manual sign-in so Google shows the account picker
+    // and doesn't silently retry via setTimeout loops when the popup is closed.
+    // Use '' (empty) only for silent token refresh where we know the account.
+    tokenClient.requestAccessToken({ prompt: selectAccount ? 'select_account' : '' })
   })
 }
 
