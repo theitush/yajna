@@ -93,12 +93,20 @@ export function requestToken(selectAccount = false) {
           .catch(() => resolve(response.access_token))
       },
       error_callback: (err) => {
-        // GIS sometimes fires error_callback with popup_closed even after a
-        // successful auth (e.g. after 2FA). Ignore if the success callback
-        // already resolved the promise.
         if (settled) return
-        tokenClient = null
-        reject(new Error(err?.type || 'token_request_failed'))
+        const type = err?.type || 'token_request_failed'
+        // GIS fires popup_closed before the OAuth response arrives when 2FA is
+        // involved. Wait a tick to see if the success callback fires first.
+        if (type === 'popup_closed') {
+          setTimeout(() => {
+            if (settled) return
+            tokenClient = null
+            reject(new Error(type))
+          }, 3000)
+        } else {
+          tokenClient = null
+          reject(new Error(type))
+        }
       },
     })
     // Use 'select_account' for manual sign-in so Google shows the account picker
