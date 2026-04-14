@@ -17,6 +17,8 @@ export default function TasksPanel() {
   const overIdRef = useRef(null)
   const itemEls = useRef({})
   const offsetRef = useRef({ x: 0, y: 0 })
+  const pendingDragRef = useRef(null) // { id, startX, startY } — drag not yet committed
+  const DRAG_THRESHOLD = 5 // px movement before drag starts
 
   const { today, yesterday } = (() => {
     const t = new Date().toISOString().slice(0, 10)
@@ -65,12 +67,45 @@ export default function TasksPanel() {
     })
   }, [todayTasks])
 
-  // Follow the mouse with the clone
+  const handleMouseDown = (e, id) => {
+    const tag = e.target.tagName.toLowerCase()
+    if (tag === 'button' || tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return
+
+    const el = itemEls.current[id]
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY
+    offsetRef.current = { x: clientX - rect.left, y: clientY - rect.top }
+    pendingDragRef.current = { id, startX: clientX, startY: clientY, rect }
+  }
+
+  // Follow the mouse with the clone (or activate drag from pending)
   useEffect(() => {
-    if (!draggingId) return
     const onMove = (e) => {
       const clientX = e.touches ? e.touches[0].clientX : e.clientX
       const clientY = e.touches ? e.touches[0].clientY : e.clientY
+
+      // Check if we should activate a pending drag
+      if (!draggingIdRef.current && pendingDragRef.current) {
+        const { id, startX, startY, rect } = pendingDragRef.current
+        const dx = Math.abs(clientX - startX)
+        const dy = Math.abs(clientY - startY)
+        if (dx > DRAG_THRESHOLD || dy > DRAG_THRESHOLD) {
+          draggingIdRef.current = id
+          overIdRef.current = id
+          setDraggingId(id)
+          setCloneStyle({
+            width: rect.width,
+            left: clientX - offsetRef.current.x,
+            top: clientY - offsetRef.current.y,
+          })
+        }
+        return
+      }
+
+      if (!draggingIdRef.current) return
+
       setCloneStyle(s => s ? {
         ...s,
         left: clientX - offsetRef.current.x,
@@ -97,29 +132,10 @@ export default function TasksPanel() {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('touchmove', onMove)
     }
-  }, [draggingId, applyTransforms])
-
-  const handleMouseDown = (e, id) => {
-    const tag = e.target.tagName.toLowerCase()
-    if (tag === 'button' || tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return
-    e.preventDefault()
-
-    const el = itemEls.current[id]
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    offsetRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top }
-
-    draggingIdRef.current = id
-    overIdRef.current = id
-    setDraggingId(id)
-    setCloneStyle({
-      width: rect.width,
-      left: e.clientX - offsetRef.current.x,
-      top: e.clientY - offsetRef.current.y,
-    })
-  }
+  }, [applyTransforms])
 
   const commitDrop = useCallback(() => {
+    pendingDragRef.current = null
     const from = draggingIdRef.current
     const to = overIdRef.current
     clearTransforms()
@@ -141,14 +157,13 @@ export default function TasksPanel() {
   }, [todayTasks, reorderTasks, clearTransforms])
 
   useEffect(() => {
-    if (!draggingId) return
     window.addEventListener('mouseup', commitDrop)
     window.addEventListener('touchend', commitDrop)
     return () => {
       window.removeEventListener('mouseup', commitDrop)
       window.removeEventListener('touchend', commitDrop)
     }
-  }, [draggingId, commitDrop])
+  }, [commitDrop])
 
   const handleAdd = async () => {
     if (!title.trim()) return
@@ -294,8 +309,9 @@ export default function TasksPanel() {
             key={task.id}
             ref={el => { itemEls.current[task.id] = el }}
             onMouseDown={e => handleMouseDown(e, task.id)}
+            onTouchStart={e => handleMouseDown(e, task.id)}
             style={{
-              cursor: draggingId === task.id ? 'grabbing' : 'grab',
+              cursor: draggingId === task.id ? 'grabbing' : 'default',
               opacity: draggingId === task.id ? 0.25 : 1,
               userSelect: 'none',
               willChange: 'transform',

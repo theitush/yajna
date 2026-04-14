@@ -7,6 +7,7 @@ export default function TaskCard({ task }) {
   const [showReschedule, setShowReschedule] = useState(false)
   const [scheduleDate, setScheduleDate] = useState('')
   const [expanded, setExpanded] = useState(false)
+  const [editingTitle, setEditingTitle] = useState(false)
   const [editExplanation, setEditExplanation] = useState(task.explanation || '')
   const [editFeedback, setEditFeedback] = useState(task.feedback || '')
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -27,6 +28,7 @@ export default function TaskCard({ task }) {
         feedback: editFeedback.trim(),
       })
       setExpanded(false)
+      setEditingTitle(false)
       setShowReschedule(false)
       setConfirmDelete(false)
     }
@@ -53,6 +55,7 @@ export default function TaskCard({ task }) {
     if (val && val !== task.title) {
       updateTask(task.id, { title: val })
     }
+    setEditingTitle(false)
   }
 
   const handleTitleKey = (e) => {
@@ -60,6 +63,25 @@ export default function TaskCard({ task }) {
       e.preventDefault()
       titleRef.current?.blur()
     }
+    if (e.key === 'Escape') {
+      titleRef.current?.blur()
+    }
+  }
+
+  const handleTitleDoubleClick = (e) => {
+    e.stopPropagation()
+    setEditingTitle(true)
+    setTimeout(() => {
+      if (titleRef.current) {
+        titleRef.current.focus()
+        const range = document.createRange()
+        const sel = window.getSelection()
+        range.selectNodeContents(titleRef.current)
+        range.collapse(false)
+        sel.removeAllRanges()
+        sel.addRange(range)
+      }
+    }, 0)
   }
 
   const handleSchedule = () => {
@@ -79,17 +101,6 @@ export default function TaskCard({ task }) {
 
   const openExpanded = () => {
     setExpanded(true)
-    setTimeout(() => {
-      if (titleRef.current) {
-        titleRef.current.focus()
-        const range = document.createRange()
-        const sel = window.getSelection()
-        range.selectNodeContents(titleRef.current)
-        range.collapse(false)
-        sel.removeAllRanges()
-        sel.addRange(range)
-      }
-    }, 0)
   }
 
   const cardStyle = {
@@ -120,7 +131,17 @@ export default function TaskCard({ task }) {
   return (
     <div ref={cardRef} style={cardStyle}>
       {/* Header row */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '14px 16px', paddingBottom: expanded || task.explanation || task.feedback ? '8px' : '14px' }}>
+      <div
+        onClick={(e) => {
+          // Single click on the header (not on interactive elements) expands if there's content
+          const tag = e.target.tagName.toLowerCase()
+          if (tag === 'button' || e.target.isContentEditable || editingTitle) return
+          if (!expanded && (task.explanation || task.feedback)) {
+            setExpanded(true)
+          }
+        }}
+        style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '14px 16px', paddingBottom: expanded || task.explanation || task.feedback ? '8px' : '14px' }}
+      >
         {/* Checkmark */}
         <button
           onClick={handleCheckmark}
@@ -147,11 +168,11 @@ export default function TaskCard({ task }) {
         {/* Title */}
         <span
           ref={titleRef}
-          contentEditable
+          contentEditable={editingTitle ? 'true' : 'false'}
           suppressContentEditableWarning
-          onFocus={() => setExpanded(true)}
           onBlur={handleTitleBlur}
           onKeyDown={handleTitleKey}
+          onDoubleClick={handleTitleDoubleClick}
           style={{
             flex: 1,
             fontSize: '14px',
@@ -159,8 +180,12 @@ export default function TaskCard({ task }) {
             color: isDone ? 'var(--green-800)' : 'var(--text-primary)',
             lineHeight: 1.4,
             outline: 'none',
-            cursor: 'text',
+            cursor: editingTitle ? 'text' : 'default',
             textDecoration: isDone ? 'line-through' : 'none',
+            borderRadius: editingTitle ? '4px' : 'none',
+            boxShadow: editingTitle ? '0 0 0 2px var(--accent)' : 'none',
+            padding: editingTitle ? '1px 3px' : '0',
+            margin: editingTitle ? '-1px -3px' : '0',
           }}
         >
           {task.title}
