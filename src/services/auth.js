@@ -2,23 +2,9 @@ import { GOOGLE_CLIENT_ID, SCOPES } from '../lib/constants'
 import { getMeta, putMeta } from './db'
 
 const TOKEN_KEY = 'goog_token'
+const AUTH_STATE_KEY = 'goog_auth_state'
 
-let tokenClient = null
 let accessToken = null
-
-/**
- * Load the Google Identity Services script dynamically
- */
-export function loadGIS() {
-  return new Promise((resolve, reject) => {
-    if (window.google?.accounts) return resolve()
-    const script = document.createElement('script')
-    script.src = 'https://accounts.google.com/gsi/client'
-    script.onload = resolve
-    script.onerror = reject
-    document.head.appendChild(script)
-  })
-}
 
 /**
  * Load the GAPI client script
@@ -70,40 +56,63 @@ export async function clearStoredToken() {
   await putMeta(TOKEN_KEY, null)
 }
 
+function getRedirectUri() {
+  // Strip hash and query so the redirect_uri is deterministic and matches
+  // what we register in the Google Cloud Console.
+  return window.location.origin + window.location.pathname
+}
+
+function randomState() {
+  const arr = new Uint8Array(16)
+  crypto.getRandomValues(arr)
+  return Array.from(arr, (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
 /**
- * Initiate OAuth token request. Returns a promise that resolves with the access token.
- * @param {boolean} selectAccount - If true, always show account chooser (use for manual sign-in)
+ * Redirect the whole tab to Google's OAuth endpoint (implicit flow).
+ * On successful auth Google redirects back to redirect_uri with the access
+ * token in the URL fragment. This avoids the popup/COOP issues that break
+ * the GIS popup flow on cross-origin hosts like GitHub Pages.
  */
-export function requestToken() {
-  return new Promise((resolve, reject) => {
-    // Always create a fresh client so the callback captures the current promise's resolve/reject
-    let settled = false
-    tokenClient = window.google.accounts.oauth2.initTokenClient({
-      client_id: GOOGLE_CLIENT_ID,
-      scope: SCOPES,
-      callback: (response) => {
-        if (response.error) {
-          settled = true
-          return reject(new Error(response.error))
-        }
-        settled = true
-        accessToken = response.access_token
-        storeToken(response.access_token, response.expires_in)
-          .then(() => resolve(response.access_token))
-          .catch(() => resolve(response.access_token))
-      },
-      error_callback: (err) => {
-        if (settled) return
-        tokenClient = null
-        reject(new Error(err?.type || 'token_request_failed'))
-      },
-    })
-    // Do NOT use 'select_account' prompt — it triggers GIS relay mode on cross-origin
-    // pages (e.g. GitHub Pages) which breaks 2FA: GIS fires popup_closed before the
-    // token arrives and the success callback never fires. Use '' so GIS handles the
-    // flow natively; it will show an account picker automatically when needed.
-    tokenClient.requestAccessToken({ prompt: '' })
+export async function startAuthRedirect() {
+  const state = randomState()
+  sessionStorage.setItem(AUTH_STATE_KEY, state)
+  const params = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: getRedirectUri(),
+    response_type: 'token',
+    scope: SCOPES,
+    include_granted_scopes: 'true',
+    state,
+    prompt: 'consent',
   })
+  window.location.assign(`https://accounts.google.com/o/oauth2/v2/auth?${params}`)
+}
+
+/**
+ * If the current URL contains an OAuth redirect response, extract the token,
+ * validate state, strip the hash, and return the token. Otherwise return null.
+ * Must run before HashRouter reads the URL, because the OAuth response uses
+ * the fragment.
+ */
+export function consumeAuthRedirect() {
+  const hash = window.location.hash
+  if (!hash || !hash.includes('access_token=')) return null
+  // The hash looks like "#access_token=...&expires_in=...&state=..."
+  const params = new URLSearchParams(hash.slice(1))
+  const token = params.get('access_token')
+  const expiresIn = parseInt(params.get('expires_in') || '3600', 10)
+  const state = params.get('state')
+  const expected = sessionStorage.getItem(AUTH_STATE_KEY)
+  sessionStorage.removeItem(AUTH_STATE_KEY)
+  // Strip the OAuth fragment so HashRouter sees a clean URL
+  history.replaceState(null, '', window.location.pathname + window.location.search)
+  if (!token) return null
+  if (!expected || state !== expected) {
+    console.warn('OAuth state mismatch — ignoring redirect response')
+    return null
+  }
+  return { token, expiresIn }
 }
 
 export function getAccessToken() {
@@ -117,10 +126,16 @@ export function setAccessToken(token) {
   }
 }
 
-export function signOut() {
+export async function signOut() {
   if (accessToken) {
-    window.google?.accounts?.oauth2?.revoke(accessToken)
+    // Best-effort revoke; don't block on it
+    try {
+      await fetch(`https://oauth2.googleapis.com/revoke?token=${accessToken}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      })
+    } catch {}
   }
   accessToken = null
-  clearStoredToken()
+  await clearStoredToken()
 }

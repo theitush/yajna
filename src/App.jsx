@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { HashRouter, Routes, Route } from 'react-router-dom'
 import useAppStore from './store/useAppStore'
-import { loadGIS, loadGAPI, initGAPI, getStoredToken, requestToken, setAccessToken } from './services/auth'
+import { loadGAPI, initGAPI, getStoredToken, startAuthRedirect, consumeAuthRedirect, storeToken, setAccessToken } from './services/auth'
 import { initDriveStructure } from './services/drive'
 import { getMeta, putMeta } from './services/db'
 import { requestStoragePersistence } from './services/storage'
@@ -30,6 +30,18 @@ export default function App() {
   useEffect(() => {
     async function bootstrap() {
       try {
+        // Handle OAuth redirect response first — must run before HashRouter
+        // reads the URL fragment, since the OAuth response uses the fragment.
+        const redirectResult = consumeAuthRedirect()
+        if (redirectResult) {
+          await loadGAPI()
+          await initGAPI()
+          await storeToken(redirectResult.token, redirectResult.expiresIn)
+          setAccessToken(redirectResult.token)
+          await finishDriveAuth()
+          return
+        }
+
         // Check if a mode was already chosen in a previous session
         const savedMode = await getMeta(MODE_KEY)
 
@@ -42,7 +54,7 @@ export default function App() {
         }
 
         if (savedMode === MODE_DRIVE && GOOGLE_CLIENT_ID) {
-          await Promise.all([loadGIS(), loadGAPI()])
+          await loadGAPI()
           await initGAPI()
           const token = await getStoredToken()
           if (token) {
@@ -55,10 +67,8 @@ export default function App() {
 
         // No saved mode or no client id configured: show login
         if (GOOGLE_CLIENT_ID) {
-          // Pre-load GIS/GAPI in the background so sign-in is faster
-          Promise.all([loadGIS(), loadGAPI()])
-            .then(() => initGAPI())
-            .catch(() => {})
+          // Pre-load GAPI in the background so post-redirect init is faster
+          loadGAPI().then(() => initGAPI()).catch(() => {})
         }
       } catch (e) {
         console.error('Bootstrap error', e)
@@ -82,26 +92,12 @@ export default function App() {
   const handleLogin = async () => {
     setLoginLoading(true)
     setInitError(null)
-    // Safety timeout: if login takes more than 60s, unblock the UI
-    const timeout = setTimeout(() => {
-      setLoginLoading(false)
-      setInitError('Sign-in timed out. Please try again.')
-    }, 60_000)
     try {
-      // Make sure GIS/GAPI are loaded (may already be if pre-loaded)
-      await Promise.all([loadGIS(), loadGAPI()])
-      await initGAPI()
-      const token = await requestToken()
-      setAccessToken(token)
-      await finishDriveAuth()
+      // Redirects the whole tab to Google; execution stops here on success.
+      await startAuthRedirect()
     } catch (e) {
       console.error('Login failed', e)
-      const msg = (e?.message === 'popup_closed_by_user' || e?.message === 'popup_closed')
-        ? 'Sign-in cancelled.'
-        : 'Sign-in failed. Please try again.'
-      setInitError(msg)
-    } finally {
-      clearTimeout(timeout)
+      setInitError('Sign-in failed. Please try again.')
       setLoginLoading(false)
     }
   }

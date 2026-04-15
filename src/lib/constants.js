@@ -1,4 +1,4 @@
-export const DRIVE_FOLDER_NAME = 'journal-app'
+export const DRIVE_FOLDER_NAME = 'yajna'
 export const DRIVE_MIME_FOLDER = 'application/vnd.google-apps.folder'
 
 export const TASK_STATUS = {
