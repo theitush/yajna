@@ -80,13 +80,16 @@ export default function TasksPage() {
               onChange={e => setTitle(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleAdd()}
               placeholder="Task title…"
+              dir="auto"
               style={inputStyle}
             />
             <textarea
               value={explanation}
               onChange={e => setExplanation(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); handleAdd() } }}
               placeholder="Explanation (optional)…"
               rows={2}
+              dir="auto"
               style={{ ...inputStyle, resize: 'none', color: 'var(--text-secondary)', fontSize: '12px' }}
             />
             <div style={{ display: 'flex', gap: '8px' }}>

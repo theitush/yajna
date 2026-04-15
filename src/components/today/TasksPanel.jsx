@@ -248,6 +248,7 @@ export default function TasksPanel() {
               onChange={e => setTitle(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleAdd()}
               placeholder="Task title…"
+              dir="auto"
               style={{
                 width: '100%', fontSize: '13px',
                 background: 'var(--bg-tertiary)',
@@ -261,8 +262,10 @@ export default function TasksPanel() {
             <textarea
               value={explanation}
               onChange={e => setExplanation(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); handleAdd() } }}
               placeholder="Explanation (optional)…"
               rows={2}
+              dir="auto"
               style={{
                 width: '100%', fontSize: '12px',
                 background: 'var(--bg-tertiary)',

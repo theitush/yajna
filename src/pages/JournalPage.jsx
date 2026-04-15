@@ -9,6 +9,7 @@ import useAppStore from '../store/useAppStore'
 import { today, weekKey, formatDate } from '../lib/dates'
 import { getJournal } from '../services/db'
 import { pullJournal } from '../services/sync'
+import { RTLExtension } from '../components/editor/RTLExtension'
 
 function buildWeekDates(week) {
   const [year, w] = week.split('-W')
@@ -55,6 +56,7 @@ function EntryEditor({ content, onSave }) {
       StarterKit,
       Placeholder.configure({ placeholder: 'Nothing written this day…' }),
       HashtagExtension,
+      RTLExtension,
     ],
     content: content || '',
     onUpdate: ({ editor }) => {

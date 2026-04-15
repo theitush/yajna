@@ -21,18 +21,29 @@ export default function TaskCard({ task }) {
     setEditFeedback(task.feedback || '')
   }, [task.explanation, task.feedback])
 
+  const commitEdits = useCallback(() => {
+    updateTask(task.id, {
+      explanation: editExplanation.trim(),
+      feedback: editFeedback.trim(),
+    })
+    setExpanded(false)
+    setEditingTitle(false)
+    setShowReschedule(false)
+    setConfirmDelete(false)
+  }, [editExplanation, editFeedback, task.id, updateTask])
+
   const handleClickOutside = useCallback((e) => {
     if (cardRef.current && !cardRef.current.contains(e.target)) {
-      updateTask(task.id, {
-        explanation: editExplanation.trim(),
-        feedback: editFeedback.trim(),
-      })
-      setExpanded(false)
-      setEditingTitle(false)
-      setShowReschedule(false)
-      setConfirmDelete(false)
+      commitEdits()
     }
-  }, [editExplanation, editFeedback, task.id, updateTask])
+  }, [commitEdits])
+
+  const handleEditKey = (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault()
+      commitEdits()
+    }
+  }
 
   useEffect(() => {
     if (expanded) {
@@ -168,6 +179,7 @@ export default function TaskCard({ task }) {
         {/* Title */}
         <span
           ref={titleRef}
+          dir="auto"
           contentEditable={editingTitle ? 'true' : 'false'}
           suppressContentEditableWarning
           onBlur={handleTitleBlur}
@@ -259,16 +271,16 @@ export default function TaskCard({ task }) {
 
       {/* Collapsed preview */}
       {!expanded && !confirmDelete && (task.explanation || task.feedback) && (
-        <button onClick={openExpanded} style={{ width: '100%', textAlign: 'left', padding: '0 16px 12px', paddingLeft: '50px', background: 'none', border: 'none', cursor: 'pointer' }}>
+        <button onClick={openExpanded} style={{ width: '100%', textAlign: 'start', padding: '0 16px 12px', paddingLeft: '50px', background: 'none', border: 'none', cursor: 'pointer' }}>
           {task.explanation && (
-            <p style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+            <p dir="auto" style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', textAlign: 'start' }}>
               {task.explanation}
             </p>
           )}
           {task.feedback && (
             <>
               <hr style={{ border: 'none', borderTop: '1px solid var(--border-light)', margin: '6px 0 4px' }} />
-              <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+              <p dir="auto" style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', textAlign: 'start' }}>
                 {task.feedback}
               </p>
             </>
@@ -282,8 +294,10 @@ export default function TaskCard({ task }) {
           <textarea
             value={editExplanation}
             onChange={e => setEditExplanation(e.target.value)}
+            onKeyDown={handleEditKey}
             rows={2}
             placeholder="Explanation…"
+            dir="auto"
             style={textareaStyle}
           />
           <div>
@@ -291,8 +305,10 @@ export default function TaskCard({ task }) {
             <textarea
               value={editFeedback}
               onChange={e => setEditFeedback(e.target.value)}
+              onKeyDown={handleEditKey}
               rows={2}
               placeholder="Feedback…"
+              dir="auto"
               style={{ ...textareaStyle, opacity: 0.8 }}
             />
           </div>
