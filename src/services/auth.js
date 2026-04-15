@@ -74,7 +74,7 @@ export async function clearStoredToken() {
  * Initiate OAuth token request. Returns a promise that resolves with the access token.
  * @param {boolean} selectAccount - If true, always show account chooser (use for manual sign-in)
  */
-export function requestToken(selectAccount = false) {
+export function requestToken() {
   return new Promise((resolve, reject) => {
     // Always create a fresh client so the callback captures the current promise's resolve/reject
     let settled = false
@@ -94,25 +94,15 @@ export function requestToken(selectAccount = false) {
       },
       error_callback: (err) => {
         if (settled) return
-        const type = err?.type || 'token_request_failed'
-        // GIS fires popup_closed before the OAuth response arrives when 2FA is
-        // involved. Wait a tick to see if the success callback fires first.
-        if (type === 'popup_closed') {
-          setTimeout(() => {
-            if (settled) return
-            tokenClient = null
-            reject(new Error(type))
-          }, 3000)
-        } else {
-          tokenClient = null
-          reject(new Error(type))
-        }
+        tokenClient = null
+        reject(new Error(err?.type || 'token_request_failed'))
       },
     })
-    // Use 'select_account' for manual sign-in so Google shows the account picker
-    // and doesn't silently retry via setTimeout loops when the popup is closed.
-    // Use '' (empty) only for silent token refresh where we know the account.
-    tokenClient.requestAccessToken({ prompt: selectAccount ? 'select_account' : '' })
+    // Do NOT use 'select_account' prompt — it triggers GIS relay mode on cross-origin
+    // pages (e.g. GitHub Pages) which breaks 2FA: GIS fires popup_closed before the
+    // token arrives and the success callback never fires. Use '' so GIS handles the
+    // flow natively; it will show an account picker automatically when needed.
+    tokenClient.requestAccessToken({ prompt: '' })
   })
 }
 

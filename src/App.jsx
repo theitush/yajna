@@ -91,7 +91,7 @@ export default function App() {
       // Make sure GIS/GAPI are loaded (may already be if pre-loaded)
       await Promise.all([loadGIS(), loadGAPI()])
       await initGAPI()
-      const token = await requestToken(true)
+      const token = await requestToken()
       setAccessToken(token)
       await finishDriveAuth()
     } catch (e) {
