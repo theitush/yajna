@@ -70,6 +70,7 @@ export default function App() {
               await loadJournal(weekKey(today()))
             } catch (e) {
               console.error('Background Drive init after redirect failed:', e)
+              setSyncStatus({ state: 'offline' })
             }
           })()
           return
@@ -125,6 +126,7 @@ export default function App() {
               handleTokenExpired()
             } catch (e) {
               console.error('Background Drive connect failed:', e)
+              setSyncStatus({ state: 'offline' })
             }
           })()
           return

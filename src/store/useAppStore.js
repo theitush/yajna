@@ -229,6 +229,7 @@ const useAppStore = create((set, get) => ({
       startSyncEngine((data) => set(data), intervalMs, () => get())
     } catch (e) {
       console.error('Sync failed', e)
+      set({ syncStatus: { state: 'offline' } })
     } finally {
       set({ syncing: false })
     }
