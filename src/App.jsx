@@ -39,12 +39,28 @@ export default function App() {
         // reads the URL fragment, since the OAuth response uses the fragment.
         const redirectResult = consumeAuthRedirect()
         if (redirectResult) {
-          await loadGAPI()
-          await initGAPI()
+          // Store token immediately — GAPI load can be slow
           await storeToken(redirectResult.token, redirectResult.expiresIn)
-          setAccessToken(redirectResult.token)
-          scheduleTokenRefresh(redirectResult.expiresIn, handleTokenExpired)
-          await finishDriveAuth()
+          await putMeta(MODE_KEY, MODE_DRIVE)
+          setMode(MODE_DRIVE)
+          await bootOffline()
+          await loadJournal(weekKey(today()))
+          setAuthenticated(true)
+
+          // Finish Drive setup in background
+          ;(async () => {
+            try {
+              await loadGAPI()
+              await initGAPI()
+              setAccessToken(redirectResult.token)
+              scheduleTokenRefresh(redirectResult.expiresIn, handleTokenExpired)
+              await initDriveStructure()
+              await runInitialSync()
+              await loadJournal(weekKey(today()))
+            } catch (e) {
+              console.error('Background Drive init after redirect failed:', e)
+            }
+          })()
           return
         }
 
@@ -60,25 +76,44 @@ export default function App() {
         }
 
         if (savedMode === MODE_DRIVE && GOOGLE_CLIENT_ID) {
-          await loadGAPI()
-          await initGAPI()
-          const token = await getStoredToken()
-          if (token) {
-            setAccessToken(token)
-            scheduleTokenRefresh(await getTokenRemainingSeconds(), handleTokenExpired)
-            await finishDriveAuth()
-            return
-          }
-          // Token expired — try silent refresh before showing login
-          const refreshed = await trySilentRefresh()
-          if (refreshed) {
-            await storeToken(refreshed.token, refreshed.expiresIn)
-            setAccessToken(refreshed.token)
-            scheduleTokenRefresh(refreshed.expiresIn, handleTokenExpired)
-            await finishDriveAuth()
-            return
-          }
-          // Silent refresh failed — fall through to login screen
+          // Show the app immediately from local data
+          setMode(MODE_DRIVE)
+          await bootOffline()
+          await loadJournal(weekKey(today()))
+          setAuthenticated(true)
+
+          // Connect to Drive in the background — app is already usable
+          ;(async () => {
+            try {
+              await loadGAPI()
+              await initGAPI()
+              const token = await getStoredToken()
+              if (token) {
+                setAccessToken(token)
+                scheduleTokenRefresh(await getTokenRemainingSeconds(), handleTokenExpired)
+                await initDriveStructure()
+                await runInitialSync()
+                await loadJournal(weekKey(today()))
+                return
+              }
+              // Token expired — try silent refresh
+              const refreshed = await trySilentRefresh()
+              if (refreshed) {
+                await storeToken(refreshed.token, refreshed.expiresIn)
+                setAccessToken(refreshed.token)
+                scheduleTokenRefresh(refreshed.expiresIn, handleTokenExpired)
+                await initDriveStructure()
+                await runInitialSync()
+                await loadJournal(weekKey(today()))
+                return
+              }
+              // Silent refresh failed — session expired
+              handleTokenExpired()
+            } catch (e) {
+              console.error('Background Drive connect failed:', e)
+            }
+          })()
+          return
         }
 
         // No saved mode or no client id configured: show login
@@ -121,15 +156,6 @@ export default function App() {
     document.addEventListener('visibilitychange', handleVisibilityChange)
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
   }, [])
-
-  async function finishDriveAuth() {
-    setMode(MODE_DRIVE)
-    await putMeta(MODE_KEY, MODE_DRIVE)
-    await initDriveStructure()
-    await runInitialSync()
-    await loadJournal(weekKey(today()))
-    setAuthenticated(true)
-  }
 
   const handleLogin = async () => {
     setLoginLoading(true)

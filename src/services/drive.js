@@ -3,6 +3,17 @@ import { getMeta, putMeta } from './db'
 
 const FOLDER_ID_KEY = 'drive_folder_id'
 const FILES_KEY = 'drive_files'
+const API_TIMEOUT_MS = 15_000
+
+/** Wrap a promise with a timeout so Drive API calls can't hang forever. */
+function withTimeout(promise, ms = API_TIMEOUT_MS) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Drive API call timed out')), ms)
+    ),
+  ])
+}
 
 /**
  * Find or create the app root folder in Drive
@@ -12,11 +23,11 @@ export async function getOrCreateAppFolder() {
   if (cached) return cached
 
   // Search for existing folder
-  const res = await window.gapi.client.drive.files.list({
+  const res = await withTimeout(window.gapi.client.drive.files.list({
     q: `name='${DRIVE_FOLDER_NAME}' and mimeType='${DRIVE_MIME_FOLDER}' and trashed=false`,
     fields: 'files(id)',
     spaces: 'drive',
-  })
+  }))
 
   if (res.result.files.length > 0) {
     const id = res.result.files[0].id
@@ -25,13 +36,13 @@ export async function getOrCreateAppFolder() {
   }
 
   // Create folder
-  const created = await window.gapi.client.drive.files.create({
+  const created = await withTimeout(window.gapi.client.drive.files.create({
     resource: {
       name: DRIVE_FOLDER_NAME,
       mimeType: DRIVE_MIME_FOLDER,
     },
     fields: 'id',
-  })
+  }))
   const id = created.result.id
   await putMeta(FOLDER_ID_KEY, id)
   return id
@@ -41,20 +52,20 @@ export async function getOrCreateAppFolder() {
  * Get or create a subfolder inside the app folder
  */
 export async function getOrCreateSubfolder(parentId, name) {
-  const res = await window.gapi.client.drive.files.list({
+  const res = await withTimeout(window.gapi.client.drive.files.list({
     q: `name='${name}' and mimeType='${DRIVE_MIME_FOLDER}' and '${parentId}' in parents and trashed=false`,
     fields: 'files(id)',
-  })
+  }))
   if (res.result.files.length > 0) return res.result.files[0].id
 
-  const created = await window.gapi.client.drive.files.create({
+  const created = await withTimeout(window.gapi.client.drive.files.create({
     resource: {
       name,
       mimeType: DRIVE_MIME_FOLDER,
       parents: [parentId],
     },
     fields: 'id',
-  })
+  }))
   return created.result.id
 }
 
@@ -62,10 +73,10 @@ export async function getOrCreateSubfolder(parentId, name) {
  * Find a file by name in a folder
  */
 export async function findFile(parentId, name) {
-  const res = await window.gapi.client.drive.files.list({
+  const res = await withTimeout(window.gapi.client.drive.files.list({
     q: `name='${name}' and '${parentId}' in parents and trashed=false`,
     fields: 'files(id)',
-  })
+  }))
   return res.result.files[0]?.id || null
 }
 
@@ -73,10 +84,10 @@ export async function findFile(parentId, name) {
  * Read a JSON file from Drive
  */
 export async function readJsonFile(fileId) {
-  const res = await window.gapi.client.drive.files.get({
+  const res = await withTimeout(window.gapi.client.drive.files.get({
     fileId,
     alt: 'media',
-  })
+  }))
   if (typeof res.body === 'string') {
     return JSON.parse(res.body)
   }
