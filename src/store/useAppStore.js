@@ -8,6 +8,7 @@ import {
   getJournal, putJournal, getConfig, putConfig,
 } from '../services/db'
 import { pushTasks, pushNotes, pushJournal, pushConfig, initialSync, mergeAndPushJournal } from '../services/sync'
+import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, getSyncStatus, retryNow } from '../services/syncEngine'
 
 const useAppStore = create((set, get) => ({
   // Auth / mode
@@ -46,7 +47,7 @@ const useAppStore = create((set, get) => ({
     }
     await putTask(task)
     set(s => ({ tasks: [...s.tasks, task] }))
-    if (get().mode !== MODE_OFFLINE) pushTasks().catch(console.error)
+    if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
     return task
   },
   updateTask: async (id, updates) => {
@@ -56,7 +57,7 @@ const useAppStore = create((set, get) => ({
     const updated = { ...task, ...updates, updatedAt: new Date().toISOString() }
     await putTask(updated)
     set(s => ({ tasks: s.tasks.map(t => t.id === id ? updated : t) }))
-    if (get().mode !== MODE_OFFLINE) pushTasks().catch(console.error)
+    if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
   },
   markTaskDone: async (id) => {
     await get().updateTask(id, { status: 'done', doneDate: today() })
@@ -79,7 +80,7 @@ const useAppStore = create((set, get) => ({
   deleteTask: async (id) => {
     await dbDeleteTask(id)
     set(s => ({ tasks: s.tasks.filter(t => t.id !== id) }))
-    if (get().mode !== MODE_OFFLINE) pushTasks().catch(console.error)
+    if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
   },
   reorderTasks: (orderedIds) => {
     const tasks = get().tasks
@@ -90,7 +91,7 @@ const useAppStore = create((set, get) => ({
     })
     set({ tasks: updated })
     putTasks(updated).then(() => {
-      if (get().mode !== MODE_OFFLINE) pushTasks().catch(console.error)
+      if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
     }).catch(console.error)
   },
 
@@ -113,7 +114,7 @@ const useAppStore = create((set, get) => ({
     }
     await putNote(note)
     set(s => ({ notes: [...s.notes, note] }))
-    if (get().mode !== MODE_OFFLINE) pushNotes().catch(console.error)
+    if (get().mode !== MODE_OFFLINE) withRetry(pushNotes)()
     return note
   },
   updateNote: async (id, updates) => {
@@ -129,12 +130,12 @@ const useAppStore = create((set, get) => ({
     const updated = { ...note, ...updates, title, updatedAt: new Date().toISOString() }
     await putNote(updated)
     set(s => ({ notes: s.notes.map(n => n.id === id ? updated : n) }))
-    if (get().mode !== MODE_OFFLINE) pushNotes().catch(console.error)
+    if (get().mode !== MODE_OFFLINE) withRetry(pushNotes)()
   },
   deleteNote: async (id) => {
     await dbDeleteNote(id)
     set(s => ({ notes: s.notes.filter(n => n.id !== id) }))
-    if (get().mode !== MODE_OFFLINE) pushNotes().catch(console.error)
+    if (get().mode !== MODE_OFFLINE) withRetry(pushNotes)()
   },
 
   // Journals
@@ -182,7 +183,7 @@ const useAppStore = create((set, get) => ({
     }
     await putJournal(updated)
     set({ currentJournal: updated })
-    if (get().mode !== MODE_OFFLINE) pushJournal(updated).catch(console.error)
+    if (get().mode !== MODE_OFFLINE) withRetry(() => pushJournal(updated))()
   },
 
   // Config
@@ -195,21 +196,28 @@ const useAppStore = create((set, get) => ({
     const config = { ...get().config, ...updates }
     await putConfig(config)
     set({ config })
-    if (get().mode !== MODE_OFFLINE) pushConfig().catch(console.error)
+    if (get().mode !== MODE_OFFLINE) withRetry(pushConfig)()
   },
 
   // Sync (Drive mode only)
   syncing: false,
   lastSync: null,
+  syncStatus: { state: 'offline' }, // { state: 'synced'|'syncing'|'offline'|'waiting', retryIn?: number }
+  setSyncStatus: (s) => set({ syncStatus: s, syncing: s.state === 'syncing' }),
   runInitialSync: async () => {
     set({ syncing: true })
     try {
       const result = await initialSync()
-      // mergeWithDrive returns merged data directly; fall back to reading IDB if needed
       const [tasks, notes, config] = result
         ? [result.mergedTasks, result.mergedNotes, result.mergedConfig]
         : await Promise.all([getTasks(), getNotes(), getConfig()])
       set({ tasks, notes, config: config || {}, lastSync: Date.now() })
+
+      // Start the sync engine for continuous polling + auto-reconnect
+      onSyncStatus((s) => {
+        useAppStore.getState().setSyncStatus(s)
+      })
+      startSyncEngine((data) => set(data))
     } catch (e) {
       console.error('Sync failed', e)
     } finally {
@@ -226,4 +234,5 @@ const useAppStore = create((set, get) => ({
   },
 }))
 
+export { retryNow, stopSyncEngine }
 export default useAppStore

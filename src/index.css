@@ -17,6 +17,7 @@
   --green-600: #34D399;
   --green-700: #6EE7B7;
   --green-800: #A7F3D0;
+  --yellow-500: #eab308;
   --font-body: 'DM Sans', system-ui, sans-serif;
   --font-display: 'Instrument Serif', serif;
   color-scheme: dark;
@@ -112,6 +113,12 @@ body {
    the element also has an inline display style (inline styles beat Tailwind). */
 @media (min-width: 768px) {
   .mobile-only { display: none !important; }
+}
+
+/* Sync status pulse */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
 
 /* Scrollbar */

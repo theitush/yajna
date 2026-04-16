@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import useAppStore from '../../store/useAppStore'
+import useAppStore, { retryNow } from '../../store/useAppStore'
 import { putMeta } from '../../services/db'
 import { MODE_KEY, MODE_OFFLINE } from '../../lib/constants'
 
@@ -10,7 +10,26 @@ const items = [
   { to: '/tasks', label: 'Todos', icon: CheckIcon },
 ]
 
-function SidebarContent({ onNav, isOnline, syncing, handleConnectDrive }) {
+function statusDot(syncStatus) {
+  switch (syncStatus.state) {
+    case 'synced': return 'var(--green-500)'
+    case 'syncing': return 'var(--accent)'
+    case 'waiting': return 'var(--yellow-500, #eab308)'
+    default: return 'var(--border-mid)'
+  }
+}
+
+function statusLabel(syncStatus) {
+  switch (syncStatus.state) {
+    case 'synced': return 'synced'
+    case 'syncing': return 'syncing\u2026'
+    case 'waiting': return `retrying in ${syncStatus.retryIn}s`
+    default: return 'offline'
+  }
+}
+
+function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
+  const isClickable = syncStatus.state === 'waiting' || syncStatus.state === 'offline'
   return (
     <>
       <div style={{ padding: '20px 20px 16px', borderBottom: '1px solid var(--border-light)' }}>
@@ -23,23 +42,27 @@ function SidebarContent({ onNav, isOnline, syncing, handleConnectDrive }) {
         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px', letterSpacing: '0.3px' }}>
           journal · notes · todos
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginTop: '6px' }}>
+        <div
+          onClick={isClickable ? (syncStatus.state === 'offline' ? handleConnectDrive : retryNow) : undefined}
+          title={isClickable ? 'Click to retry now' : undefined}
+          style={{
+            display: 'flex', alignItems: 'center', gap: '5px', marginTop: '6px',
+            cursor: isClickable ? 'pointer' : 'default',
+            userSelect: 'none',
+          }}
+        >
           <span style={{
             width: 6, height: 6, borderRadius: '50%',
-            background: isOnline ? 'var(--green-500)' : 'var(--border-mid)',
+            background: statusDot(syncStatus),
             display: 'inline-block',
+            ...(syncStatus.state === 'syncing' ? { animation: 'pulse 1.5s ease-in-out infinite' } : {}),
           }} />
-          <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-            {syncing ? 'syncing…' : isOnline ? 'online' : 'offline'}
+          <span style={{
+            fontSize: '11px',
+            color: syncStatus.state === 'waiting' ? 'var(--yellow-500, #eab308)' : 'var(--text-tertiary)',
+          }}>
+            {statusLabel(syncStatus)}
           </span>
-          {!isOnline && (
-            <button onClick={handleConnectDrive} title="Connect Google Drive" style={{
-              marginLeft: '2px', padding: '1px 4px', fontSize: '10px',
-              color: 'var(--accent)', background: 'transparent',
-              border: '1px solid var(--accent)', borderRadius: '3px',
-              cursor: 'pointer', lineHeight: 1.4, fontFamily: 'var(--font-body)',
-            }}>connect</button>
-          )}
         </div>
       </div>
 
@@ -83,17 +106,19 @@ function SidebarContent({ onNav, isOnline, syncing, handleConnectDrive }) {
 }
 
 export default function Sidebar({ open, onClose }) {
-  const syncing = useAppStore(s => s.syncing)
+  const syncStatus = useAppStore(s => s.syncStatus)
   const mode = useAppStore(s => s.mode)
   const setAuthenticated = useAppStore(s => s.setAuthenticated)
-  const isOnline = mode !== MODE_OFFLINE
 
   const handleConnectDrive = async () => {
     await putMeta(MODE_KEY, null)
     setAuthenticated(false)
   }
 
-  const props = { isOnline, syncing, handleConnectDrive }
+  // If in offline mode (user chose offline), always show offline
+  const effectiveStatus = mode === MODE_OFFLINE ? { state: 'offline' } : syncStatus
+
+  const props = { syncStatus: effectiveStatus, handleConnectDrive }
 
   return (
     <>

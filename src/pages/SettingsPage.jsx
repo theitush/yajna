@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import useAppStore from '../store/useAppStore'
+import useAppStore, { stopSyncEngine } from '../store/useAppStore'
 import { signOut } from '../services/auth'
 import { getStorageEstimate, getStoragePersistence, requestStoragePersistence, exportData } from '../services/storage'
 import { getMeta, putMeta } from '../services/db'
@@ -79,6 +79,7 @@ export default function SettingsPage() {
   }
 
   const handleSignOut = async () => {
+    stopSyncEngine()
     signOut()
     await putMeta(MODE_KEY, null)
     setAuthenticated(false)
