@@ -15,9 +15,17 @@ const useAppStore = create((set, get) => ({
   isAuthenticated: false,
   isInitializing: true,
   mode: null, // 'drive' | 'offline'
+  userEmail: null,
   setAuthenticated: (v) => set({ isAuthenticated: v }),
   setInitializing: (v) => set({ isInitializing: v }),
   setMode: (mode) => set({ mode }),
+  fetchUserEmail: async () => {
+    try {
+      const res = await window.gapi.client.request({ path: 'https://www.googleapis.com/oauth2/v3/userinfo' })
+      const email = res.result?.email || null
+      if (email) set({ userEmail: email })
+    } catch {}
+  },
 
   // Helper: should we push to Drive?
   get driveEnabled() {

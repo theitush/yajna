@@ -77,6 +77,7 @@ export default function SettingsPage() {
   const updateConfig = useAppStore(s => s.updateConfig)
   const setAuthenticated = useAppStore(s => s.setAuthenticated)
   const mode = useAppStore(s => s.mode)
+  const userEmail = useAppStore(s => s.userEmail)
   const tasks = useAppStore(s => s.tasks)
   const notes = useAppStore(s => s.notes)
   const currentJournal = useAppStore(s => s.currentJournal)
@@ -351,9 +352,10 @@ export default function SettingsPage() {
                   border: '1px solid rgba(239,68,68,0.2)',
                   padding: '8px 18px', borderRadius: '8px',
                   cursor: 'pointer', fontFamily: 'var(--font-body)',
+                  textAlign: 'left',
                 }}
               >
-                Sign out
+                Sign out{userEmail ? ` (${userEmail})` : ''}
               </button>
             </section>
           </>

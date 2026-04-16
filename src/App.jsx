@@ -21,11 +21,20 @@ export default function App() {
   const {
     isAuthenticated, isInitializing,
     setAuthenticated, setInitializing,
-    setMode, runInitialSync, bootOffline, loadJournal,
+    setMode, runInitialSync, bootOffline, loadJournal, fetchUserEmail,
   } = useAppStore()
+  const syncStatus = useAppStore(s => s.syncStatus)
+  const mode = useAppStore(s => s.mode)
   const [loginLoading, setLoginLoading] = useState(false)
   const [initError, setInitError] = useState(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  const effectiveSyncStatus = mode === MODE_OFFLINE ? { state: 'offline' } : syncStatus
+  const syncDotColor = {
+    synced: 'var(--green-500)',
+    syncing: 'var(--accent)',
+    waiting: 'var(--yellow-500, #eab308)',
+  }[effectiveSyncStatus.state] || 'var(--border-mid)'
 
   function handleTokenExpired() {
     setAuthenticated(false)
@@ -54,6 +63,7 @@ export default function App() {
               await initGAPI()
               setAccessToken(redirectResult.token)
               scheduleTokenRefresh(redirectResult.expiresIn, handleTokenExpired)
+              fetchUserEmail()
               await initDriveStructure()
               await runInitialSync()
               await loadJournal(weekKey(today()))
@@ -91,6 +101,7 @@ export default function App() {
               if (token) {
                 setAccessToken(token)
                 scheduleTokenRefresh(await getTokenRemainingSeconds(), handleTokenExpired)
+                fetchUserEmail()
                 await initDriveStructure()
                 await runInitialSync()
                 await loadJournal(weekKey(today()))
@@ -102,6 +113,7 @@ export default function App() {
                 await storeToken(refreshed.token, refreshed.expiresIn)
                 setAccessToken(refreshed.token)
                 scheduleTokenRefresh(refreshed.expiresIn, handleTokenExpired)
+                fetchUserEmail()
                 await initDriveStructure()
                 await runInitialSync()
                 await loadJournal(weekKey(today()))
@@ -235,7 +247,16 @@ export default function App() {
                 <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
               </svg>
             </button>
-            <span style={{ fontFamily: 'var(--font-display)', fontSize: '20px', fontWeight: 400, color: 'var(--text-primary)' }}>Yajna</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span style={{ fontFamily: 'var(--font-display)', fontSize: '20px', fontWeight: 400, color: 'var(--text-primary)' }}>Yajna</span>
+              <span style={{
+                width: 7, height: 7, borderRadius: '50%',
+                background: syncDotColor,
+                display: 'inline-block',
+                flexShrink: 0,
+                ...(effectiveSyncStatus.state === 'syncing' ? { animation: 'pulse 1.5s ease-in-out infinite' } : {}),
+              }} />
+            </span>
           </div>
           <main className="flex-1 overflow-hidden flex flex-col">
             <Routes>
