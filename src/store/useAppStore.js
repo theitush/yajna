@@ -218,7 +218,7 @@ const useAppStore = create((set, get) => ({
         useAppStore.getState().setSyncStatus(s)
       })
       const intervalMs = (result?.mergedConfig?.syncInterval || 1) * 1000
-      startSyncEngine((data) => set(data), intervalMs)
+      startSyncEngine((data) => set(data), intervalMs, () => get())
     } catch (e) {
       console.error('Sync failed', e)
     } finally {

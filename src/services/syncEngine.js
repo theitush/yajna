@@ -8,8 +8,8 @@
  *   { state: 'offline' }
  *   { state: 'waiting', retryIn: <seconds remaining> }
  */
-import { getDriveFileIds, readJsonFile } from './drive'
-import { getTasks, getNotes, getConfig, putTasks, putNotes, putConfig } from './db'
+import { getDriveFileIds, readJsonFile, findFile } from './drive'
+import { getTasks, getNotes, getConfig, putTasks, putNotes, putConfig, putJournal } from './db'
 import { getStoredToken } from './auth'
 
 const DEFAULT_POLL_INTERVAL = 1000  // 1 second default
@@ -28,6 +28,7 @@ let running = false
 let pendingPush = null
 let lastRemoteHash = null
 let _storeSetter = null
+let _storeGetter = null
 
 function setStatus(s) {
   // Deep compare for waiting state
@@ -48,10 +49,11 @@ export function onSyncStatus(fn) {
 /**
  * Start the sync engine. Call after initial sync is done.
  */
-export function startSyncEngine(storeSetter, intervalMs) {
+export function startSyncEngine(storeSetter, intervalMs, storeGetter) {
   if (running) return
   running = true
   _storeSetter = storeSetter
+  _storeGetter = storeGetter || null
   pollIntervalMs = intervalMs || DEFAULT_POLL_INTERVAL
   retryCount = 0
   lastRemoteHash = null
@@ -182,12 +184,33 @@ async function pollRemote(storeSetter) {
       putConfig(config || {}),
     ])
 
+    // Pull the current journal week if one is loaded
+    let updatedJournal = undefined
+    if (ids.journalsFolderId && _storeGetter) {
+      const currentJournal = _storeGetter()?.currentJournal
+      if (currentJournal?.week) {
+        const filename = `${currentJournal.week}.json`
+        const fileId = await findFile(ids.journalsFolderId, filename)
+        if (fileId) {
+          const doc = await readJsonFile(fileId)
+          if (doc) {
+            await putJournal(doc)
+            updatedJournal = doc
+          }
+        }
+      }
+    }
+
     if (storeSetter) {
-      storeSetter({
+      const update = {
         tasks: Array.isArray(tasks) ? tasks : [],
         notes: Array.isArray(notes) ? notes : [],
         config: config || {},
-      })
+      }
+      if (updatedJournal !== undefined) {
+        update.currentJournal = updatedJournal
+      }
+      storeSetter(update)
     }
 
     lastRemoteHash = hash
@@ -205,6 +228,8 @@ async function getRemoteHash(ids) {
   if (!token) return null
 
   const fileIds = [ids.tasksFileId, ids.notesFileId, ids.configFileId]
+  // Include journals folder — its modifiedTime changes when any journal file is added/updated
+  if (ids.journalsFolderId) fileIds.push(ids.journalsFolderId)
   const times = await Promise.all(
     fileIds.map(async (fid) => {
       try {
