@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import useAppStore, { stopSyncEngine } from '../store/useAppStore'
+import useAppStore, { stopSyncEngine, setPollInterval } from '../store/useAppStore'
 import { signOut } from '../services/auth'
 import { getStorageEstimate, getStoragePersistence, requestStoragePersistence, exportData } from '../services/storage'
 import { getMeta, putMeta } from '../services/db'
@@ -37,6 +37,39 @@ const btnSecondaryStyle = {
   cursor: 'pointer', fontFamily: 'var(--font-body)',
   transition: 'background 0.15s',
   textAlign: 'left',
+}
+
+function SyncIntervalHelp() {
+  const [show, setShow] = useState(false)
+  return (
+    <span style={{ position: 'relative', display: 'inline-block' }}>
+      <button
+        onClick={() => setShow(!show)}
+        style={{
+          width: 18, height: 18, borderRadius: '50%', fontSize: '11px', fontWeight: 600,
+          background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)',
+          border: '1px solid var(--border-light)', cursor: 'pointer',
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          fontFamily: 'var(--font-body)', lineHeight: 1, padding: 0,
+        }}
+      >?</button>
+      {show && (
+        <div style={{
+          position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)',
+          marginBottom: '6px', width: '260px', padding: '10px 12px',
+          background: 'var(--bg-elevated)', border: '1px solid var(--border-mid)',
+          borderRadius: '8px', fontSize: '12px', color: 'var(--text-secondary)',
+          lineHeight: 1.5, zIndex: 10, boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+        }}>
+          <p style={{ marginBottom: '6px' }}>Each poll makes 3 API calls to Google Drive to check for changes.</p>
+          <p style={{ marginBottom: '6px' }}><strong style={{ color: 'var(--text-primary)' }}>0.5s</strong> — fastest sync, ~360 req/min. Higher battery usage.</p>
+          <p style={{ marginBottom: '6px' }}><strong style={{ color: 'var(--text-primary)' }}>1s</strong> — good balance. ~180 req/min.</p>
+          <p style={{ marginBottom: '6px' }}><strong style={{ color: 'var(--text-primary)' }}>2-5s</strong> — light on battery and API quota.</p>
+          <p><strong style={{ color: 'var(--text-primary)' }}>10-30s</strong> — minimal usage, slower updates.</p>
+        </div>
+      )}
+    </span>
+  )
 }
 
 export default function SettingsPage() {
@@ -134,6 +167,47 @@ export default function SettingsPage() {
             </p>
           </div>
         </div>
+
+        {/* Sync interval (Drive mode only) */}
+        {!isOffline && (
+          <section>
+            <h2 style={sectionHeadStyle}>Sync</h2>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <label style={{ fontSize: '13px', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+                Poll interval
+              </label>
+              <select
+                value={config?.syncInterval || 1}
+                onChange={e => {
+                  const val = Number(e.target.value)
+                  updateConfig({ syncInterval: val })
+                  setPollInterval(val * 1000)
+                }}
+                style={{
+                  fontSize: '13px',
+                  background: 'var(--bg-secondary)',
+                  border: '1px solid var(--border-light)',
+                  borderRadius: '8px', padding: '6px 10px',
+                  color: 'var(--text-primary)',
+                  fontFamily: 'var(--font-body)',
+                  outline: 'none',
+                  cursor: 'pointer',
+                }}
+              >
+                <option value={0.5}>0.5s</option>
+                <option value={1}>1s</option>
+                <option value={2}>2s</option>
+                <option value={5}>5s</option>
+                <option value={10}>10s</option>
+                <option value={30}>30s</option>
+              </select>
+              <SyncIntervalHelp />
+            </div>
+            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '6px' }}>
+              How often to check for changes from other devices.
+            </p>
+          </section>
+        )}
 
         {/* Offline: storage health */}
         {isOffline && (

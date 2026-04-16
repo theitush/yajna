@@ -12,9 +12,11 @@ import { getDriveFileIds, readJsonFile } from './drive'
 import { getTasks, getNotes, getConfig, putTasks, putNotes, putConfig } from './db'
 import { getStoredToken } from './auth'
 
-const POLL_INTERVAL = 2000     // 2 seconds between polls
-const RETRY_BASE_MS = 2000    // retry backoff starts at 2s
-const RETRY_MAX_MS = 30000    // max retry backoff 30s
+const DEFAULT_POLL_INTERVAL = 1000  // 1 second default
+const RETRY_BASE_MS = 2000         // retry backoff starts at 2s
+const RETRY_MAX_MS = 30000         // max retry backoff 30s
+
+let pollIntervalMs = DEFAULT_POLL_INTERVAL
 
 let pollTimer = null
 let retryTimer = null
@@ -46,10 +48,11 @@ export function onSyncStatus(fn) {
 /**
  * Start the sync engine. Call after initial sync is done.
  */
-export function startSyncEngine(storeSetter) {
+export function startSyncEngine(storeSetter, intervalMs) {
   if (running) return
   running = true
   _storeSetter = storeSetter
+  pollIntervalMs = intervalMs || DEFAULT_POLL_INTERVAL
   retryCount = 0
   lastRemoteHash = null
 
@@ -139,7 +142,17 @@ function handleOffline() {
 function startPolling(storeSetter) {
   _storeSetter = storeSetter
   clearInterval(pollTimer)
-  pollTimer = setInterval(() => pollRemote(storeSetter), POLL_INTERVAL)
+  pollTimer = setInterval(() => pollRemote(storeSetter), pollIntervalMs)
+}
+
+/**
+ * Update the poll interval while the engine is running.
+ */
+export function setPollInterval(ms) {
+  pollIntervalMs = ms || DEFAULT_POLL_INTERVAL
+  if (running && pollTimer) {
+    startPolling(_storeSetter)
+  }
 }
 
 async function pollRemote(storeSetter) {

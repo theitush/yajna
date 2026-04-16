@@ -8,7 +8,7 @@ import {
   getJournal, putJournal, getConfig, putConfig,
 } from '../services/db'
 import { pushTasks, pushNotes, pushJournal, pushConfig, initialSync, mergeAndPushJournal } from '../services/sync'
-import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, getSyncStatus, retryNow } from '../services/syncEngine'
+import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, getSyncStatus, retryNow, setPollInterval } from '../services/syncEngine'
 
 const useAppStore = create((set, get) => ({
   // Auth / mode
@@ -217,7 +217,8 @@ const useAppStore = create((set, get) => ({
       onSyncStatus((s) => {
         useAppStore.getState().setSyncStatus(s)
       })
-      startSyncEngine((data) => set(data))
+      const intervalMs = (result?.mergedConfig?.syncInterval || 1) * 1000
+      startSyncEngine((data) => set(data), intervalMs)
     } catch (e) {
       console.error('Sync failed', e)
     } finally {
@@ -234,5 +235,5 @@ const useAppStore = create((set, get) => ({
   },
 }))
 
-export { retryNow, stopSyncEngine }
+export { retryNow, stopSyncEngine, setPollInterval }
 export default useAppStore
