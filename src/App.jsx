@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { HashRouter, Routes, Route } from 'react-router-dom'
 import useAppStore from './store/useAppStore'
-import { loadGAPI, initGAPI, getStoredToken, startAuthRedirect, consumeAuthRedirect, storeToken, setAccessToken } from './services/auth'
+import { loadGAPI, initGAPI, getStoredToken, getTokenRemainingSeconds, startAuthRedirect, consumeAuthRedirect, storeToken, setAccessToken, trySilentRefresh, scheduleTokenRefresh } from './services/auth'
 import { initDriveStructure } from './services/drive'
 import { getMeta, putMeta } from './services/db'
 import { requestStoragePersistence } from './services/storage'
@@ -27,6 +27,11 @@ export default function App() {
   const [initError, setInitError] = useState(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
+  function handleTokenExpired() {
+    setAuthenticated(false)
+    setInitError('Session expired. Please sign in again.')
+  }
+
   useEffect(() => {
     async function bootstrap() {
       try {
@@ -38,6 +43,7 @@ export default function App() {
           await initGAPI()
           await storeToken(redirectResult.token, redirectResult.expiresIn)
           setAccessToken(redirectResult.token)
+          scheduleTokenRefresh(redirectResult.expiresIn, handleTokenExpired)
           await finishDriveAuth()
           return
         }
@@ -59,10 +65,20 @@ export default function App() {
           const token = await getStoredToken()
           if (token) {
             setAccessToken(token)
+            scheduleTokenRefresh(await getTokenRemainingSeconds(), handleTokenExpired)
             await finishDriveAuth()
             return
           }
-          // Token expired — fall through to login screen
+          // Token expired — try silent refresh before showing login
+          const refreshed = await trySilentRefresh()
+          if (refreshed) {
+            await storeToken(refreshed.token, refreshed.expiresIn)
+            setAccessToken(refreshed.token)
+            scheduleTokenRefresh(refreshed.expiresIn, handleTokenExpired)
+            await finishDriveAuth()
+            return
+          }
+          // Silent refresh failed — fall through to login screen
         }
 
         // No saved mode or no client id configured: show login
@@ -78,6 +94,32 @@ export default function App() {
       }
     }
     bootstrap()
+
+    // When the tab wakes from sleep/background, check if token needs refresh
+    function handleVisibilityChange() {
+      if (document.visibilityState !== 'visible') return
+      ;(async () => {
+        const savedMode = await getMeta(MODE_KEY)
+        if (savedMode !== MODE_DRIVE) return
+        const token = await getStoredToken()
+        if (token) {
+          // Token still valid — reschedule refresh for remaining time
+          scheduleTokenRefresh(await getTokenRemainingSeconds(), handleTokenExpired)
+          return
+        }
+        // Token expired while tab was backgrounded — try silent refresh
+        const refreshed = await trySilentRefresh()
+        if (refreshed) {
+          await storeToken(refreshed.token, refreshed.expiresIn)
+          setAccessToken(refreshed.token)
+          scheduleTokenRefresh(refreshed.expiresIn, handleTokenExpired)
+        } else {
+          handleTokenExpired()
+        }
+      })()
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
   }, [])
 
   async function finishDriveAuth() {
