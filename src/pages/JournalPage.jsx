@@ -50,7 +50,7 @@ const HashtagExtension = Extension.create({
   },
 })
 
-function EntryEditor({ content, onSave }) {
+function EntryEditor({ content, onSave, dirtyRef }) {
   const editor = useEditor({
     extensions: [
       StarterKit,
@@ -66,9 +66,11 @@ function EntryEditor({ content, onSave }) {
 
   useEffect(() => {
     if (!editor) return
+    // Don't overwrite the editor if there's a pending local save
+    if (dirtyRef?.current) return
     const current = editor.getHTML()
     if (current !== (content || '')) {
-      editor.commands.setContent(content || '', false)
+      editor.commands.setContent(content || '', { emitUpdate: false })
     }
   }, [editor, content])
 
@@ -194,6 +196,7 @@ export default function JournalPage() {
           key={selectedDate}
           content={entry?.content}
           onSave={handleSave}
+          dirtyRef={saveTimeout}
         />
       </div>
     </div>

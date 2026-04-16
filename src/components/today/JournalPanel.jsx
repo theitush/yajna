@@ -80,9 +80,12 @@ export default function JournalPanel({ onInsertText }) {
   const remoteContent = currentJournal?.entries?.[todayStr]?.content
   useEffect(() => {
     if (!editor || !remoteContent) return
+    // Don't overwrite the editor if there's a pending local save —
+    // the user is actively typing and we'd clobber their changes
+    if (saveTimeout.current) return
     const current = editor.getHTML()
     if (current !== remoteContent) {
-      editor.commands.setContent(remoteContent, false)
+      editor.commands.setContent(remoteContent, { emitUpdate: false })
     }
   }, [editor, remoteContent])
 
