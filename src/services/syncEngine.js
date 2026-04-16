@@ -167,7 +167,7 @@ async function pollRemote(storeSetter) {
     const ids = await getDriveFileIds()
     if (!ids) return
 
-    const hash = await getRemoteHash(ids)
+    const { hash, journalFileId } = await getRemoteHash(ids)
     if (hash === lastRemoteHash) return
 
     setStatus({ state: 'syncing' })
@@ -186,18 +186,11 @@ async function pollRemote(storeSetter) {
 
     // Pull the current journal week if one is loaded
     let updatedJournal = undefined
-    if (ids.journalsFolderId && _storeGetter) {
-      const currentJournal = _storeGetter()?.currentJournal
-      if (currentJournal?.week) {
-        const filename = `${currentJournal.week}.json`
-        const fileId = await findFile(ids.journalsFolderId, filename)
-        if (fileId) {
-          const doc = await readJsonFile(fileId)
-          if (doc) {
-            await putJournal(doc)
-            updatedJournal = doc
-          }
-        }
+    if (journalFileId) {
+      const doc = await readJsonFile(journalFileId)
+      if (doc) {
+        await putJournal(doc)
+        updatedJournal = doc
       }
     }
 
@@ -225,11 +218,22 @@ async function pollRemote(storeSetter) {
 
 async function getRemoteHash(ids) {
   const token = window.gapi?.client?.getToken()?.access_token
-  if (!token) return null
+  if (!token) return { hash: null, journalFileId: null }
 
   const fileIds = [ids.tasksFileId, ids.notesFileId, ids.configFileId]
-  // Include journals folder — its modifiedTime changes when any journal file is added/updated
-  if (ids.journalsFolderId) fileIds.push(ids.journalsFolderId)
+  let journalFileId = null
+
+  // Find the current journal file and include it in the hash
+  if (ids.journalsFolderId && _storeGetter) {
+    const currentJournal = _storeGetter()?.currentJournal
+    if (currentJournal?.week) {
+      try {
+        journalFileId = await findFile(ids.journalsFolderId, `${currentJournal.week}.json`)
+        if (journalFileId) fileIds.push(journalFileId)
+      } catch {}
+    }
+  }
+
   const times = await Promise.all(
     fileIds.map(async (fid) => {
       try {
@@ -243,7 +247,7 @@ async function getRemoteHash(ids) {
       }
     })
   )
-  return times.join('|')
+  return { hash: times.join('|'), journalFileId }
 }
 
 function scheduleRetry(pushFn) {
@@ -297,7 +301,7 @@ async function executePush(pushFn) {
     // Update hash so our own write doesn't trigger re-pull
     try {
       const ids = await getDriveFileIds()
-      if (ids) lastRemoteHash = await getRemoteHash(ids)
+      if (ids) lastRemoteHash = (await getRemoteHash(ids)).hash
     } catch {}
   } catch (e) {
     console.warn('Push failed:', e.message || e)
