@@ -44,6 +44,7 @@ function NoteEditor({ note, onUpdate, onDelete }) {
   const saveTimeout = { current: null }
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleValue, setTitleValue] = useState(note?.title || '')
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   const editor = useEditor({
     extensions: [
@@ -73,6 +74,7 @@ function NoteEditor({ note, onUpdate, onDelete }) {
     }
     setTitleValue(note.title || '')
     setEditingTitle(false)
+    setConfirmDelete(false)
   }, [note?.id])
 
   if (!note) return (
@@ -117,17 +119,45 @@ function NoteEditor({ note, onUpdate, onDelete }) {
             {note.title || 'Untitled'}
           </span>
         )}
-        <button
-          onClick={() => onDelete(note.id)}
-          style={{
-            fontSize: '12px', color: '#FCA5A5',
-            background: 'none', border: 'none', cursor: 'pointer',
-            padding: '4px 8px', fontFamily: 'var(--font-body)',
-            transition: 'color 0.15s',
-          }}
-        >
-          Delete
-        </button>
+        {confirmDelete ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '12px', color: '#FCA5A5', fontFamily: 'var(--font-body)' }}>Delete?</span>
+            <button
+              onClick={() => onDelete(note.id)}
+              style={{
+                fontSize: '12px', padding: '4px 10px', borderRadius: '8px',
+                background: 'rgba(239,68,68,0.15)', color: '#FCA5A5',
+                border: '1px solid rgba(239,68,68,0.3)', cursor: 'pointer',
+                fontFamily: 'var(--font-body)',
+              }}
+            >
+              Delete
+            </button>
+            <button
+              onClick={() => setConfirmDelete(false)}
+              style={{
+                fontSize: '12px', padding: '4px 10px', borderRadius: '8px',
+                background: 'var(--bg-secondary)', color: 'var(--text-secondary)',
+                border: '1px solid var(--border-light)', cursor: 'pointer',
+                fontFamily: 'var(--font-body)',
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setConfirmDelete(true)}
+            style={{
+              fontSize: '12px', color: '#FCA5A5',
+              background: 'none', border: 'none', cursor: 'pointer',
+              padding: '4px 8px', fontFamily: 'var(--font-body)',
+              transition: 'color 0.15s',
+            }}
+          >
+            Delete
+          </button>
+        )}
       </div>
       <EditorToolbar editor={editor} />
       <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', fontSize: '14px', color: 'var(--text-primary)' }}>
