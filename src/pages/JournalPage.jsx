@@ -70,7 +70,7 @@ function EntryEditor({ content, onSave }) {
     if (current !== (content || '')) {
       editor.commands.setContent(content || '', false)
     }
-  }, [content])
+  }, [editor, content])
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', fontSize: '14px', color: 'var(--text-primary)' }}>

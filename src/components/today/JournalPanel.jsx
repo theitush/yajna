@@ -77,15 +77,14 @@ export default function JournalPanel({ onInsertText }) {
     },
   })
 
+  const remoteContent = currentJournal?.entries?.[todayStr]?.content
   useEffect(() => {
-    if (!editor || !currentJournal) return
-    const entry = currentJournal.entries?.[todayStr]
-    if (!entry) return
+    if (!editor || !remoteContent) return
     const current = editor.getHTML()
-    if (current !== entry.content) {
-      editor.commands.setContent(entry.content, false)
+    if (current !== remoteContent) {
+      editor.commands.setContent(remoteContent, false)
     }
-  }, [currentJournal?.week])
+  }, [editor, remoteContent])
 
   useEffect(() => {
     if (!onInsertText) return
