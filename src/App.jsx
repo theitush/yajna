@@ -254,6 +254,7 @@ export default function App() {
                 background: syncDotColor,
                 display: 'inline-block',
                 flexShrink: 0,
+                marginTop: '12px', 
                 ...(effectiveSyncStatus.state === 'syncing' ? { animation: 'pulse 1.5s ease-in-out infinite' } : {}),
               }} />
             </span>
