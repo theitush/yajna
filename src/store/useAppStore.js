@@ -213,7 +213,7 @@ const useAppStore = create((set, get) => ({
   syncStatus: { state: 'offline' }, // { state: 'synced'|'syncing'|'offline'|'waiting', retryIn?: number }
   setSyncStatus: (s) => set({ syncStatus: s, syncing: s.state === 'syncing' }),
   runInitialSync: async () => {
-    set({ syncing: true })
+    set({ syncing: true, syncStatus: { state: 'syncing' } })
     try {
       const result = await initialSync()
       const [tasks, notes, config] = result

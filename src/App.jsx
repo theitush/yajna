@@ -21,7 +21,7 @@ export default function App() {
   const {
     isAuthenticated, isInitializing,
     setAuthenticated, setInitializing,
-    setMode, runInitialSync, bootOffline, loadJournal, fetchUserEmail,
+    setMode, runInitialSync, bootOffline, loadJournal, fetchUserEmail, setSyncStatus,
   } = useAppStore()
   const syncStatus = useAppStore(s => s.syncStatus)
   const mode = useAppStore(s => s.mode)
@@ -57,6 +57,7 @@ export default function App() {
           setAuthenticated(true)
 
           // Finish Drive setup in background
+          setSyncStatus({ state: 'syncing' })
           ;(async () => {
             try {
               await loadGAPI()
@@ -93,6 +94,7 @@ export default function App() {
           setAuthenticated(true)
 
           // Connect to Drive in the background — app is already usable
+          setSyncStatus({ state: 'syncing' })
           ;(async () => {
             try {
               await loadGAPI()
