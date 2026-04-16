@@ -233,7 +233,11 @@ function scheduleRetry(pushFn) {
   retryTimer = setTimeout(() => {
     clearInterval(countdownTimer)
     countdownTimer = null
-    if (!running || !navigator.onLine) return
+    if (!running) return
+    if (!navigator.onLine) {
+      setStatus({ state: 'offline' })
+      return
+    }
     const fn = pendingPush
     pendingPush = null
     executePush(fn)
@@ -241,6 +245,11 @@ function scheduleRetry(pushFn) {
 }
 
 async function executePush(pushFn) {
+  // Don't attempt push if offline — go straight to queuing
+  if (!navigator.onLine) {
+    scheduleRetry(pushFn)
+    return
+  }
   setStatus({ state: 'syncing' })
   try {
     await pushFn()
@@ -254,12 +263,7 @@ async function executePush(pushFn) {
     } catch {}
   } catch (e) {
     console.warn('Push failed:', e.message || e)
-    if (navigator.onLine) {
-      scheduleRetry(pushFn)
-    } else {
-      pendingPush = pushFn
-      setStatus({ state: 'offline' })
-    }
+    scheduleRetry(pushFn)
   }
 }
 
