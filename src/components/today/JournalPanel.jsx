@@ -1,7 +1,6 @@
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
-import Underline from '@tiptap/extension-underline'
 import Highlight from '@tiptap/extension-highlight'
 import TextAlign from '@tiptap/extension-text-align'
 import { Extension } from '@tiptap/core'
@@ -61,7 +60,6 @@ export default function JournalPanel({ onInsertText }) {
     extensions: [
       StarterKit,
       Placeholder.configure({ placeholder: 'Start writing…' }),
-      Underline,
       Highlight.configure({ multicolor: true }),
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
       HashtagExtension,

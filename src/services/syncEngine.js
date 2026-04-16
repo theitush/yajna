@@ -287,6 +287,7 @@ function scheduleRetry(pushFn) {
 }
 
 async function executePush(pushFn) {
+  if (!pushFn) return
   // Don't attempt push if offline — go straight to queuing
   if (!navigator.onLine) {
     scheduleRetry(pushFn)
@@ -311,7 +312,16 @@ async function executePush(pushFn) {
 
 /**
  * Wrap a push operation with error handling and retry.
+ * Cancels any pending retry since this new push supersedes it.
  */
 export function withRetry(pushFn) {
-  return () => executePush(pushFn)
+  return () => {
+    // Cancel stale retry — this fresh push replaces whatever was queued
+    clearTimeout(retryTimer)
+    clearInterval(countdownTimer)
+    retryTimer = null
+    countdownTimer = null
+    pendingPush = null
+    return executePush(pushFn)
+  }
 }
