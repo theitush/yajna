@@ -127,7 +127,6 @@ export function trySilentRefresh() {
 
     function cleanup() {
       clearTimeout(timeout)
-      window.removeEventListener('message', onMessage)
       if (iframe.parentNode) iframe.parentNode.removeChild(iframe)
     }
 
@@ -190,7 +189,14 @@ export function scheduleTokenRefresh(expiresInSeconds, onExpired) {
  */
 export function consumeAuthRedirect() {
   const hash = window.location.hash
-  if (!hash || !hash.includes('access_token=')) return null
+  if (!hash) return null
+  // If Google returned an error (e.g. access_denied), strip the fragment
+  // so HashRouter doesn't try to match it as a route.
+  if (hash.includes('error=')) {
+    history.replaceState(null, '', window.location.pathname + window.location.search)
+    return null
+  }
+  if (!hash.includes('access_token=')) return null
   // The hash looks like "#access_token=...&expires_in=...&state=..."
   const params = new URLSearchParams(hash.slice(1))
   const token = params.get('access_token')
