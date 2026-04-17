@@ -29,6 +29,12 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+html, body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 body {
   font-family: var(--font-body);
   background: var(--bg-primary);
@@ -37,8 +43,6 @@ body {
 
 #root {
   height: 100dvh;
-  /* Subtract on-screen keyboard so the topbar isn't pushed off-screen on mobile. */
-  height: calc(100dvh - var(--kb-inset, 0px));
   display: flex;
   flex-direction: column;
   background: var(--bg-primary);

@@ -113,8 +113,8 @@ export default function JournalPanel({ onInsertText }) {
 
       <EditorToolbar editor={editor} />
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px' }}>
-        <EditorContent editor={editor} style={{ height: '100%' }} />
+      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px 22rem' }}>
+        <EditorContent editor={editor} />
       </div>
       {editor && <RecordFab editor={editor} />}
     </div>

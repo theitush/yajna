@@ -107,7 +107,7 @@ export default function RecordFab({ editor }) {
       style={{
         position: 'fixed',
         right: '20px',
-        bottom: 'calc(20px + env(safe-area-inset-bottom, 0px) + var(--kb-inset, 0px))',
+        bottom: 'calc(20px + env(safe-area-inset-bottom, 0px))',
         zIndex: 40,
         display: 'flex',
         alignItems: 'center',
