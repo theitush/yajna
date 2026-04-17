@@ -29,6 +29,9 @@ function AudioNodeView({ node, editor, getPos }) {
   const [transcribing, setTranscribing] = useState(false)
   const [transcriptError, setTranscriptError] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [confirmRetranscribe, setConfirmRetranscribe] = useState(false)
+  const [draftTranscript, setDraftTranscript] = useState('')
+  const [savingTranscript, setSavingTranscript] = useState(false)
   const blobRef = useRef(null)
   const pendingPlayRef = useRef(false)
 
@@ -49,6 +52,7 @@ function AudioNodeView({ node, editor, getPos }) {
       if (rec.duration) setDuration(rec.duration)
       if (rec.transcript) {
         setTranscript(rec.transcript)
+        setDraftTranscript(rec.transcript)
         setTranscriptModel(rec.transcriptModel || null)
       }
       return url
@@ -70,6 +74,7 @@ function AudioNodeView({ node, editor, getPos }) {
   }
 
   const handleTranscribe = async () => {
+    setConfirmRetranscribe(false)
     setTranscriptError(null)
     const apiKey = config?.groqApiKey
     if (!apiKey) {
@@ -92,6 +97,7 @@ function AudioNodeView({ node, editor, getPos }) {
       const text = await transcribeWithGroq({ blob, apiKey, model })
       await saveAudioTranscript(audioId, text, model)
       setTranscript(text)
+      setDraftTranscript(text)
       setTranscriptModel(model)
     } catch (e) {
       setTranscriptError(e.message || 'Transcription failed')
@@ -133,6 +139,19 @@ function AudioNodeView({ node, editor, getPos }) {
       })
     } else {
       el.pause()
+    }
+  }
+
+  const handleSaveTranscript = async () => {
+    if (draftTranscript === transcript) return
+    setSavingTranscript(true)
+    try {
+      await saveAudioTranscript(audioId, draftTranscript, transcriptModel)
+      setTranscript(draftTranscript)
+    } catch (e) {
+      setTranscriptError(e.message || 'Could not save transcript')
+    } finally {
+      setSavingTranscript(false)
     }
   }
 
@@ -287,9 +306,13 @@ function AudioNodeView({ node, editor, getPos }) {
          borderTop: '1px solid var(--border-light)',
          background: 'var(--bg-primary)',
        }}>
-         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: transcript || transcriptError ? '10px' : 0 }}>
+         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: transcript || transcriptError || confirmRetranscribe ? '10px' : 0 }}>
            <button
-             onClick={handleTranscribe}
+             onClick={() => {
+               if (transcribing) return
+               if (transcript) setConfirmRetranscribe(true)
+               else handleTranscribe()
+             }}
              disabled={transcribing}
              style={{
                fontSize: '12px', fontWeight: 500,
@@ -308,6 +331,37 @@ function AudioNodeView({ node, editor, getPos }) {
              </span>
            )}
          </div>
+         {confirmRetranscribe && (
+           <div style={{
+             display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px',
+           }}>
+             <p style={{ fontSize: '12px', color: '#FCA5A5', flex: 1, margin: 0 }}>
+               Overwrite current transcript?
+             </p>
+             <button
+               onClick={handleTranscribe}
+               style={{
+                 fontSize: '12px', padding: '4px 10px', borderRadius: '8px',
+                 background: 'rgba(239,68,68,0.15)', color: '#FCA5A5',
+                 border: '1px solid rgba(239,68,68,0.3)', cursor: 'pointer',
+                 fontFamily: 'var(--font-body)',
+               }}
+             >
+               Overwrite
+             </button>
+             <button
+               onClick={() => setConfirmRetranscribe(false)}
+               style={{
+                 fontSize: '12px', padding: '4px 10px', borderRadius: '8px',
+                 background: 'var(--bg-secondary)', color: 'var(--text-secondary)',
+                 border: '1px solid var(--border-light)', cursor: 'pointer',
+                 fontFamily: 'var(--font-body)',
+               }}
+             >
+               Cancel
+             </button>
+           </div>
+         )}
          {transcriptError && (
            <p style={{
              fontSize: '11px', color: '#FCA5A5',
@@ -316,11 +370,23 @@ function AudioNodeView({ node, editor, getPos }) {
            }}>{transcriptError}</p>
          )}
          {transcript && (
-           <p style={{
-             fontSize: '13px', color: 'var(--text-primary)',
-             whiteSpace: 'pre-wrap', lineHeight: 1.5,
-             margin: 0,
-           }}>{transcript}</p>
+           <textarea
+             value={draftTranscript}
+             onChange={e => setDraftTranscript(e.target.value)}
+             onBlur={handleSaveTranscript}
+             disabled={savingTranscript}
+             rows={Math.min(12, Math.max(2, draftTranscript.split('\n').length))}
+             style={{
+               width: '100%', boxSizing: 'border-box',
+               fontSize: '13px', color: 'var(--text-primary)',
+               background: 'var(--bg-secondary)',
+               border: '1px solid var(--border-light)', borderRadius: '6px',
+               padding: '8px 10px', lineHeight: 1.5,
+               fontFamily: 'var(--font-body)',
+               resize: 'vertical',
+               margin: 0,
+             }}
+           />
          )}
          {!transcript && !transcribing && !transcriptError && (
            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', margin: 0 }}>
@@ -356,7 +422,7 @@ export const AudioNode = Node.create({
   group: 'block',
   atom: true,
   draggable: true,
-  selectable: true,
+  selectable: false,
 
   addAttributes() {
     return {
@@ -386,6 +452,41 @@ export const AudioNode = Node.create({
 
   addNodeView() {
     return ReactNodeViewRenderer(AudioNodeView)
+  },
+
+  addKeyboardShortcuts() {
+    const name = this.name
+    const blockIfAdjacent = (direction) => ({ editor }) => {
+      const { state } = editor
+      const { selection } = state
+      if (!selection.empty) {
+        let hasAudio = false
+        state.doc.nodesBetween(selection.from, selection.to, (n) => {
+          if (n.type.name === name) hasAudio = true
+        })
+        if (hasAudio) return true
+        return false
+      }
+      const $pos = selection.$from
+      if (direction === 'before') {
+        if ($pos.parentOffset !== 0) return false
+        const posBefore = $pos.before()
+        if (posBefore <= 0) return false
+        const nodeBefore = state.doc.resolve(posBefore).nodeBefore
+        if (nodeBefore && nodeBefore.type.name === name) return true
+      } else {
+        if ($pos.parentOffset !== $pos.parent.content.size) return false
+        const posAfter = $pos.after()
+        if (posAfter >= state.doc.content.size) return false
+        const nodeAfter = state.doc.resolve(posAfter).nodeAfter
+        if (nodeAfter && nodeAfter.type.name === name) return true
+      }
+      return false
+    }
+    return {
+      Backspace: blockIfAdjacent('before'),
+      Delete: blockIfAdjacent('after'),
+    }
   },
 
   addCommands() {
