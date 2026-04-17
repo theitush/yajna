@@ -9,8 +9,10 @@
  *   { state: 'waiting', retryIn: <seconds remaining> }
  */
 import { getDriveFileIds, readJsonFile, findFile } from './drive'
-import { getTasks, getNotes, getConfig, putTasks, putNotes, putConfig, putJournal, getAllAudio, putAudio } from './db'
+import { getTasks, getNotes, getConfig, putTasks, putNotes, putConfig, putJournal, getAllAudio, putAudio, getAllNotesRaw, getJournal } from './db'
 import { getStoredToken } from './auth'
+import { mergeJournalEntry } from './sync'
+import { mergeBlocks, blocksToHtml, htmlToBlocks } from '../lib/blocks'
 
 const DEFAULT_POLL_INTERVAL = 1000  // 1 second default
 const RETRY_BASE_MS = 2000         // retry backoff starts at 2s
@@ -202,9 +204,40 @@ async function pollRemote(storeSetter) {
       return
     }
 
+    // Safe notes merge: for each note present on both sides, merge bodies at
+    // the block level rather than overwriting. Prevents the poll path from
+    // clobbering local edits that haven't flushed to Drive yet.
+    const remoteNotesArr = Array.isArray(notes) ? notes : []
+    const localNotesRaw = await getAllNotesRaw()
+    const localNotesById = new Map(localNotesRaw.map(n => [n.id, n]))
+    const mergedNotes = remoteNotesArr.map(remoteNote => {
+      const localNote = localNotesById.get(remoteNote.id)
+      if (!localNote || localNote.deleted || remoteNote.deleted) return remoteNote
+      const localBlocks = Array.isArray(localNote.blocks) && localNote.blocks.length
+        ? localNote.blocks
+        : htmlToBlocks(localNote.body || '')
+      const remoteBlocks = Array.isArray(remoteNote.blocks) && remoteNote.blocks.length
+        ? remoteNote.blocks
+        : htmlToBlocks(remoteNote.body || '')
+      const blocks = mergeBlocks(localBlocks, remoteBlocks, localNote.updatedAt, remoteNote.updatedAt)
+      const localT = new Date(localNote.updatedAt || 0).getTime()
+      const remoteT = new Date(remoteNote.updatedAt || 0).getTime()
+      const winner = remoteT >= localT ? remoteNote : localNote
+      return {
+        ...winner,
+        blocks,
+        body: blocksToHtml(blocks),
+      }
+    })
+    // Include local-only notes that the remote doesn't know about yet.
+    const remoteIds = new Set(remoteNotesArr.map(n => n.id))
+    for (const n of localNotesRaw) {
+      if (!remoteIds.has(n.id)) mergedNotes.push(n)
+    }
+
     await Promise.all([
       putTasks(Array.isArray(tasks) ? tasks : []),
-      putNotes(Array.isArray(notes) ? notes : []),
+      putNotes(mergedNotes),
       putConfig(config || {}),
     ])
 
@@ -231,13 +264,21 @@ async function pollRemote(storeSetter) {
       }
     }
 
-    // Pull the current journal week if one is loaded
+    // Pull the current journal week if one is loaded — merge per entry at
+    // the block level so local edits that haven't flushed yet aren't lost.
     let updatedJournal = undefined
     if (journalFileId) {
-      const doc = await readJsonFile(journalFileId)
-      if (doc) {
-        await putJournal(doc)
-        updatedJournal = doc
+      const remoteDoc = await readJsonFile(journalFileId)
+      if (remoteDoc) {
+        const localDoc = await getJournal(remoteDoc.week) || { week: remoteDoc.week, entries: {} }
+        const mergedEntries = { ...(localDoc.entries || {}) }
+        for (const [date, remoteEntry] of Object.entries(remoteDoc.entries || {})) {
+          const localEntry = mergedEntries[date]
+          mergedEntries[date] = localEntry ? mergeJournalEntry(localEntry, remoteEntry) : remoteEntry
+        }
+        const mergedDoc = { ...remoteDoc, ...localDoc, entries: mergedEntries, week: remoteDoc.week }
+        await putJournal(mergedDoc)
+        updatedJournal = mergedDoc
       }
     }
 

@@ -11,6 +11,7 @@ import { pushTasks, pushNotes, pushJournal, pushConfig, initialSync, mergeAndPus
 import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, getSyncStatus, retryNow, setPollInterval } from '../services/syncEngine'
 import { pushAudio, pushAudioMetadata, pushPendingAudio, ensureAudioLocal } from '../services/audio'
 import { putAudio, getAudio } from '../services/db'
+import { stampBlocks } from '../lib/blocks'
 
 const useAppStore = create((set, get) => ({
   // Auth / mode
@@ -114,13 +115,15 @@ const useAppStore = create((set, get) => ({
   addNote: async (body = '', tags = []) => {
     const lines = body.replace(/<[^>]+>/g, '\n').split('\n').map(s => s.trim()).filter(Boolean)
     const title = lines[0]?.replace(/^#+\s*/, '') || 'Untitled'
+    const now = new Date().toISOString()
     const note = {
       id: uuid(),
       title,
       body,
+      blocks: stampBlocks([], body, now),
       tags,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: now,
+      updatedAt: now,
     }
     await putNote(note)
     set(s => ({ notes: [...s.notes, note] }))
@@ -137,7 +140,14 @@ const useAppStore = create((set, get) => ({
     } else {
       title = note.title
     }
-    const updated = { ...note, ...updates, title, updatedAt: new Date().toISOString() }
+    const now = new Date().toISOString()
+    const patched = { ...note, ...updates, title, updatedAt: now }
+    // Recompute per-block timestamps when body changed; only edited blocks
+    // get a fresh updatedAt, so concurrent edits on different paragraphs merge cleanly.
+    if ('body' in updates) {
+      patched.blocks = stampBlocks(note.blocks, updates.body, now)
+    }
+    const updated = patched
     await putNote(updated)
     set(s => ({ notes: s.notes.map(n => n.id === id ? updated : n) }))
     if (get().mode !== MODE_OFFLINE) withRetry(pushNotes)()
@@ -158,20 +168,31 @@ const useAppStore = create((set, get) => ({
     const t = today()
     const config = get().config
     const template = config?.journalTemplate || DEFAULT_TEMPLATE
+
+    // Merge with Drive FIRST, before inserting any template. Otherwise a fresh
+    // template entry (stamped "now") races real remote content and can win.
+    if (get().mode !== MODE_OFFLINE) {
+      doc = await mergeAndPushJournal(doc).catch(() => doc)
+    }
+
+    // Only insert the template if today's entry is truly absent on both sides
+    // after merge. Mark it with epoch timestamps so any real edit wins merges.
     if (!doc.entries[t]) {
-      doc.entries[t] = {
-        content: template,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+      doc = {
+        ...doc,
+        entries: {
+          ...doc.entries,
+          [t]: {
+            content: template,
+            blocks: [],
+            createdAt: new Date().toISOString(),
+            // Epoch updatedAt: any real edit supersedes the untouched template.
+            updatedAt: new Date(0).toISOString(),
+          },
+        },
       }
     }
-    if (get().mode !== MODE_OFFLINE) {
-      // Merge with Drive (covers first-connect and multi-device), then push merged result
-      const merged = await mergeAndPushJournal(doc).catch(() => doc)
-      await putJournal(merged)
-      set({ currentJournal: merged })
-      return merged
-    }
+
     await putJournal(doc)
     set({ currentJournal: doc })
     return doc
@@ -179,15 +200,19 @@ const useAppStore = create((set, get) => ({
   updateJournalEntry: async (date, content) => {
     const doc = get().currentJournal
     if (!doc) return
+    const prior = doc.entries[date] || {}
+    const now = new Date().toISOString()
+    const blocks = stampBlocks(prior.blocks, content, now)
     const updated = {
       ...doc,
       entries: {
         ...doc.entries,
         [date]: {
-          ...(doc.entries[date] || {}),
+          ...prior,
           content,
-          updatedAt: new Date().toISOString(),
-          createdAt: doc.entries[date]?.createdAt || new Date().toISOString(),
+          blocks,
+          updatedAt: now,
+          createdAt: prior.createdAt || now,
         },
       },
     }

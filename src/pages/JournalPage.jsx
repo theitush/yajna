@@ -11,6 +11,7 @@ import { getJournal } from '../services/db'
 import { pullJournal } from '../services/sync'
 import { RTLExtension } from '../components/editor/RTLExtension'
 import { AudioNode } from '../components/editor/AudioNode'
+import { BlockIdExtension } from '../components/editor/BlockIdExtension'
 import RecordFab from '../components/voice/RecordFab'
 
 function buildWeekDates(week) {
@@ -60,6 +61,7 @@ function EntryEditor({ content, onSave, dirtyRef, onEditorReady }) {
       HashtagExtension,
       RTLExtension,
       AudioNode,
+      BlockIdExtension,
     ],
     content: content || '',
     onUpdate: ({ editor }) => {

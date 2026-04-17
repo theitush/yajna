@@ -11,6 +11,7 @@ import {
   getDriveFileIds, readJsonFile, writeJsonFile,
   findFile, writeJsonFile as driveWrite,
 } from './drive'
+import { mergeBlocks, blocksToHtml, htmlToBlocks } from '../lib/blocks'
 
 const LAST_SYNC_KEY = 'last_sync'
 
@@ -18,7 +19,7 @@ const LAST_SYNC_KEY = 'last_sync'
  * Merge two arrays by id. For items present on both sides, newer updatedAt wins.
  * Items only on one side are always kept.
  */
-function mergeById(local, remote) {
+function mergeById(local, remote, opts = {}) {
   const map = new Map()
   for (const item of local) map.set(item.id, item)
   for (const item of remote) {
@@ -28,7 +29,22 @@ function mergeById(local, remote) {
     } else {
       const localTime = new Date(existing.updatedAt || existing.createdAt || 0).getTime()
       const remoteTime = new Date(item.updatedAt || item.createdAt || 0).getTime()
-      if (remoteTime > localTime) map.set(item.id, item)
+      const winner = remoteTime > localTime ? item : existing
+      const loser = winner === item ? existing : item
+      if (opts.mergeBody && !winner.deleted && !loser.deleted) {
+        // Safe body merge: merge blocks so concurrent edits on different
+        // paragraphs both survive. Nothing gets silently dropped.
+        const winnerBlocks = Array.isArray(winner.blocks) && winner.blocks.length ? winner.blocks : htmlToBlocks(winner.body || '')
+        const loserBlocks = Array.isArray(loser.blocks) && loser.blocks.length ? loser.blocks : htmlToBlocks(loser.body || '')
+        const merged = mergeBlocks(loserBlocks, winnerBlocks, loser.updatedAt, winner.updatedAt)
+        map.set(item.id, {
+          ...winner,
+          blocks: merged,
+          body: blocksToHtml(merged),
+        })
+      } else {
+        map.set(item.id, winner)
+      }
     }
   }
   return Array.from(map.values())
@@ -43,13 +59,45 @@ function mergeJournalDocs(local, remote) {
     const localEntry = entries[date]
     if (!localEntry) {
       entries[date] = remoteEntry
-    } else {
-      const localTime = new Date(localEntry.updatedAt || localEntry.createdAt || 0).getTime()
-      const remoteTime = new Date(remoteEntry.updatedAt || remoteEntry.createdAt || 0).getTime()
-      if (remoteTime > localTime) entries[date] = remoteEntry
+      continue
     }
+    entries[date] = mergeJournalEntry(localEntry, remoteEntry)
   }
-  return { ...remote, entries }
+  return { ...(remote || {}), ...(local || {}), entries, week: (local?.week || remote?.week) }
+}
+
+/**
+ * Merge two journal entries at the block level. Concurrent edits on
+ * different paragraphs both survive; same-paragraph conflicts keep both
+ * (loser is appended as a conflict-marked block).
+ */
+export function mergeJournalEntry(localEntry, remoteEntry) {
+  if (!localEntry) return remoteEntry
+  if (!remoteEntry) return localEntry
+  const localBlocks = Array.isArray(localEntry.blocks) && localEntry.blocks.length
+    ? localEntry.blocks
+    : htmlToBlocks(localEntry.content || '')
+  const remoteBlocks = Array.isArray(remoteEntry.blocks) && remoteEntry.blocks.length
+    ? remoteEntry.blocks
+    : htmlToBlocks(remoteEntry.content || '')
+  const merged = mergeBlocks(localBlocks, remoteBlocks, localEntry.updatedAt, remoteEntry.updatedAt)
+  const newerStamp = (toMs(localEntry.updatedAt) >= toMs(remoteEntry.updatedAt))
+    ? (localEntry.updatedAt || remoteEntry.updatedAt)
+    : (remoteEntry.updatedAt || localEntry.updatedAt)
+  return {
+    ...remoteEntry,
+    ...localEntry,
+    blocks: merged,
+    content: blocksToHtml(merged),
+    updatedAt: newerStamp,
+    createdAt: localEntry.createdAt || remoteEntry.createdAt,
+  }
+}
+
+function toMs(iso) {
+  if (!iso) return 0
+  const t = new Date(iso).getTime()
+  return isFinite(t) ? t : 0
 }
 
 /**
@@ -73,7 +121,7 @@ export async function mergeWithDrive() {
   ])
 
   const mergedTasks = mergeById(localTasks, Array.isArray(remoteTasks) ? remoteTasks : [])
-  const mergedNotes = mergeById(localNotes, Array.isArray(remoteNotes) ? remoteNotes : [])
+  const mergedNotes = mergeById(localNotes, Array.isArray(remoteNotes) ? remoteNotes : [], { mergeBody: true })
   const mergedConfig = { ...(localConfig || {}), ...(remoteConfig || {}) }
 
   // Write merged data (including tombstones) back to local and Drive
@@ -149,7 +197,7 @@ export async function pushNotes() {
   if (!ids) return null
   const localNotes = await getAllNotesRaw()
   const remoteNotes = await readJsonFile(ids.notesFileId)
-  const merged = mergeById(localNotes, Array.isArray(remoteNotes) ? remoteNotes : [])
+  const merged = mergeById(localNotes, Array.isArray(remoteNotes) ? remoteNotes : [], { mergeBody: true })
   await putNotes(merged)
   await writeJsonFile(ids.rootId, 'notes.json', merged, ids.notesFileId)
   return merged

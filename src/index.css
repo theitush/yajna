@@ -116,6 +116,15 @@ body {
   cursor: pointer;
 }
 
+/* Sync conflict: a block was edited concurrently on two devices; the loser
+   is preserved right after the winner, marked with data-conflict so it's
+   visible and can be reviewed/deleted rather than silently dropped. */
+.tiptap [data-conflict="1"] {
+  border-left: 2px solid rgba(251, 191, 36, 0.6);
+  padding-left: 8px;
+  background: rgba(251, 191, 36, 0.06);
+}
+
 /* Mobile-only: hide on md+ screens. Use this class instead of md:hidden when
    the element also has an inline display style (inline styles beat Tailwind). */
 @media (min-width: 768px) {

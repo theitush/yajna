@@ -11,6 +11,7 @@ import useAppStore from '../store/useAppStore'
 import EditorToolbar from '../components/editor/EditorToolbar'
 import { RTLExtension } from '../components/editor/RTLExtension'
 import { AudioNode } from '../components/editor/AudioNode'
+import { BlockIdExtension } from '../components/editor/BlockIdExtension'
 import RecordFab from '../components/voice/RecordFab'
 
 const HashtagExtension = Extension.create({
@@ -57,6 +58,7 @@ function NoteEditor({ note, onUpdate, onDelete, onEditorReady }) {
       HashtagExtension,
       RTLExtension,
       AudioNode,
+      BlockIdExtension,
     ],
     content: note?.body || '',
     onUpdate: ({ editor }) => {
