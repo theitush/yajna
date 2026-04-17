@@ -4,6 +4,7 @@ import { signOut } from '../services/auth'
 import { getStorageEstimate, getStoragePersistence, requestStoragePersistence, exportData } from '../services/storage'
 import { getMeta, putMeta } from '../services/db'
 import { MODE_OFFLINE, MODE_DRIVE, MODE_KEY } from '../lib/constants'
+import { GROQ_MODELS, DEFAULT_GROQ_MODEL } from '../services/transcribe'
 
 const sectionHeadStyle = {
   fontSize: '11px', fontWeight: 500, color: 'var(--text-tertiary)',
@@ -83,6 +84,7 @@ export default function SettingsPage() {
   const currentJournal = useAppStore(s => s.currentJournal)
 
   const [groqKey, setGroqKey] = useState('')
+  const [groqModel, setGroqModel] = useState(DEFAULT_GROQ_MODEL)
   const [template, setTemplate] = useState('')
   const [saved, setSaved] = useState(false)
   const [storageInfo, setStorageInfo] = useState(null)
@@ -91,6 +93,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     setGroqKey(config?.groqApiKey || '')
+    setGroqModel(config?.groqModel || DEFAULT_GROQ_MODEL)
     setTemplate(config?.journalTemplate || '')
   }, [config])
 
@@ -107,7 +110,7 @@ export default function SettingsPage() {
   }, [])
 
   const handleSave = async () => {
-    await updateConfig({ groqApiKey: groqKey, journalTemplate: template })
+    await updateConfig({ groqApiKey: groqKey, groqModel, journalTemplate: template })
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
@@ -310,6 +313,21 @@ export default function SettingsPage() {
                 ? 'Stored locally in this browser only.'
                 : 'Stored in your Google Drive (config.json). Never leaves your account.'}
             </p>
+          </label>
+
+          <label style={{ display: 'block', marginTop: '16px' }}>
+            <span style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>
+              Transcription model
+            </span>
+            <select
+              value={groqModel}
+              onChange={e => setGroqModel(e.target.value)}
+              style={{ ...inputStyle, cursor: 'pointer' }}
+            >
+              {GROQ_MODELS.map(m => (
+                <option key={m.id} value={m.id}>{m.label}</option>
+              ))}
+            </select>
           </label>
         </section>
 

@@ -9,7 +9,7 @@ import {
 } from '../services/db'
 import { pushTasks, pushNotes, pushJournal, pushConfig, initialSync, mergeAndPushJournal } from '../services/sync'
 import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, getSyncStatus, retryNow, setPollInterval } from '../services/syncEngine'
-import { pushAudio, pushPendingAudio, ensureAudioLocal } from '../services/audio'
+import { pushAudio, pushAudioMetadata, pushPendingAudio, ensureAudioLocal } from '../services/audio'
 import { putAudio, getAudio } from '../services/db'
 
 const useAppStore = create((set, get) => ({
@@ -215,6 +215,21 @@ const useAppStore = create((set, get) => ({
   getAudioRecord: async (id) => {
     if (get().mode === MODE_OFFLINE) return getAudio(id)
     return ensureAudioLocal(id)
+  },
+  saveAudioTranscript: async (id, transcript, model) => {
+    const rec = await getAudio(id)
+    if (!rec) return null
+    const updated = {
+      ...rec,
+      transcript,
+      transcriptModel: model || rec.transcriptModel || null,
+      transcribedAt: new Date().toISOString(),
+    }
+    await putAudio(updated)
+    if (get().mode !== MODE_OFFLINE) {
+      withRetry(() => pushAudioMetadata(id))()
+    }
+    return updated
   },
 
   // Config

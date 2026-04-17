@@ -2,6 +2,7 @@ import { Node, mergeAttributes } from '@tiptap/core'
 import { ReactNodeViewRenderer, NodeViewWrapper } from '@tiptap/react'
 import { useEffect, useRef, useState } from 'react'
 import useAppStore from '../../store/useAppStore'
+import TranscriptModal from './TranscriptModal'
 
 function formatTime(s) {
   if (!isFinite(s) || s < 0) s = 0
@@ -20,6 +21,7 @@ function AudioNodeView({ node, editor, getPos }) {
   const [currentTime, setCurrentTime] = useState(0)
   const [status, setStatus] = useState('idle') // idle | loading | ready | error
   const [error, setError] = useState(null)
+  const [showTranscript, setShowTranscript] = useState(false)
   const pendingPlayRef = useRef(false)
 
   const loadBlob = async () => {
@@ -161,6 +163,20 @@ function AudioNodeView({ node, editor, getPos }) {
       </div>
 
       <button
+        onClick={() => setShowTranscript(true)}
+        title="Transcript"
+        style={{
+          background: 'none', border: 'none', cursor: 'pointer',
+          color: 'var(--text-tertiary)', padding: '4px',
+          display: 'flex', alignItems: 'center',
+        }}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+          <path d="M4 6h16M4 12h16M4 18h10"/>
+        </svg>
+      </button>
+
+      <button
         onClick={handleDelete}
         title="Remove audio"
         style={{
@@ -173,6 +189,10 @@ function AudioNodeView({ node, editor, getPos }) {
           <path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z"/>
         </svg>
       </button>
+
+      {showTranscript && (
+        <TranscriptModal audioId={audioId} onClose={() => setShowTranscript(false)} />
+      )}
 
       {objectUrl && (
         <audio

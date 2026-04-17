@@ -20,6 +20,9 @@ function toIndexEntry(rec) {
     mimeType: rec.mimeType || 'audio/webm',
     duration: rec.duration || 0,
     createdAt: rec.createdAt,
+    transcript: rec.transcript || null,
+    transcriptModel: rec.transcriptModel || null,
+    transcribedAt: rec.transcribedAt || null,
   }
 }
 
@@ -51,6 +54,23 @@ export async function pushAudio(id) {
 }
 
 /**
+ * Push an updated audio metadata record (e.g. after transcription) into audio.json.
+ * The local IDB record must already be saved. No-op when offline.
+ */
+export async function pushAudioMetadata(id) {
+  const ids = await getDriveFileIds()
+  if (!ids || !ids.audioFolderId) return
+  const rec = await getAudio(id)
+  if (!rec) return
+
+  const remoteIndex = await readJsonFile(ids.audioIndexFileId).catch(() => [])
+  const index = Array.isArray(remoteIndex) ? remoteIndex : []
+  const filtered = index.filter(e => e.id !== id)
+  filtered.push(toIndexEntry(rec))
+  await writeJsonFile(ids.rootId, 'audio.json', filtered, ids.audioIndexFileId)
+}
+
+/**
  * Ensure a local blob exists for this audio id. If the blob is missing locally
  * but the Drive index has it, lazy-download it now. Returns the record or null.
  */
@@ -65,6 +85,9 @@ export async function ensureAudioLocal(id) {
   let driveFileId = local?.driveFileId
   let mimeType = local?.mimeType || 'audio/webm'
   let createdAt = local?.createdAt
+  let transcript = local?.transcript || null
+  let transcriptModel = local?.transcriptModel || null
+  let transcribedAt = local?.transcribedAt || null
   if (!driveFileId) {
     const remoteIndex = await readJsonFile(ids.audioIndexFileId).catch(() => [])
     const entry = Array.isArray(remoteIndex) ? remoteIndex.find(e => e.id === id) : null
@@ -72,6 +95,9 @@ export async function ensureAudioLocal(id) {
     driveFileId = entry.driveFileId
     mimeType = entry.mimeType || mimeType
     createdAt = entry.createdAt || new Date().toISOString()
+    transcript = transcript || entry.transcript || null
+    transcriptModel = transcriptModel || entry.transcriptModel || null
+    transcribedAt = transcribedAt || entry.transcribedAt || null
   }
 
   const blob = await downloadFileBlob(driveFileId)
@@ -82,6 +108,9 @@ export async function ensureAudioLocal(id) {
     duration: local?.duration || 0,
     createdAt: createdAt || new Date().toISOString(),
     driveFileId,
+    transcript,
+    transcriptModel,
+    transcribedAt,
   }
   await putAudio(record)
   return record
