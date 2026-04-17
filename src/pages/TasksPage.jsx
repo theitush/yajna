@@ -51,12 +51,17 @@ export default function TasksPage() {
   }, [search])
 
   const suggestions = useMemo(() => {
-    if (activeHashtag === null) return []
-    return allTags.filter(t => t.startsWith(activeHashtag) && t !== activeHashtag).slice(0, 8)
-  }, [allTags, activeHashtag])
+    if (activeHashtag !== null) {
+      return allTags.filter(t => t.startsWith(activeHashtag) && t !== activeHashtag).slice(0, 8)
+    }
+    if (search === '') return allTags.slice(0, 8)
+    return []
+  }, [allTags, activeHashtag, search])
 
   const applySuggestion = (tag) => {
-    const next = search.replace(/#([\p{L}\p{N}_-]*)$/u, `#${tag} `)
+    const next = activeHashtag !== null
+      ? search.replace(/#([\p{L}\p{N}_-]*)$/u, `#${tag} `)
+      : `#${tag} `
     setSearch(next)
     setShowSuggestions(false)
     searchRef.current?.focus()
