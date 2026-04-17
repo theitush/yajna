@@ -6,6 +6,7 @@ const AUTH_STATE_KEY = 'goog_auth_state'
 
 let accessToken = null
 let refreshTimer = null
+let gisTokenClient = null
 
 /**
  * Load the GAPI client script
@@ -29,6 +30,68 @@ export function loadGAPI() {
 export async function initGAPI() {
   await window.gapi.client.init({
     discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
+  })
+}
+
+/**
+ * Load Google Identity Services. Used for silent token renewal —
+ * GIS handles Google's cookie/FedCM quirks better than a raw OAuth iframe.
+ */
+export function loadGIS() {
+  return new Promise((resolve, reject) => {
+    if (window.google?.accounts?.oauth2) return resolve()
+    const script = document.createElement('script')
+    script.src = 'https://accounts.google.com/gsi/client'
+    script.async = true
+    script.defer = true
+    script.onload = () => resolve()
+    script.onerror = reject
+    document.head.appendChild(script)
+  })
+}
+
+/**
+ * Try to renew the access token silently via GIS. Returns
+ * { token, expiresIn } on success, or null on any failure.
+ * GIS with prompt: '' uses Google's session cookies without a popup —
+ * works on Firefox when the user is actively signed in to Google.
+ */
+export async function trySilentRefreshGIS() {
+  try {
+    await loadGIS()
+  } catch {
+    return null
+  }
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve(null), 10_000)
+    try {
+      if (!gisTokenClient) {
+        gisTokenClient = window.google.accounts.oauth2.initTokenClient({
+          client_id: GOOGLE_CLIENT_ID,
+          scope: SCOPES,
+          prompt: '',
+          callback: () => {}, // overwritten per call below
+          error_callback: () => {},
+        })
+      }
+      gisTokenClient.callback = (resp) => {
+        clearTimeout(timeout)
+        if (resp?.access_token) {
+          const expiresIn = parseInt(resp.expires_in || '3600', 10)
+          resolve({ token: resp.access_token, expiresIn })
+        } else {
+          resolve(null)
+        }
+      }
+      gisTokenClient.error_callback = () => {
+        clearTimeout(timeout)
+        resolve(null)
+      }
+      gisTokenClient.requestAccessToken({ prompt: '' })
+    } catch {
+      clearTimeout(timeout)
+      resolve(null)
+    }
   })
 }
 
@@ -100,11 +163,21 @@ export async function startAuthRedirect() {
 }
 
 /**
- * Try to get a fresh token silently using a hidden iframe with prompt=none.
- * Returns { token, expiresIn } on success, or null if silent auth fails
- * (e.g. user's Google session expired).
+ * Try to renew the access token silently. Prefers GIS (works on Firefox
+ * with ETP when the user is signed in to Google); falls back to a hidden
+ * OAuth iframe if GIS fails.
  */
-export function trySilentRefresh() {
+export async function trySilentRefresh() {
+  const viaGIS = await trySilentRefreshGIS()
+  if (viaGIS) return viaGIS
+  return trySilentRefreshIframe()
+}
+
+/**
+ * Fallback: hidden iframe with prompt=none. Often blocked by Firefox ETP,
+ * but works as a last resort on browsers that allow third-party cookies.
+ */
+function trySilentRefreshIframe() {
   return new Promise((resolve) => {
     const state = randomState()
     const params = new URLSearchParams({
