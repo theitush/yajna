@@ -36,7 +36,7 @@ function mergeById(local, remote, opts = {}) {
         // paragraphs both survive. Nothing gets silently dropped.
         const winnerBlocks = Array.isArray(winner.blocks) && winner.blocks.length ? winner.blocks : htmlToBlocks(winner.body || '')
         const loserBlocks = Array.isArray(loser.blocks) && loser.blocks.length ? loser.blocks : htmlToBlocks(loser.body || '')
-        const merged = mergeBlocks(loserBlocks, winnerBlocks, loser.updatedAt, winner.updatedAt)
+        const merged = mergeBlocks(loserBlocks, winnerBlocks)
         map.set(item.id, {
           ...winner,
           blocks: merged,
@@ -80,7 +80,7 @@ export function mergeJournalEntry(localEntry, remoteEntry) {
   const remoteBlocks = Array.isArray(remoteEntry.blocks) && remoteEntry.blocks.length
     ? remoteEntry.blocks
     : htmlToBlocks(remoteEntry.content || '')
-  const merged = mergeBlocks(localBlocks, remoteBlocks, localEntry.updatedAt, remoteEntry.updatedAt)
+  const merged = mergeBlocks(localBlocks, remoteBlocks)
   const newerStamp = (toMs(localEntry.updatedAt) >= toMs(remoteEntry.updatedAt))
     ? (localEntry.updatedAt || remoteEntry.updatedAt)
     : (remoteEntry.updatedAt || localEntry.updatedAt)

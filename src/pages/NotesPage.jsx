@@ -7,6 +7,8 @@ import TextAlign from '@tiptap/extension-text-align'
 import { Extension } from '@tiptap/core'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
+import { DOMSerializer } from '@tiptap/pm/model'
+import { docToBlocks } from '../lib/blocks'
 import useAppStore from '../store/useAppStore'
 import EditorToolbar from '../components/editor/EditorToolbar'
 import { RTLExtension } from '../components/editor/RTLExtension'
@@ -63,10 +65,12 @@ function NoteEditor({ note, onUpdate, onDelete, onEditorReady }) {
     content: note?.body || '',
     onUpdate: ({ editor }) => {
       const body = editor.getHTML()
+      const serializer = DOMSerializer.fromSchema(editor.schema)
+      const blocks = docToBlocks(editor.state.doc, serializer)
       clearTimeout(saveTimeout.current)
       saveTimeout.current = setTimeout(() => {
         const tags = extractTags(editor.getText())
-        onUpdate(note.id, { body, tags })
+        onUpdate(note.id, { body, blocks, tags })
       }, 800)
     },
   })

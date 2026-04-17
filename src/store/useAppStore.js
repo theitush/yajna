@@ -11,7 +11,7 @@ import { pushTasks, pushNotes, pushJournal, pushConfig, initialSync, mergeAndPus
 import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, getSyncStatus, retryNow, setPollInterval } from '../services/syncEngine'
 import { pushAudio, pushAudioMetadata, pushPendingAudio, ensureAudioLocal } from '../services/audio'
 import { putAudio, getAudio } from '../services/db'
-import { stampBlocks } from '../lib/blocks'
+import { stampBlocks, stampBlocksFromDoc } from '../lib/blocks'
 
 const useAppStore = create((set, get) => ({
   // Auth / mode
@@ -142,10 +142,13 @@ const useAppStore = create((set, get) => ({
     }
     const now = new Date().toISOString()
     const patched = { ...note, ...updates, title, updatedAt: now }
-    // Recompute per-block timestamps when body changed; only edited blocks
-    // get a fresh updatedAt, so concurrent edits on different paragraphs merge cleanly.
+    // When body changed, prefer caller-provided blocks (derived from the live
+    // editor doc and thus carrying reliable ids). Fall back to parsing HTML.
     if ('body' in updates) {
-      patched.blocks = stampBlocks(note.blocks, updates.body, now)
+      const nextBlocks = Array.isArray(updates.blocks) ? updates.blocks : null
+      patched.blocks = nextBlocks
+        ? stampBlocksFromDoc(note.blocks, nextBlocks, now)
+        : stampBlocks(note.blocks, updates.body, now)
     }
     const updated = patched
     await putNote(updated)
@@ -197,12 +200,19 @@ const useAppStore = create((set, get) => ({
     set({ currentJournal: doc })
     return doc
   },
-  updateJournalEntry: async (date, content) => {
+  updateJournalEntry: async (date, payload) => {
     const doc = get().currentJournal
     if (!doc) return
     const prior = doc.entries[date] || {}
     const now = new Date().toISOString()
-    const blocks = stampBlocks(prior.blocks, content, now)
+    // Back-compat: older call sites pass a raw HTML string.
+    const content = typeof payload === 'string' ? payload : (payload?.html ?? '')
+    const incomingBlocks = typeof payload === 'object' && Array.isArray(payload?.blocks)
+      ? payload.blocks
+      : null
+    const blocks = incomingBlocks
+      ? stampBlocksFromDoc(prior.blocks, incomingBlocks, now)
+      : stampBlocks(prior.blocks, content, now)
     const updated = {
       ...doc,
       entries: {

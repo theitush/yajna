@@ -1,25 +1,42 @@
 /**
  * Block-level sync primitives for rich-text content (journal entries, notes).
  *
- * Why: entry-level "last-write-wins" silently drops data when two devices
- * (or the same device, offline then online) edit the same entry. We split
- * content into top-level blocks (paragraphs, headings, lists, audio, ...)
- * each with a stable id and its own updatedAt. Merges then happen per block.
- *
- * Conflict policy: safe — never drop a block. If both sides edited the same
- * block id, the older side's version is appended right after as a separate
- * block (marked data-conflict="1") so nothing is silently lost.
+ * Content is split into top-level blocks (paragraphs, headings, lists,
+ * audio, ...) each carrying a stable uuid in its `data-bid` attribute.
+ * Merges are per-block so concurrent edits on different paragraphs both
+ * survive. Same-block conflicts: last-write-wins per block (simple,
+ * predictable). Block ids are assigned by BlockIdExtension while editing
+ * and round-trip through HTML via its global attribute spec.
  */
 import { v4 as uuid } from 'uuid'
 
-const CONFLICT_ATTR = 'data-conflict'
 const BLOCK_ID_ATTR = 'data-bid'
 
 /**
- * Parse an HTML string into an array of top-level blocks.
- *  [{ id, html }]
- * Blocks without a data-bid get a fresh uuid — this is how legacy data
- * (a single HTML blob) gets split the first time it's saved.
+ * Extract blocks from a TipTap/ProseMirror doc. This is the authoritative
+ * path while editing: ids live on node attrs (set by BlockIdExtension), so
+ * we never have to reparse HTML to recover them.
+ *
+ * Returns [{ id, html }] — one entry per top-level node.
+ */
+export function docToBlocks(doc, serializer) {
+  if (!doc || !serializer) return []
+  const out = []
+  doc.forEach((node) => {
+    const id = node.attrs?.bid || uuid()
+    const fragment = serializer.serializeNode(node)
+    const container = document.createElement('div')
+    container.appendChild(fragment)
+    out.push({ id, html: container.innerHTML })
+  })
+  return out
+}
+
+/**
+ * Parse an HTML string into blocks. Used when we only have stored HTML
+ * (e.g. during sync merges where there's no live editor). If a block has
+ * no data-bid we derive a content-stable id so repeated re-parses of the
+ * same HTML don't generate different ids (which would cause duplication).
  */
 export function htmlToBlocks(html) {
   if (!html) return []
@@ -27,45 +44,31 @@ export function htmlToBlocks(html) {
   container.innerHTML = html
   const out = []
   for (const child of Array.from(container.children)) {
-    let id = child.getAttribute(BLOCK_ID_ATTR)
-    if (!id) {
-      id = uuid()
-      child.setAttribute(BLOCK_ID_ATTR, id)
-    }
+    const id = child.getAttribute(BLOCK_ID_ATTR) || stableIdFromContent(child.outerHTML)
     out.push({ id, html: child.outerHTML })
   }
-  // If there were no element children (pure text), wrap as a single paragraph.
   if (out.length === 0 && container.textContent.trim()) {
-    const p = document.createElement('p')
-    p.textContent = container.textContent
-    const id = uuid()
-    p.setAttribute(BLOCK_ID_ATTR, id)
-    out.push({ id, html: p.outerHTML })
+    const text = container.textContent
+    out.push({ id: stableIdFromContent(text), html: `<p>${escapeHtml(text)}</p>` })
   }
   return out
 }
 
-/**
- * Reassemble blocks into an HTML string.
- */
 export function blocksToHtml(blocks) {
   if (!Array.isArray(blocks) || blocks.length === 0) return ''
   return blocks.map(b => b.html).join('')
 }
 
 /**
- * Compute the next blocks snapshot given previous blocks and current HTML.
- * Bumps updatedAt only for blocks whose html actually changed. New blocks
- * get a fresh updatedAt. Unchanged blocks keep their prior timestamps.
- *
- * Returns [{ id, html, updatedAt }]
+ * Compute next blocks snapshot given prior blocks and current blocks (from
+ * docToBlocks). Bumps updatedAt only on blocks whose content changed; new
+ * blocks get a fresh stamp; unchanged blocks keep their prior stamp.
  */
-export function stampBlocks(prevBlocks, newHtml, nowIso) {
+export function stampBlocksFromDoc(prevBlocks, currentBlocks, nowIso) {
   const now = nowIso || new Date().toISOString()
   const prevById = new Map()
   for (const b of prevBlocks || []) prevById.set(b.id, b)
-  const next = htmlToBlocks(newHtml)
-  return next.map(b => {
+  return currentBlocks.map(b => {
     const prior = prevById.get(b.id)
     if (prior && prior.html === b.html) {
       return { id: b.id, html: b.html, updatedAt: prior.updatedAt || now }
@@ -75,78 +78,75 @@ export function stampBlocks(prevBlocks, newHtml, nowIso) {
 }
 
 /**
- * Merge two block arrays. For blocks present on both sides with matching
- * content, newer updatedAt wins (trivially). For blocks present only on
- * one side, they are kept. For blocks present on both sides with DIFFERENT
- * content, the newer wins AND the older is preserved immediately after as
- * a conflict-marked clone (new id, marked data-conflict). Nothing is ever
- * silently dropped.
- *
- * Order is taken from the side with the newer overall stamp; blocks only
- * on the other side are appended at the end in their own order.
+ * Back-compat wrapper for code paths that only have an HTML string.
+ * Use stampBlocksFromDoc when a live editor is available — it's more
+ * reliable because it reads ids from node attrs directly.
  */
-export function mergeBlocks(localBlocks, remoteBlocks, localStampIso, remoteStampIso) {
+export function stampBlocks(prevBlocks, newHtml, nowIso) {
+  return stampBlocksFromDoc(prevBlocks, htmlToBlocks(newHtml), nowIso)
+}
+
+/**
+ * Merge two block arrays by id. Per-block last-write-wins; blocks only on
+ * one side are preserved. If both sides are identical (same ids, same
+ * html, same order), local is returned unchanged (prevents merge churn).
+ */
+export function mergeBlocks(localBlocks, remoteBlocks) {
   const local = Array.isArray(localBlocks) ? localBlocks : []
   const remote = Array.isArray(remoteBlocks) ? remoteBlocks : []
   if (local.length === 0) return remote.slice()
   if (remote.length === 0) return local.slice()
+  if (blocksEqual(local, remote)) return local
 
-  const localTime = toMs(localStampIso)
-  const remoteTime = toMs(remoteStampIso)
-  const primary = remoteTime > localTime ? remote : local
-  const secondary = primary === remote ? local : remote
+  const localMap = new Map(local.map(b => [b.id, b]))
+  const remoteMap = new Map(remote.map(b => [b.id, b]))
 
-  const primaryMap = new Map(primary.map(b => [b.id, b]))
-  const secondaryMap = new Map(secondary.map(b => [b.id, b]))
-
+  // Order: prefer local ordering; append any remote-only blocks at the end.
+  // If you edit paragraph 2 locally and device B inserts a new paragraph 3,
+  // merge keeps your local P1..P2 order and tacks on P3 after.
   const out = []
-  const consumed = new Set()
-
-  for (const pb of primary) {
-    const sb = secondaryMap.get(pb.id)
-    if (!sb) {
-      out.push(pb)
+  const seen = new Set()
+  for (const lb of local) {
+    const rb = remoteMap.get(lb.id)
+    if (!rb) {
+      out.push(lb)
+      seen.add(lb.id)
       continue
     }
-    consumed.add(pb.id)
-    if (pb.html === sb.html) {
-      // Same content — keep newer updatedAt for housekeeping.
-      const newer = toMs(pb.updatedAt) >= toMs(sb.updatedAt) ? pb : sb
-      out.push(newer)
-      continue
-    }
-    const pT = toMs(pb.updatedAt)
-    const sT = toMs(sb.updatedAt)
-    const winner = pT >= sT ? pb : sb
-    const loser = winner === pb ? sb : pb
+    const winner = toMs(rb.updatedAt) > toMs(lb.updatedAt) ? rb : lb
     out.push(winner)
-    // Preserve the loser immediately after, marked as a conflict.
-    out.push(cloneAsConflict(loser))
+    seen.add(lb.id)
   }
-  for (const sb of secondary) {
-    if (consumed.has(sb.id)) continue
-    out.push(sb)
+  for (const rb of remote) {
+    if (seen.has(rb.id)) continue
+    out.push(rb)
   }
   return out
 }
 
-function cloneAsConflict(block) {
-  // Give the conflict clone a fresh id so future edits on either device
-  // don't reintroduce the collision.
-  const container = document.createElement('div')
-  container.innerHTML = block.html
-  const el = container.firstElementChild
-  if (el) {
-    el.setAttribute(CONFLICT_ATTR, '1')
-    const newId = uuid()
-    el.setAttribute(BLOCK_ID_ATTR, newId)
-    return { id: newId, html: el.outerHTML, updatedAt: block.updatedAt }
+function blocksEqual(a, b) {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].id !== b[i].id) return false
+    if (a[i].html !== b[i].html) return false
   }
-  return { id: uuid(), html: block.html, updatedAt: block.updatedAt }
+  return true
 }
 
 function toMs(iso) {
   if (!iso) return 0
   const t = new Date(iso).getTime()
   return isFinite(t) ? t : 0
+}
+
+// Deterministic id derived from content. Collision is fine: two paragraphs
+// with identical HTML should merge to one across devices.
+function stableIdFromContent(s) {
+  let h = 5381
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
+  return 'c' + (h >>> 0).toString(36)
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 }

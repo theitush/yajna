@@ -219,7 +219,7 @@ async function pollRemote(storeSetter) {
       const remoteBlocks = Array.isArray(remoteNote.blocks) && remoteNote.blocks.length
         ? remoteNote.blocks
         : htmlToBlocks(remoteNote.body || '')
-      const blocks = mergeBlocks(localBlocks, remoteBlocks, localNote.updatedAt, remoteNote.updatedAt)
+      const blocks = mergeBlocks(localBlocks, remoteBlocks)
       const localT = new Date(localNote.updatedAt || 0).getTime()
       const remoteT = new Date(remoteNote.updatedAt || 0).getTime()
       const winner = remoteT >= localT ? remoteNote : localNote

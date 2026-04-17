@@ -5,6 +5,8 @@ import Placeholder from '@tiptap/extension-placeholder'
 import { Extension } from '@tiptap/core'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
+import { DOMSerializer } from '@tiptap/pm/model'
+import { docToBlocks } from '../lib/blocks'
 import useAppStore from '../store/useAppStore'
 import { today, weekKey, formatDate } from '../lib/dates'
 import { getJournal } from '../services/db'
@@ -65,7 +67,9 @@ function EntryEditor({ content, onSave, dirtyRef, onEditorReady }) {
     ],
     content: content || '',
     onUpdate: ({ editor }) => {
-      onSave(editor.getHTML())
+      const serializer = DOMSerializer.fromSchema(editor.schema)
+      const blocks = docToBlocks(editor.state.doc, serializer)
+      onSave({ html: editor.getHTML(), blocks })
     },
   })
 
@@ -114,11 +118,11 @@ export default function JournalPage() {
   const effectiveDoc = viewedWeek === weekKey(todayStr) ? currentJournal : weekDoc
   const weekDates = buildWeekDates(viewedWeek)
 
-  const handleSave = (content) => {
+  const handleSave = (payload) => {
     if (viewedWeek === weekKey(todayStr)) {
       clearTimeout(saveTimeout.current)
       saveTimeout.current = setTimeout(() => {
-        updateJournalEntry(selectedDate, content)
+        updateJournalEntry(selectedDate, payload)
       }, 800)
     }
   }
