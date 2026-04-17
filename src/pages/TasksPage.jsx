@@ -100,7 +100,7 @@ export default function TasksPage() {
         background: 'var(--bg-primary)', zIndex: 10,
       }}>
         <h1 style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-primary)', flexShrink: 0 }}>Tasks</h1>
-        <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+        <div style={{ position: 'relative', flex: 1, minWidth: 0, maxWidth: '320px', margin: '0 auto' }}>
           <input
             ref={searchRef}
             value={search}
