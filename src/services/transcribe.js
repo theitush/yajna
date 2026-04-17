@@ -18,7 +18,8 @@ export async function transcribeWithGroq({ blob, apiKey, model = DEFAULT_GROQ_MO
   const form = new FormData()
   form.append('file', file)
   form.append('model', model)
-  form.append('response_format', 'json')
+  form.append('response_format', 'verbose_json')
+  form.append('timestamp_granularities[]', 'segment')
   if (language) form.append('language', language)
 
   const res = await fetch(GROQ_URL, {
@@ -37,5 +38,14 @@ export async function transcribeWithGroq({ blob, apiKey, model = DEFAULT_GROQ_MO
   }
 
   const data = await res.json()
-  return data.text || ''
+  const segments = Array.isArray(data.segments)
+    ? data.segments
+        .map(s => ({
+          start: Number(s.start) || 0,
+          end: Number(s.end) || 0,
+          text: (s.text || '').trim(),
+        }))
+        .filter(s => s.text.length > 0)
+    : []
+  return { text: data.text || '', segments }
 }

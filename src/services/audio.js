@@ -23,6 +23,7 @@ function toIndexEntry(rec) {
     transcript: rec.transcript || null,
     transcriptModel: rec.transcriptModel || null,
     transcribedAt: rec.transcribedAt || null,
+    transcriptSegments: rec.transcriptSegments || null,
   }
 }
 
@@ -88,6 +89,7 @@ export async function ensureAudioLocal(id) {
   let transcript = local?.transcript || null
   let transcriptModel = local?.transcriptModel || null
   let transcribedAt = local?.transcribedAt || null
+  let transcriptSegments = local?.transcriptSegments || null
   if (!driveFileId) {
     const remoteIndex = await readJsonFile(ids.audioIndexFileId).catch(() => [])
     const entry = Array.isArray(remoteIndex) ? remoteIndex.find(e => e.id === id) : null
@@ -98,6 +100,7 @@ export async function ensureAudioLocal(id) {
     transcript = transcript || entry.transcript || null
     transcriptModel = transcriptModel || entry.transcriptModel || null
     transcribedAt = transcribedAt || entry.transcribedAt || null
+    transcriptSegments = transcriptSegments || entry.transcriptSegments || null
   }
 
   const blob = await downloadFileBlob(driveFileId)
@@ -111,6 +114,7 @@ export async function ensureAudioLocal(id) {
     transcript,
     transcriptModel,
     transcribedAt,
+    transcriptSegments,
   }
   await putAudio(record)
   return record

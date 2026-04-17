@@ -251,7 +251,7 @@ const useAppStore = create((set, get) => ({
     if (get().mode === MODE_OFFLINE) return getAudio(id)
     return ensureAudioLocal(id)
   },
-  saveAudioTranscript: async (id, transcript, model) => {
+  saveAudioTranscript: async (id, transcript, model, segments) => {
     const rec = await getAudio(id)
     if (!rec) return null
     const updated = {
@@ -259,6 +259,7 @@ const useAppStore = create((set, get) => ({
       transcript,
       transcriptModel: model || rec.transcriptModel || null,
       transcribedAt: new Date().toISOString(),
+      transcriptSegments: segments === undefined ? (rec.transcriptSegments || null) : segments,
     }
     await putAudio(updated)
     if (get().mode !== MODE_OFFLINE) {

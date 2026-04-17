@@ -25,6 +25,8 @@ function AudioNodeView({ node, editor, getPos }) {
   const [error, setError] = useState(null)
   const [expanded, setExpanded] = useState(false)
   const [transcript, setTranscript] = useState('')
+  const [segments, setSegments] = useState(null)
+  const [editingTranscript, setEditingTranscript] = useState(false)
   const [transcriptModel, setTranscriptModel] = useState(null)
   const [transcribing, setTranscribing] = useState(false)
   const [transcriptError, setTranscriptError] = useState(null)
@@ -34,6 +36,7 @@ function AudioNodeView({ node, editor, getPos }) {
   const [savingTranscript, setSavingTranscript] = useState(false)
   const blobRef = useRef(null)
   const pendingPlayRef = useRef(false)
+  const wrapperRef = useRef(null)
 
   const loadBlob = async () => {
     setStatus('loading')
@@ -54,6 +57,7 @@ function AudioNodeView({ node, editor, getPos }) {
         setTranscript(rec.transcript)
         setDraftTranscript(rec.transcript)
         setTranscriptModel(rec.transcriptModel || null)
+        setSegments(Array.isArray(rec.transcriptSegments) ? rec.transcriptSegments : null)
       }
       return url
     } catch (e) {
@@ -94,11 +98,15 @@ function AudioNodeView({ node, editor, getPos }) {
     const model = config?.groqModel || DEFAULT_GROQ_MODEL
     setTranscribing(true)
     try {
-      const text = await transcribeWithGroq({ blob, apiKey, model })
-      await saveAudioTranscript(audioId, text, model)
+      const result = await transcribeWithGroq({ blob, apiKey, model })
+      const text = typeof result === 'string' ? result : (result?.text || '')
+      const segs = typeof result === 'object' && Array.isArray(result?.segments) ? result.segments : null
+      await saveAudioTranscript(audioId, text, model, segs)
       setTranscript(text)
       setDraftTranscript(text)
       setTranscriptModel(model)
+      setSegments(segs)
+      setEditingTranscript(false)
     } catch (e) {
       setTranscriptError(e.message || 'Transcription failed')
     } finally {
@@ -164,9 +172,84 @@ function AudioNodeView({ node, editor, getPos }) {
 
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0
 
+  const seekTo = async (time) => {
+    const t = Math.max(0, Math.min(duration || 0, time))
+    if (!audioRef.current) {
+      await loadBlob()
+    }
+    const el = audioRef.current
+    if (el) {
+      try { el.currentTime = t } catch { /* ignore */ }
+    }
+    setCurrentTime(t)
+  }
+
+  const seekFromEvent = (e, rect) => {
+    const r = rect || e.currentTarget.getBoundingClientRect()
+    const x = (e.clientX ?? 0) - r.left
+    const ratio = Math.max(0, Math.min(1, x / Math.max(1, r.width)))
+    seekTo(ratio * (duration || 0))
+  }
+
+  const handleSeekPointerDown = (e) => {
+    if (!duration) return
+    e.preventDefault()
+    e.stopPropagation()
+    const target = e.currentTarget
+    const rect = target.getBoundingClientRect()
+    seekFromEvent(e, rect)
+    const onMove = (ev) => seekFromEvent(ev, rect)
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
+
+  const activeSegmentIdx = (() => {
+    if (!Array.isArray(segments) || segments.length === 0) return -1
+    for (let i = 0; i < segments.length; i++) {
+      const s = segments[i]
+      if (currentTime >= s.start && currentTime < s.end) return i
+    }
+    return -1
+  })()
+
+  useEffect(() => {
+    const el = wrapperRef.current
+    if (!el) return
+    const onDragStart = (e) => {
+      const t = e.target
+      if (t instanceof Element && t.closest('[data-no-drag]')) {
+        e.preventDefault()
+        e.stopPropagation()
+      }
+    }
+    const onMouseDown = (e) => {
+      const t = e.target
+      if (t instanceof Element && t.closest('[data-no-drag]')) {
+        // Temporarily disable drag so ProseMirror/browser don't hijack selection
+        el.setAttribute('draggable', 'false')
+        const restore = () => {
+          el.setAttribute('draggable', 'true')
+          window.removeEventListener('mouseup', restore, true)
+        }
+        window.addEventListener('mouseup', restore, true)
+      }
+    }
+    el.addEventListener('dragstart', onDragStart, true)
+    el.addEventListener('mousedown', onMouseDown, true)
+    return () => {
+      el.removeEventListener('dragstart', onDragStart, true)
+      el.removeEventListener('mousedown', onMouseDown, true)
+    }
+  }, [])
+
   return (
     <NodeViewWrapper
       as="div"
+      ref={wrapperRef}
       data-audio-id={audioId}
       contentEditable={false}
       draggable="true"
@@ -236,13 +319,32 @@ function AudioNodeView({ node, editor, getPos }) {
       </button>
 
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{
-          height: 4, background: 'var(--border-light)', borderRadius: 2, overflow: 'hidden',
-        }}>
+        <div
+          onPointerDown={handleSeekPointerDown}
+          style={{
+            height: 14, display: 'flex', alignItems: 'center',
+            cursor: duration ? 'pointer' : 'default',
+            touchAction: 'none',
+          }}
+        >
           <div style={{
-            height: '100%', width: `${progress}%`,
-            background: 'var(--accent)', transition: 'width 0.1s linear',
-          }} />
+            width: '100%', height: 4,
+            background: 'var(--border-light)', borderRadius: 2,
+            position: 'relative', overflow: 'visible',
+          }}>
+            <div style={{
+              height: '100%', width: `${progress}%`,
+              background: 'var(--accent)', borderRadius: 2,
+            }} />
+            <div style={{
+              position: 'absolute', top: '50%', left: `${progress}%`,
+              width: 10, height: 10, borderRadius: '50%',
+              background: 'var(--accent)',
+              transform: 'translate(-50%, -50%)',
+              boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
+              display: duration ? 'block' : 'none',
+            }} />
+          </div>
         </div>
         <div style={{
           display: 'flex', justifyContent: 'space-between',
@@ -301,10 +403,17 @@ function AudioNodeView({ node, editor, getPos }) {
      )}
 
      {expanded && (
-       <div style={{
+       <div
+         data-no-drag=""
+         draggable={false}
+         onDragStart={e => { e.preventDefault(); e.stopPropagation() }}
+         onMouseDown={e => e.stopPropagation()}
+         style={{
          padding: '10px 12px 12px',
          borderTop: '1px solid var(--border-light)',
          background: 'var(--bg-primary)',
+         userSelect: 'text',
+         WebkitUserSelect: 'text',
        }}>
          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: transcript || transcriptError || confirmRetranscribe ? '10px' : 0 }}>
            <button
@@ -369,11 +478,55 @@ function AudioNodeView({ node, editor, getPos }) {
              borderRadius: '6px', padding: '6px 10px', marginBottom: transcript ? '10px' : 0,
            }}>{transcriptError}</p>
          )}
-         {transcript && (
+         {transcript && Array.isArray(segments) && segments.length > 0 && !editingTranscript && (
+           <div
+             onMouseDown={e => e.stopPropagation()}
+             style={{
+               userSelect: 'text', WebkitUserSelect: 'text',
+               fontSize: '13px', color: 'var(--text-primary)',
+               background: 'var(--bg-secondary)',
+               border: '1px solid var(--border-light)', borderRadius: '6px',
+               padding: '8px 10px', lineHeight: 1.6,
+               fontFamily: 'var(--font-body)',
+               maxHeight: 260, overflowY: 'auto',
+             }}
+           >
+             {segments.map((s, i) => (
+               <span
+                 key={i}
+                 onClick={() => seekTo(s.start)}
+                 title={`${formatTime(s.start)}`}
+                 style={{
+                   cursor: 'pointer',
+                   background: i === activeSegmentIdx ? 'var(--accent-light)' : 'transparent',
+                   color: i === activeSegmentIdx ? 'var(--accent)' : 'inherit',
+                   borderRadius: 3,
+                   padding: '0 2px',
+                 }}
+               >
+                 {s.text}{' '}
+               </span>
+             ))}
+             <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
+               <button
+                 onClick={() => { setEditingTranscript(true); setDraftTranscript(transcript) }}
+                 style={{
+                   fontSize: '11px', color: 'var(--text-tertiary)',
+                   background: 'none', border: 'none', cursor: 'pointer',
+                   padding: 0, fontFamily: 'var(--font-body)',
+                 }}
+               >
+                 Edit text
+               </button>
+             </div>
+           </div>
+         )}
+         {transcript && (!Array.isArray(segments) || segments.length === 0 || editingTranscript) && (
            <textarea
              value={draftTranscript}
              onChange={e => setDraftTranscript(e.target.value)}
-             onBlur={handleSaveTranscript}
+             onMouseDown={e => e.stopPropagation()}
+             onBlur={() => { handleSaveTranscript(); setEditingTranscript(false) }}
              disabled={savingTranscript}
              rows={Math.min(12, Math.max(2, draftTranscript.split('\n').length))}
              style={{
@@ -385,6 +538,7 @@ function AudioNodeView({ node, editor, getPos }) {
                fontFamily: 'var(--font-body)',
                resize: 'vertical',
                margin: 0,
+               userSelect: 'text', WebkitUserSelect: 'text',
              }}
            />
          )}
