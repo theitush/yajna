@@ -32,6 +32,7 @@ function AudioNodeView({ node, editor, getPos }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmRetranscribe, setConfirmRetranscribe] = useState(false)
   const [draftTranscript, setDraftTranscript] = useState('')
+  const [selected, setSelected] = useState(false)
   const blobRef = useRef(null)
   const pendingPlayRef = useRef(false)
 
@@ -115,6 +116,26 @@ function AudioNodeView({ node, editor, getPos }) {
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
   }, [objectUrl])
+
+  useEffect(() => {
+    if (!editor) return
+    const update = () => {
+      if (typeof getPos !== 'function') return
+      const pos = getPos()
+      if (pos == null) { setSelected(false); return }
+      const { from, to } = editor.state.selection
+      const nodeFrom = pos
+      const nodeTo = pos + node.nodeSize
+      setSelected(from < nodeTo && to > nodeFrom && from !== to)
+    }
+    editor.on('selectionUpdate', update)
+    editor.on('transaction', update)
+    update()
+    return () => {
+      editor.off('selectionUpdate', update)
+      editor.off('transaction', update)
+    }
+  }, [editor, getPos, node])
 
   const tryAutoplay = () => {
     if (!pendingPlayRef.current) return
@@ -218,11 +239,13 @@ function AudioNodeView({ node, editor, getPos }) {
       contentEditable={false}
       style={{
         margin: '8px 0',
-        background: 'var(--bg-secondary)',
-        border: '1px solid var(--border-light)',
+        background: selected ? 'var(--accent-light)' : 'var(--bg-secondary)',
+        border: `1px solid ${selected ? 'var(--accent)' : 'var(--border-light)'}`,
         borderRadius: '10px',
         maxWidth: '360px',
         overflow: 'hidden',
+        boxShadow: selected ? '0 0 0 2px var(--accent-light)' : 'none',
+        transition: 'background 0.12s, border-color 0.12s, box-shadow 0.12s',
       }}
     >
      <div style={{
