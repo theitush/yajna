@@ -13,6 +13,21 @@ export default function TaskCard({ task }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const cardRef = useRef(null)
   const titleRef = useRef(null)
+  const explanationRef = useRef(null)
+  const feedbackRef = useRef(null)
+
+  const autosize = (el) => {
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = el.scrollHeight + 'px'
+  }
+
+  useEffect(() => {
+    if (expanded) {
+      autosize(explanationRef.current)
+      autosize(feedbackRef.current)
+    }
+  }, [expanded, editExplanation, editFeedback])
 
   const isDone = task.status === 'done' || task.status === 'reviewed'
 
@@ -144,12 +159,10 @@ export default function TaskCard({ task }) {
       {/* Header row */}
       <div
         onClick={(e) => {
-          // Single click on the header (not on interactive elements) expands if there's content
           const tag = e.target.tagName.toLowerCase()
           if (tag === 'button' || e.target.isContentEditable || editingTitle) return
-          if (!expanded) {
-            setExpanded(true)
-          }
+          if (expanded) commitEdits()
+          else setExpanded(true)
         }}
         style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '14px 16px', paddingBottom: expanded ? '8px' : '14px' }}
       >
@@ -292,26 +305,25 @@ export default function TaskCard({ task }) {
       {expanded && (
         <div style={{ padding: '0 16px 14px', paddingLeft: '50px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
           <textarea
+            ref={explanationRef}
             value={editExplanation}
             onChange={e => setEditExplanation(e.target.value)}
             onKeyDown={handleEditKey}
-            rows={2}
+            rows={1}
             placeholder="Explanation…"
             dir="auto"
-            style={textareaStyle}
+            style={{ ...textareaStyle, overflow: 'hidden' }}
           />
-          <div>
-            <p style={{ fontSize: '11px', color: 'var(--text-tertiary)', textTransform: 'lowercase', marginBottom: '4px' }}>feedback</p>
-            <textarea
-              value={editFeedback}
-              onChange={e => setEditFeedback(e.target.value)}
-              onKeyDown={handleEditKey}
-              rows={2}
-              placeholder="Feedback…"
-              dir="auto"
-              style={{ ...textareaStyle, opacity: 0.8 }}
-            />
-          </div>
+          <textarea
+            ref={feedbackRef}
+            value={editFeedback}
+            onChange={e => setEditFeedback(e.target.value)}
+            onKeyDown={handleEditKey}
+            rows={1}
+            placeholder="Feedback…"
+            dir="auto"
+            style={{ ...textareaStyle, opacity: 0.8, overflow: 'hidden' }}
+          />
 
           {!isDone && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', paddingTop: '4px' }}>
