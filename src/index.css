@@ -43,6 +43,9 @@ body {
 
 #root {
   height: 100dvh;
+  /* Shrink to visual viewport when the on-screen keyboard is open so the
+     topbar can't be scrolled off-screen. */
+  height: calc(100dvh - var(--kb-inset, 0px));
   display: flex;
   flex-direction: column;
   background: var(--bg-primary);

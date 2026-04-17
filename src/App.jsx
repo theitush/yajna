@@ -41,6 +41,21 @@ export default function App() {
     setInitError('Session expired. Please sign in again.')
   }
 
+  // When the mobile keyboard opens, the layout viewport stays full-height
+  // while the visual viewport shrinks — so scrolling can push the topbar
+  // off-screen. Track keyboard inset and shrink #root to match.
+  useEffect(() => {
+    const vv = window.visualViewport
+    if (!vv) return
+    const update = () => {
+      const kb = Math.max(0, window.innerHeight - vv.height)
+      document.documentElement.style.setProperty('--kb-inset', `${kb}px`)
+    }
+    update()
+    vv.addEventListener('resize', update)
+    return () => vv.removeEventListener('resize', update)
+  }, [])
+
   useEffect(() => {
     async function bootstrap() {
       try {
