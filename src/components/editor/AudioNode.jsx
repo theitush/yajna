@@ -26,17 +26,14 @@ function AudioNodeView({ node, editor, getPos }) {
   const [expanded, setExpanded] = useState(false)
   const [transcript, setTranscript] = useState('')
   const [segments, setSegments] = useState(null)
-  const [editingTranscript, setEditingTranscript] = useState(false)
   const [transcriptModel, setTranscriptModel] = useState(null)
   const [transcribing, setTranscribing] = useState(false)
   const [transcriptError, setTranscriptError] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmRetranscribe, setConfirmRetranscribe] = useState(false)
   const [draftTranscript, setDraftTranscript] = useState('')
-  const [savingTranscript, setSavingTranscript] = useState(false)
   const blobRef = useRef(null)
   const pendingPlayRef = useRef(false)
-  const wrapperRef = useRef(null)
 
   const loadBlob = async () => {
     setStatus('loading')
@@ -106,7 +103,6 @@ function AudioNodeView({ node, editor, getPos }) {
       setDraftTranscript(text)
       setTranscriptModel(model)
       setSegments(segs)
-      setEditingTranscript(false)
     } catch (e) {
       setTranscriptError(e.message || 'Transcription failed')
     } finally {
@@ -150,17 +146,16 @@ function AudioNodeView({ node, editor, getPos }) {
     }
   }
 
-  const handleSaveTranscript = async () => {
-    if (draftTranscript === transcript) return
-    setSavingTranscript(true)
-    try {
-      await saveAudioTranscript(audioId, draftTranscript, transcriptModel)
-      setTranscript(draftTranscript)
-    } catch (e) {
-      setTranscriptError(e.message || 'Could not save transcript')
-    } finally {
-      setSavingTranscript(false)
-    }
+  const commitSegmentEdit = (idx, newText) => {
+    if (!Array.isArray(segments)) return
+    const trimmed = newText.replace(/\s+/g, ' ').trim()
+    if (trimmed === segments[idx].text) return
+    const updated = segments.map((s, i) => i === idx ? { ...s, text: trimmed } : s)
+    const joined = updated.map(s => s.text).join(' ')
+    setSegments(updated)
+    setDraftTranscript(joined)
+    setTranscript(joined)
+    saveAudioTranscript(audioId, joined, transcriptModel, updated)
   }
 
   const handleDelete = () => {
@@ -216,60 +211,27 @@ function AudioNodeView({ node, editor, getPos }) {
     return -1
   })()
 
-  useEffect(() => {
-    const el = wrapperRef.current
-    if (!el) return
-    const onDragStart = (e) => {
-      const t = e.target
-      if (t instanceof Element && t.closest('[data-no-drag]')) {
-        e.preventDefault()
-        e.stopPropagation()
-      }
-    }
-    const onMouseDown = (e) => {
-      const t = e.target
-      if (t instanceof Element && t.closest('[data-no-drag]')) {
-        // Temporarily disable drag so ProseMirror/browser don't hijack selection
-        el.setAttribute('draggable', 'false')
-        const restore = () => {
-          el.setAttribute('draggable', 'true')
-          window.removeEventListener('mouseup', restore, true)
-        }
-        window.addEventListener('mouseup', restore, true)
-      }
-    }
-    el.addEventListener('dragstart', onDragStart, true)
-    el.addEventListener('mousedown', onMouseDown, true)
-    return () => {
-      el.removeEventListener('dragstart', onDragStart, true)
-      el.removeEventListener('mousedown', onMouseDown, true)
-    }
-  }, [])
-
   return (
     <NodeViewWrapper
       as="div"
-      ref={wrapperRef}
       data-audio-id={audioId}
       contentEditable={false}
-      draggable="true"
-      data-drag-handle=""
       style={{
         margin: '8px 0',
         background: 'var(--bg-secondary)',
         border: '1px solid var(--border-light)',
         borderRadius: '10px',
-        userSelect: 'none',
         maxWidth: '360px',
         overflow: 'hidden',
       }}
     >
      <div style={{
-       display: 'flex',
-       alignItems: 'center',
-       gap: '10px',
-       padding: '8px 12px',
-     }}>
+         display: 'flex',
+         alignItems: 'center',
+         gap: '10px',
+         padding: '8px 12px',
+         userSelect: 'none',
+       }}>
       <button
         onClick={togglePlay}
         disabled={status === 'loading'}
@@ -403,12 +365,7 @@ function AudioNodeView({ node, editor, getPos }) {
      )}
 
      {expanded && (
-       <div
-         data-no-drag=""
-         draggable={false}
-         onDragStart={e => { e.preventDefault(); e.stopPropagation() }}
-         onMouseDown={e => e.stopPropagation()}
-         style={{
+       <div style={{
          padding: '10px 12px 12px',
          borderTop: '1px solid var(--border-light)',
          background: 'var(--bg-primary)',
@@ -478,10 +435,8 @@ function AudioNodeView({ node, editor, getPos }) {
              borderRadius: '6px', padding: '6px 10px', marginBottom: transcript ? '10px' : 0,
            }}>{transcriptError}</p>
          )}
-         {transcript && Array.isArray(segments) && segments.length > 0 && !editingTranscript && (
-           <div
-             onMouseDown={e => e.stopPropagation()}
-             style={{
+         {transcript && Array.isArray(segments) && segments.length > 0 && (
+           <div style={{
                userSelect: 'text', WebkitUserSelect: 'text',
                fontSize: '13px', color: 'var(--text-primary)',
                background: 'var(--bg-secondary)',
@@ -492,53 +447,62 @@ function AudioNodeView({ node, editor, getPos }) {
              }}
            >
              {segments.map((s, i) => (
-               <span
-                 key={i}
-                 onClick={() => seekTo(s.start)}
-                 title={`${formatTime(s.start)}`}
-                 style={{
-                   cursor: 'pointer',
-                   background: i === activeSegmentIdx ? 'var(--accent-light)' : 'transparent',
-                   color: i === activeSegmentIdx ? 'var(--accent)' : 'inherit',
-                   borderRadius: 3,
-                   padding: '0 2px',
-                 }}
-               >
-                 {s.text}{' '}
+               <span key={i} style={{ display: 'inline' }}>
+                 <span
+                   contentEditable
+                   suppressContentEditableWarning
+                   spellCheck={false}
+                   // key on text ensures React rebuilds the DOM node when the
+                   // underlying segment text changes from outside (e.g. re-transcribe),
+                   // but does NOT re-render during typing (uncontrolled via dangerouslySetInnerHTML).
+                   dangerouslySetInnerHTML={{ __html: s.text }}
+                   onMouseDown={e => {
+                     // Seek only on a fresh click (not when already focused/editing)
+                     if (document.activeElement !== e.currentTarget) {
+                       seekTo(s.start)
+                     }
+                   }}
+                   onBlur={e => commitSegmentEdit(i, e.currentTarget.textContent || '')}
+                   onKeyDown={e => {
+                     if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() }
+                   }}
+                   title={`${formatTime(s.start)} — click to seek, click again to edit`}
+                   style={{
+                     cursor: 'text',
+                     background: i === activeSegmentIdx ? 'var(--accent-light)' : 'transparent',
+                     color: i === activeSegmentIdx ? 'var(--accent)' : 'inherit',
+                     borderRadius: 3,
+                     padding: '0 2px',
+                     outline: 'none',
+                   }}
+                 />
+                 {' '}
                </span>
              ))}
-             <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
-               <button
-                 onClick={() => { setEditingTranscript(true); setDraftTranscript(transcript) }}
-                 style={{
-                   fontSize: '11px', color: 'var(--text-tertiary)',
-                   background: 'none', border: 'none', cursor: 'pointer',
-                   padding: 0, fontFamily: 'var(--font-body)',
-                 }}
-               >
-                 Edit text
-               </button>
-             </div>
            </div>
          )}
-         {transcript && (!Array.isArray(segments) || segments.length === 0 || editingTranscript) && (
-           <textarea
-             value={draftTranscript}
-             onChange={e => setDraftTranscript(e.target.value)}
-             onMouseDown={e => e.stopPropagation()}
-             onBlur={() => { handleSaveTranscript(); setEditingTranscript(false) }}
-             disabled={savingTranscript}
-             rows={Math.min(12, Math.max(2, draftTranscript.split('\n').length))}
+         {transcript && (!Array.isArray(segments) || segments.length === 0) && (
+           <div
+             contentEditable
+             suppressContentEditableWarning
+             spellCheck={false}
+             dangerouslySetInnerHTML={{ __html: transcript }}
+             onBlur={e => {
+               const next = e.currentTarget.textContent || ''
+               if (next === transcript) return
+               setDraftTranscript(next)
+               setTranscript(next)
+               saveAudioTranscript(audioId, next, transcriptModel, null)
+             }}
              style={{
-               width: '100%', boxSizing: 'border-box',
                fontSize: '13px', color: 'var(--text-primary)',
                background: 'var(--bg-secondary)',
                border: '1px solid var(--border-light)', borderRadius: '6px',
-               padding: '8px 10px', lineHeight: 1.5,
+               padding: '8px 10px', lineHeight: 1.6,
                fontFamily: 'var(--font-body)',
-               resize: 'vertical',
-               margin: 0,
-               userSelect: 'text', WebkitUserSelect: 'text',
+               maxHeight: 260, overflowY: 'auto',
+               whiteSpace: 'pre-wrap',
+               outline: 'none',
              }}
            />
          )}
@@ -575,7 +539,7 @@ export const AudioNode = Node.create({
   name: 'audio',
   group: 'block',
   atom: true,
-  draggable: true,
+  draggable: false,
   selectable: false,
 
   addAttributes() {
