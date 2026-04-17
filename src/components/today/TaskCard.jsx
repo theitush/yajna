@@ -2,6 +2,18 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import useAppStore from '../../store/useAppStore'
 import { today } from '../../lib/dates'
 
+const HASHTAG_RE = /(#[\p{L}\p{N}_-]+)/gu
+
+function renderWithHashtags(text) {
+  if (!text) return text
+  const parts = text.split(HASHTAG_RE)
+  return parts.map((part, i) =>
+    part.startsWith('#')
+      ? <span key={i} style={{ color: 'var(--accent)', fontWeight: 500 }}>{part}</span>
+      : part
+  )
+}
+
 export default function TaskCard({ task }) {
   const { markTaskDone, markTaskActive, markTaskReviewed, deleteTask, moveToBacklog, scheduleTask, updateTask } = useAppStore()
   const [showReschedule, setShowReschedule] = useState(false)
@@ -214,7 +226,7 @@ export default function TaskCard({ task }) {
             margin: editingTitle ? '-1px -3px' : '0',
           }}
         >
-          {task.title}
+          {editingTitle ? task.title : renderWithHashtags(task.title)}
         </span>
 
         {/* Status badges */}
@@ -287,14 +299,14 @@ export default function TaskCard({ task }) {
         <button onClick={openExpanded} style={{ width: '100%', textAlign: 'start', padding: '0 16px 12px', paddingLeft: '50px', background: 'none', border: 'none', cursor: 'pointer' }}>
           {task.explanation && (
             <p dir="auto" style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', textAlign: 'start' }}>
-              {task.explanation}
+              {renderWithHashtags(task.explanation)}
             </p>
           )}
           {task.feedback && (
             <>
               <hr style={{ border: 'none', borderTop: '1px solid var(--border-light)', margin: '6px 0 4px' }} />
               <p dir="auto" style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', textAlign: 'start' }}>
-                {task.feedback}
+                {renderWithHashtags(task.feedback)}
               </p>
             </>
           )}
