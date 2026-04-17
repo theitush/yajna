@@ -41,6 +41,27 @@ export default function App() {
     setInitError('Session expired. Please sign in again.')
   }
 
+  // Track mobile keyboard via VisualViewport so we can keep the topbar visible
+  // and lift the record FAB above the keyboard.
+  useEffect(() => {
+    const vv = window.visualViewport
+    if (!vv) return
+    const update = () => {
+      const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop)
+      document.documentElement.style.setProperty('--kb-inset', `${kb}px`)
+      // When keyboard opens, the page may scroll up to reveal the focused
+      // input — undo that so the topbar stays visible.
+      if (kb > 0) window.scrollTo(0, 0)
+    }
+    update()
+    vv.addEventListener('resize', update)
+    vv.addEventListener('scroll', update)
+    return () => {
+      vv.removeEventListener('resize', update)
+      vv.removeEventListener('scroll', update)
+    }
+  }, [])
+
   useEffect(() => {
     async function bootstrap() {
       try {

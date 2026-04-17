@@ -1,17 +1,10 @@
 import { useRef, useState } from 'react'
-import { useSwipeable } from 'react-swipeable'
 import JournalPanel from '../components/today/JournalPanel'
 import TasksPanel from '../components/today/TasksPanel'
 
 export default function TodayPage() {
   const insertTextRef = useRef(null)
   const [panel, setPanel] = useState('journal')
-
-  const swipeHandlers = useSwipeable({
-    onSwipedLeft: () => setPanel('tasks'),
-    onSwipedRight: () => setPanel('journal'),
-    trackMouse: false,
-  })
 
   return (
     <>
@@ -25,8 +18,8 @@ export default function TodayPage() {
         </div>
       </div>
 
-      {/* Mobile: swipeable panels */}
-      <div className="md:hidden flex flex-col h-full" style={{ background: 'var(--bg-primary)' }} {...swipeHandlers}>
+      {/* Mobile: tabbed panels */}
+      <div className="md:hidden flex flex-col h-full" style={{ background: 'var(--bg-primary)' }}>
         <div style={{ display: 'flex', borderBottom: '1px solid var(--border-light)' }}>
           <button
             onClick={() => setPanel('journal')}
