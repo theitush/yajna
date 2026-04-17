@@ -10,6 +10,8 @@ import { today, weekKey, formatDate } from '../lib/dates'
 import { getJournal } from '../services/db'
 import { pullJournal } from '../services/sync'
 import { RTLExtension } from '../components/editor/RTLExtension'
+import { AudioNode } from '../components/editor/AudioNode'
+import RecordFab from '../components/voice/RecordFab'
 
 function buildWeekDates(week) {
   const [year, w] = week.split('-W')
@@ -50,13 +52,14 @@ const HashtagExtension = Extension.create({
   },
 })
 
-function EntryEditor({ content, onSave, dirtyRef }) {
+function EntryEditor({ content, onSave, dirtyRef, onEditorReady }) {
   const editor = useEditor({
     extensions: [
       StarterKit,
       Placeholder.configure({ placeholder: 'Nothing written this day…' }),
       HashtagExtension,
       RTLExtension,
+      AudioNode,
     ],
     content: content || '',
     onUpdate: ({ editor }) => {
@@ -74,6 +77,10 @@ function EntryEditor({ content, onSave, dirtyRef }) {
     }
   }, [editor, content])
 
+  useEffect(() => {
+    if (onEditorReady) onEditorReady(editor || null)
+  }, [editor, onEditorReady])
+
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', fontSize: '14px', color: 'var(--text-primary)' }}>
       <EditorContent editor={editor} />
@@ -89,6 +96,7 @@ export default function JournalPage() {
   const [selectedDate, setSelectedDate] = useState(todayStr)
   const [viewedWeek, setViewedWeek] = useState(weekKey(todayStr))
   const [weekDoc, setWeekDoc] = useState(null)
+  const [activeEditor, setActiveEditor] = useState(null)
   const saveTimeout = useRef(null)
 
   useEffect(() => {
@@ -197,8 +205,10 @@ export default function JournalPage() {
           content={entry?.content}
           onSave={handleSave}
           dirtyRef={saveTimeout}
+          onEditorReady={setActiveEditor}
         />
       </div>
+      {activeEditor && <RecordFab editor={activeEditor} />}
     </div>
   )
 }

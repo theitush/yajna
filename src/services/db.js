@@ -1,7 +1,7 @@
 import { openDB } from 'idb'
 import {
   DB_NAME, DB_VERSION,
-  STORE_TASKS, STORE_NOTES, STORE_JOURNALS, STORE_CONFIG, STORE_META,
+  STORE_TASKS, STORE_NOTES, STORE_JOURNALS, STORE_CONFIG, STORE_META, STORE_AUDIO,
 } from '../lib/constants'
 
 let dbPromise = null
@@ -25,6 +25,9 @@ function getDB() {
         }
         if (!db.objectStoreNames.contains(STORE_META)) {
           db.createObjectStore(STORE_META)
+        }
+        if (!db.objectStoreNames.contains(STORE_AUDIO)) {
+          db.createObjectStore(STORE_AUDIO, { keyPath: 'id' })
         }
       },
     })
@@ -130,6 +133,28 @@ export async function getConfig() {
 export async function putConfig(config) {
   const db = await getDB()
   return db.put(STORE_CONFIG, config, 'config')
+}
+
+// Audio: local-first audio blob store. Each record is
+// { id, blob, mimeType, duration, createdAt, driveFileId? }
+export async function putAudio(record) {
+  const db = await getDB()
+  return db.put(STORE_AUDIO, record)
+}
+
+export async function getAudio(id) {
+  const db = await getDB()
+  return db.get(STORE_AUDIO, id)
+}
+
+export async function getAllAudio() {
+  const db = await getDB()
+  return db.getAll(STORE_AUDIO)
+}
+
+export async function deleteAudio(id) {
+  const db = await getDB()
+  return db.delete(STORE_AUDIO, id)
 }
 
 // Meta (sync timestamps, drive folder id, etc.)

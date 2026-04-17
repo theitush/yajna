@@ -10,6 +10,8 @@ import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import useAppStore from '../store/useAppStore'
 import EditorToolbar from '../components/editor/EditorToolbar'
 import { RTLExtension } from '../components/editor/RTLExtension'
+import { AudioNode } from '../components/editor/AudioNode'
+import RecordFab from '../components/voice/RecordFab'
 
 const HashtagExtension = Extension.create({
   name: 'hashtag',
@@ -40,7 +42,7 @@ function extractTags(text) {
   return [...new Set(matches.map(t => t.slice(1)))]
 }
 
-function NoteEditor({ note, onUpdate, onDelete }) {
+function NoteEditor({ note, onUpdate, onDelete, onEditorReady }) {
   const saveTimeout = { current: null }
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleValue, setTitleValue] = useState(note?.title || '')
@@ -54,6 +56,7 @@ function NoteEditor({ note, onUpdate, onDelete }) {
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
       HashtagExtension,
       RTLExtension,
+      AudioNode,
     ],
     content: note?.body || '',
     onUpdate: ({ editor }) => {
@@ -76,6 +79,10 @@ function NoteEditor({ note, onUpdate, onDelete }) {
     setEditingTitle(false)
     setConfirmDelete(false)
   }, [note?.id])
+
+  useEffect(() => {
+    if (onEditorReady) onEditorReady(editor || null)
+  }, [editor, onEditorReady])
 
   if (!note) return (
     <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: '13px' }}>
@@ -272,6 +279,7 @@ export default function NotesPage() {
   const [selectedTags, setSelectedTags] = useState([])
   const [selectedNoteId, setSelectedNoteId] = useState(null)
   const [mobileView, setMobileView] = useState('list')
+  const [activeEditor, setActiveEditor] = useState(null)
 
   const allTags = [...new Set(notes.flatMap(n => n.tags || []))].sort()
   const filteredNotes = selectedTags.length > 0
@@ -406,8 +414,10 @@ export default function NotesPage() {
           note={selectedNote}
           onUpdate={updateNote}
           onDelete={handleDelete}
+          onEditorReady={setActiveEditor}
         />
       </div>
+      {selectedNote && activeEditor && <RecordFab editor={activeEditor} />}
     </div>
   )
 }

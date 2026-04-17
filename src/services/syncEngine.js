@@ -9,7 +9,7 @@
  *   { state: 'waiting', retryIn: <seconds remaining> }
  */
 import { getDriveFileIds, readJsonFile, findFile } from './drive'
-import { getTasks, getNotes, getConfig, putTasks, putNotes, putConfig, putJournal } from './db'
+import { getTasks, getNotes, getConfig, putTasks, putNotes, putConfig, putJournal, getAllAudio, putAudio } from './db'
 import { getStoredToken } from './auth'
 
 const DEFAULT_POLL_INTERVAL = 1000  // 1 second default
@@ -188,10 +188,11 @@ async function pollRemote(storeSetter) {
 
     setStatus({ state: 'syncing' })
 
-    const [tasks, notes, config] = await Promise.all([
+    const [tasks, notes, config, audioIndex] = await Promise.all([
       readJsonFile(ids.tasksFileId),
       readJsonFile(ids.notesFileId),
       readJsonFile(ids.configFileId),
+      ids.audioIndexFileId ? readJsonFile(ids.audioIndexFileId).catch(() => []) : Promise.resolve([]),
     ])
 
     // A local write raced with our pull — discard, the user's edit is fresher.
@@ -206,6 +207,29 @@ async function pollRemote(storeSetter) {
       putNotes(Array.isArray(notes) ? notes : []),
       putConfig(config || {}),
     ])
+
+    // Reconcile audio index: add stub records for any remote audio we don't
+    // know about yet. The blob itself is fetched lazily when the user plays it.
+    if (Array.isArray(audioIndex) && audioIndex.length > 0) {
+      try {
+        const localAudio = await getAllAudio()
+        const localIds = new Set(localAudio.map(a => a.id))
+        for (const entry of audioIndex) {
+          if (!entry?.id) continue
+          if (localIds.has(entry.id)) continue
+          await putAudio({
+            id: entry.id,
+            blob: null,
+            mimeType: entry.mimeType || 'audio/webm',
+            duration: entry.duration || 0,
+            createdAt: entry.createdAt || new Date().toISOString(),
+            driveFileId: entry.driveFileId || null,
+          })
+        }
+      } catch (e) {
+        console.warn('Audio index reconcile failed:', e.message || e)
+      }
+    }
 
     // Pull the current journal week if one is loaded
     let updatedJournal = undefined
@@ -252,6 +276,7 @@ async function getRemoteHash(ids) {
   if (!token) return { hash: null, journalFileId: null }
 
   const fileIds = [ids.tasksFileId, ids.notesFileId, ids.configFileId]
+  if (ids.audioIndexFileId) fileIds.push(ids.audioIndexFileId)
   let journalFileId = null
 
   // Find the current journal file and include it in the hash

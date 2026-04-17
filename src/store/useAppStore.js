@@ -9,6 +9,8 @@ import {
 } from '../services/db'
 import { pushTasks, pushNotes, pushJournal, pushConfig, initialSync, mergeAndPushJournal } from '../services/sync'
 import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, getSyncStatus, retryNow, setPollInterval } from '../services/syncEngine'
+import { pushAudio, pushPendingAudio, ensureAudioLocal } from '../services/audio'
+import { putAudio, getAudio } from '../services/db'
 
 const useAppStore = create((set, get) => ({
   // Auth / mode
@@ -194,6 +196,27 @@ const useAppStore = create((set, get) => ({
     if (get().mode !== MODE_OFFLINE) withRetry(() => pushJournal(updated))()
   },
 
+  // Audio (local-first, lazy Drive sync)
+  saveAudioBlob: async (blob, duration = 0) => {
+    const id = uuid()
+    const record = {
+      id,
+      blob,
+      mimeType: blob.type || 'audio/webm',
+      duration,
+      createdAt: new Date().toISOString(),
+    }
+    await putAudio(record)
+    if (get().mode !== MODE_OFFLINE) {
+      withRetry(() => pushAudio(id))()
+    }
+    return id
+  },
+  getAudioRecord: async (id) => {
+    if (get().mode === MODE_OFFLINE) return getAudio(id)
+    return ensureAudioLocal(id)
+  },
+
   // Config
   config: {},
   loadConfig: async () => {
@@ -227,6 +250,8 @@ const useAppStore = create((set, get) => ({
       })
       const intervalMs = (result?.mergedConfig?.syncInterval || 1) * 1000
       startSyncEngine((data) => set(data), intervalMs, () => get())
+      // Upload any local audio that wasn't synced yet (deferred so it doesn't block UI)
+      pushPendingAudio().catch(e => console.warn('pushPendingAudio failed', e))
     } catch (e) {
       console.error('Sync failed', e)
       set({ syncStatus: { state: 'offline' } })

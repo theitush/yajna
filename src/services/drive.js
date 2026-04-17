@@ -163,11 +163,25 @@ export async function uploadAudioFile(parentId, name, blob) {
 }
 
 /**
+ * Download a file from Drive as a Blob (used for lazy audio fetch).
+ */
+export async function downloadFileBlob(fileId) {
+  const token = window.gapi.client.getToken()?.access_token
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  )
+  if (!res.ok) throw new Error(`Drive download failed: ${res.status}`)
+  return res.blob()
+}
+
+/**
  * Initialize the full folder structure and return all file ids
  */
 export async function initDriveStructure() {
   const rootId = await getOrCreateAppFolder()
   const journalsFolderId = await getOrCreateSubfolder(rootId, 'journals')
+  const audioFolderId = await getOrCreateSubfolder(rootId, 'audio')
 
   const ensureFile = async (name, defaultData) => {
     let fileId = await findFile(rootId, name)
@@ -177,14 +191,16 @@ export async function initDriveStructure() {
     return fileId
   }
 
-  const [tasksFileId, notesFileId, configFileId] = await Promise.all([
+  const [tasksFileId, notesFileId, configFileId, audioIndexFileId] = await Promise.all([
     ensureFile('tasks.json', []),
     ensureFile('notes.json', []),
     ensureFile('config.json', {}),
+    ensureFile('audio.json', []),
   ])
 
-  await putMeta(FILES_KEY, { rootId, journalsFolderId, tasksFileId, notesFileId, configFileId })
-  return { rootId, journalsFolderId, tasksFileId, notesFileId, configFileId }
+  const ids = { rootId, journalsFolderId, audioFolderId, tasksFileId, notesFileId, configFileId, audioIndexFileId }
+  await putMeta(FILES_KEY, ids)
+  return ids
 }
 
 export async function getDriveFileIds() {

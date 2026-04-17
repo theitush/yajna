@@ -9,9 +9,10 @@ import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { useEffect, useCallback, useRef } from 'react'
 import useAppStore from '../../store/useAppStore'
 import { today, weekKey, formatDate } from '../../lib/dates'
-import VoiceButton from '../voice/VoiceButton'
 import EditorToolbar from '../editor/EditorToolbar'
 import { RTLExtension } from '../editor/RTLExtension'
+import { AudioNode } from '../editor/AudioNode'
+import RecordFab from '../voice/RecordFab'
 
 const HashtagExtension = Extension.create({
   name: 'hashtag',
@@ -64,6 +65,7 @@ export default function JournalPanel({ onInsertText }) {
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
       HashtagExtension,
       RTLExtension,
+      AudioNode,
     ],
     content,
     onUpdate: ({ editor }) => {
@@ -107,7 +109,6 @@ export default function JournalPanel({ onInsertText }) {
         <span style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-primary)' }}>
           {formatDate(todayStr)}
         </span>
-        <VoiceButton onTranscription={(text) => onInsertText?.current?.(text)} />
       </div>
 
       <EditorToolbar editor={editor} />
@@ -115,6 +116,7 @@ export default function JournalPanel({ onInsertText }) {
       <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px' }}>
         <EditorContent editor={editor} style={{ height: '100%' }} />
       </div>
+      {editor && <RecordFab editor={editor} />}
     </div>
   )
 }
