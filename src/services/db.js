@@ -33,7 +33,15 @@ function getDB() {
 }
 
 // Tasks
+// Reads filter out tombstones so the UI never sees soft-deleted rows.
+// Tombstones still live in IDB/Drive so multi-device sync knows about the delete.
 export async function getTasks() {
+  const db = await getDB()
+  const all = await db.getAll(STORE_TASKS)
+  return all.filter(t => !t.deleted)
+}
+
+export async function getAllTasksRaw() {
   const db = await getDB()
   return db.getAll(STORE_TASKS)
 }
@@ -49,13 +57,22 @@ export async function putTasks(tasks) {
   await Promise.all([...tasks.map(t => tx.store.put(t)), tx.done])
 }
 
+// Soft-delete: writes a tombstone (deleted: true + deletedAt) so the delete
+// propagates via sync. Pass a minimal object to avoid keeping stale content.
 export async function deleteTask(id) {
   const db = await getDB()
-  return db.delete(STORE_TASKS, id)
+  const now = new Date().toISOString()
+  return db.put(STORE_TASKS, { id, deleted: true, deletedAt: now, updatedAt: now })
 }
 
 // Notes
 export async function getNotes() {
+  const db = await getDB()
+  const all = await db.getAll(STORE_NOTES)
+  return all.filter(n => !n.deleted)
+}
+
+export async function getAllNotesRaw() {
   const db = await getDB()
   return db.getAll(STORE_NOTES)
 }
@@ -73,7 +90,24 @@ export async function putNotes(notes) {
 
 export async function deleteNote(id) {
   const db = await getDB()
-  return db.delete(STORE_NOTES, id)
+  const now = new Date().toISOString()
+  return db.put(STORE_NOTES, { id, deleted: true, deletedAt: now, updatedAt: now })
+}
+
+// Purge tombstones older than the given cutoff. Called periodically (e.g.
+// during initial sync) to bound storage growth.
+export async function purgeTombstones(cutoffIso) {
+  const db = await getDB()
+  for (const store of [STORE_TASKS, STORE_NOTES]) {
+    const tx = db.transaction(store, 'readwrite')
+    const all = await tx.store.getAll()
+    for (const row of all) {
+      if (row.deleted && row.deletedAt && row.deletedAt < cutoffIso) {
+        await tx.store.delete(row.id)
+      }
+    }
+    await tx.done
+  }
 }
 
 // Journals

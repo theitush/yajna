@@ -93,29 +93,14 @@ export default function TasksPage() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflowY: 'auto', background: 'var(--bg-primary)' }}>
       {/* Header */}
       <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        display: 'flex', alignItems: 'center', gap: '12px',
         padding: '12px 16px',
         borderBottom: '1px solid var(--border-light)',
         position: 'sticky', top: 0,
         background: 'var(--bg-primary)', zIndex: 10,
       }}>
-        <h1 style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-primary)' }}>Tasks</h1>
-        <button
-          onClick={() => setShowAdd(s => !s)}
-          style={{
-            fontSize: '12px', fontWeight: 500,
-            color: 'var(--accent)', background: 'var(--accent-light)',
-            border: 'none', padding: '5px 14px', borderRadius: '8px',
-            cursor: 'pointer', fontFamily: 'var(--font-body)',
-          }}
-        >
-          + Add task
-        </button>
-      </div>
-
-      <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-        {/* Search */}
-        <div style={{ position: 'relative' }}>
+        <h1 style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-primary)', flexShrink: 0 }}>Tasks</h1>
+        <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
           <input
             ref={searchRef}
             value={search}
@@ -162,7 +147,20 @@ export default function TasksPage() {
             </div>
           )}
         </div>
+        <button
+          onClick={() => setShowAdd(s => !s)}
+          style={{
+            fontSize: '12px', fontWeight: 500,
+            color: 'var(--accent)', background: 'var(--accent-light)',
+            border: 'none', padding: '5px 14px', borderRadius: '8px',
+            cursor: 'pointer', fontFamily: 'var(--font-body)', flexShrink: 0,
+          }}
+        >
+          + Add task
+        </button>
+      </div>
 
+      <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
         {showAdd && (
           <div style={{
             background: 'var(--bg-secondary)', borderRadius: '12px',

@@ -29,6 +29,15 @@ let pendingPush = null
 let lastRemoteHash = null
 let _storeSetter = null
 let _storeGetter = null
+// Generation counter: bumped whenever a local write/push occurs. A poll that
+// started before a bump must discard its result, since the remote data it
+// fetched predates the user's local change and would clobber it.
+let writeGeneration = 0
+let pushesInFlight = 0
+
+export function notifyLocalWrite() {
+  writeGeneration++
+}
 
 function setStatus(s) {
   // Deep compare for waiting state
@@ -159,6 +168,11 @@ export function setPollInterval(ms) {
 
 async function pollRemote(storeSetter) {
   if (!running || !navigator.onLine) return
+  // Skip polling entirely if a push is in flight — our own upload is about to
+  // change the remote state, so any pull right now is stale by definition.
+  if (pushesInFlight > 0 || pendingPush) return
+
+  const startGen = writeGeneration
 
   try {
     const token = await getStoredToken()
@@ -169,6 +183,8 @@ async function pollRemote(storeSetter) {
 
     const { hash, journalFileId } = await getRemoteHash(ids)
     if (hash === lastRemoteHash) return
+    // Bail if a local write happened while we were fetching the hash
+    if (writeGeneration !== startGen || pushesInFlight > 0) return
 
     setStatus({ state: 'syncing' })
 
@@ -177,6 +193,13 @@ async function pollRemote(storeSetter) {
       readJsonFile(ids.notesFileId),
       readJsonFile(ids.configFileId),
     ])
+
+    // A local write raced with our pull — discard, the user's edit is fresher.
+    // Don't update lastRemoteHash either; let the next poll re-evaluate.
+    if (writeGeneration !== startGen || pushesInFlight > 0) {
+      setStatus({ state: 'synced' })
+      return
+    }
 
     await Promise.all([
       putTasks(Array.isArray(tasks) ? tasks : []),
@@ -194,10 +217,18 @@ async function pollRemote(storeSetter) {
       }
     }
 
+    if (writeGeneration !== startGen || pushesInFlight > 0) {
+      setStatus({ state: 'synced' })
+      return
+    }
+
     if (storeSetter) {
+      // Filter tombstones before hydrating the store — IDB keeps them but the UI must not see them.
+      const visibleTasks = (Array.isArray(tasks) ? tasks : []).filter(t => !t.deleted)
+      const visibleNotes = (Array.isArray(notes) ? notes : []).filter(n => !n.deleted)
       const update = {
-        tasks: Array.isArray(tasks) ? tasks : [],
-        notes: Array.isArray(notes) ? notes : [],
+        tasks: visibleTasks,
+        notes: visibleNotes,
         config: config || {},
       }
       if (updatedJournal !== undefined) {
@@ -294,6 +325,7 @@ async function executePush(pushFn) {
     return
   }
   setStatus({ state: 'syncing' })
+  pushesInFlight++
   try {
     await pushFn()
     retryCount = 0
@@ -307,6 +339,8 @@ async function executePush(pushFn) {
   } catch (e) {
     console.warn('Push failed:', e.message || e)
     scheduleRetry(pushFn)
+  } finally {
+    pushesInFlight--
   }
 }
 
@@ -316,6 +350,8 @@ async function executePush(pushFn) {
  */
 export function withRetry(pushFn) {
   return () => {
+    // Mark that a local write happened so any in-flight poll discards its result
+    writeGeneration++
     // Cancel stale retry — this fresh push replaces whatever was queued
     clearTimeout(retryTimer)
     clearInterval(countdownTimer)

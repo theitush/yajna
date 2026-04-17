@@ -5,7 +5,7 @@
  */
 import {
   getTasks, putTasks, getNotes, putNotes, putJournal, getConfig, putConfig,
-  putMeta,
+  putMeta, getAllTasksRaw, getAllNotesRaw, purgeTombstones,
 } from './db'
 import {
   getDriveFileIds, readJsonFile, writeJsonFile,
@@ -65,9 +65,10 @@ export async function mergeWithDrive() {
     readJsonFile(ids.configFileId),
   ])
 
+  // Use raw reads so tombstones participate in the merge.
   const [localTasks, localNotes, localConfig] = await Promise.all([
-    getTasks(),
-    getNotes(),
+    getAllTasksRaw(),
+    getAllNotesRaw(),
     getConfig(),
   ])
 
@@ -75,7 +76,7 @@ export async function mergeWithDrive() {
   const mergedNotes = mergeById(localNotes, Array.isArray(remoteNotes) ? remoteNotes : [])
   const mergedConfig = { ...(localConfig || {}), ...(remoteConfig || {}) }
 
-  // Write merged data back to local and Drive
+  // Write merged data (including tombstones) back to local and Drive
   await Promise.all([
     putTasks(mergedTasks),
     putNotes(mergedNotes),
@@ -87,8 +88,18 @@ export async function mergeWithDrive() {
     writeJsonFile(ids.rootId, 'config.json', mergedConfig, ids.configFileId),
   ])
 
+  // Purge tombstones older than 30 days so storage doesn't grow unbounded.
+  // By this point all devices have had plenty of time to see the delete.
+  const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+  await purgeTombstones(cutoff).catch(() => {})
+
   await putMeta(LAST_SYNC_KEY, Date.now())
-  return { mergedTasks, mergedNotes, mergedConfig }
+  // Return the UI-facing view (no tombstones) so callers hydrate the store cleanly.
+  return {
+    mergedTasks: mergedTasks.filter(t => !t.deleted),
+    mergedNotes: mergedNotes.filter(n => !n.deleted),
+    mergedConfig,
+  }
 }
 
 /**
@@ -115,23 +126,33 @@ export async function pullFromDrive() {
 }
 
 /**
- * Push tasks to Drive
+ * Push tasks to Drive. Merges with remote first so a concurrent edit from
+ * another device isn't clobbered — per-id, newer updatedAt wins.
+ * Returns the merged array so callers can reconcile their local state.
  */
 export async function pushTasks() {
   const ids = await getDriveFileIds()
-  if (!ids) return
-  const tasks = await getTasks()
-  await writeJsonFile(ids.rootId, 'tasks.json', tasks, ids.tasksFileId)
+  if (!ids) return null
+  const localTasks = await getAllTasksRaw()
+  const remoteTasks = await readJsonFile(ids.tasksFileId)
+  const merged = mergeById(localTasks, Array.isArray(remoteTasks) ? remoteTasks : [])
+  await putTasks(merged)
+  await writeJsonFile(ids.rootId, 'tasks.json', merged, ids.tasksFileId)
+  return merged
 }
 
 /**
- * Push notes to Drive
+ * Push notes to Drive. Merges with remote first (see pushTasks).
  */
 export async function pushNotes() {
   const ids = await getDriveFileIds()
-  if (!ids) return
-  const notes = await getNotes()
-  await writeJsonFile(ids.rootId, 'notes.json', notes, ids.notesFileId)
+  if (!ids) return null
+  const localNotes = await getAllNotesRaw()
+  const remoteNotes = await readJsonFile(ids.notesFileId)
+  const merged = mergeById(localNotes, Array.isArray(remoteNotes) ? remoteNotes : [])
+  await putNotes(merged)
+  await writeJsonFile(ids.rootId, 'notes.json', merged, ids.notesFileId)
+  return merged
 }
 
 /**
