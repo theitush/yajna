@@ -2,7 +2,7 @@ import { Node, mergeAttributes } from '@tiptap/core'
 import { ReactNodeViewRenderer, NodeViewWrapper } from '@tiptap/react'
 import { useEffect, useRef, useState } from 'react'
 import useAppStore from '../../store/useAppStore'
-import TranscriptModal from './TranscriptModal'
+import { transcribeWithGroq, DEFAULT_GROQ_MODEL } from '../../services/transcribe'
 
 function formatTime(s) {
   if (!isFinite(s) || s < 0) s = 0
@@ -14,6 +14,8 @@ function formatTime(s) {
 function AudioNodeView({ node, editor, getPos }) {
   const audioId = node.attrs.audioId
   const getAudioRecord = useAppStore(s => s.getAudioRecord)
+  const saveAudioTranscript = useAppStore(s => s.saveAudioTranscript)
+  const config = useAppStore(s => s.config)
   const audioRef = useRef(null)
   const [objectUrl, setObjectUrl] = useState(null)
   const [playing, setPlaying] = useState(false)
@@ -21,7 +23,13 @@ function AudioNodeView({ node, editor, getPos }) {
   const [currentTime, setCurrentTime] = useState(0)
   const [status, setStatus] = useState('idle') // idle | loading | ready | error
   const [error, setError] = useState(null)
-  const [showTranscript, setShowTranscript] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const [transcript, setTranscript] = useState('')
+  const [transcriptModel, setTranscriptModel] = useState(null)
+  const [transcribing, setTranscribing] = useState(false)
+  const [transcriptError, setTranscriptError] = useState(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const blobRef = useRef(null)
   const pendingPlayRef = useRef(false)
 
   const loadBlob = async () => {
@@ -34,16 +42,61 @@ function AudioNodeView({ node, editor, getPos }) {
         setError('Audio not found')
         return null
       }
+      blobRef.current = rec.blob
       const url = URL.createObjectURL(rec.blob)
       setObjectUrl(url)
       setStatus('ready')
       if (rec.duration) setDuration(rec.duration)
+      if (rec.transcript) {
+        setTranscript(rec.transcript)
+        setTranscriptModel(rec.transcriptModel || null)
+      }
       return url
     } catch (e) {
       console.error('Audio load failed', e)
       setStatus('error')
       setError('Could not load audio')
       return null
+    }
+  }
+
+  const handleToggleExpand = async () => {
+    const next = !expanded
+    setExpanded(next)
+    if (next && !transcript && !blobRef.current) {
+      // Pre-load so we can show any saved transcript and have the blob ready
+      await loadBlob()
+    }
+  }
+
+  const handleTranscribe = async () => {
+    setTranscriptError(null)
+    const apiKey = config?.groqApiKey
+    if (!apiKey) {
+      setTranscriptError('Add your Groq API key in Settings first')
+      return
+    }
+    let blob = blobRef.current
+    if (!blob) {
+      const rec = await getAudioRecord(audioId)
+      blob = rec?.blob || null
+      if (blob) blobRef.current = blob
+    }
+    if (!blob) {
+      setTranscriptError('Audio not available')
+      return
+    }
+    const model = config?.groqModel || DEFAULT_GROQ_MODEL
+    setTranscribing(true)
+    try {
+      const text = await transcribeWithGroq({ blob, apiKey, model })
+      await saveAudioTranscript(audioId, text, model)
+      setTranscript(text)
+      setTranscriptModel(model)
+    } catch (e) {
+      setTranscriptError(e.message || 'Transcription failed')
+    } finally {
+      setTranscribing(false)
     }
   }
 
@@ -100,18 +153,21 @@ function AudioNodeView({ node, editor, getPos }) {
       draggable="true"
       data-drag-handle=""
       style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: '10px',
-        padding: '8px 12px',
         margin: '8px 0',
         background: 'var(--bg-secondary)',
         border: '1px solid var(--border-light)',
         borderRadius: '10px',
         userSelect: 'none',
         maxWidth: '360px',
+        overflow: 'hidden',
       }}
     >
+     <div style={{
+       display: 'flex',
+       alignItems: 'center',
+       gap: '10px',
+       padding: '8px 12px',
+     }}>
       <button
         onClick={togglePlay}
         disabled={status === 'loading'}
@@ -143,6 +199,23 @@ function AudioNodeView({ node, editor, getPos }) {
         )}
       </button>
 
+      <button
+        onClick={handleToggleExpand}
+        title={expanded ? 'Hide transcript' : 'Show transcript'}
+        aria-expanded={expanded}
+        style={{
+          background: 'none', border: 'none', cursor: 'pointer',
+          color: 'var(--text-tertiary)', padding: '4px', marginLeft: '-4px',
+          display: 'flex', alignItems: 'center',
+          transition: 'transform 0.15s',
+          transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
+        }}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+          <path d="M6 9l6 6 6-6"/>
+        </svg>
+      </button>
+
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{
           height: 4, background: 'var(--border-light)', borderRadius: 2, overflow: 'hidden',
@@ -163,21 +236,7 @@ function AudioNodeView({ node, editor, getPos }) {
       </div>
 
       <button
-        onClick={() => setShowTranscript(true)}
-        title="Transcript"
-        style={{
-          background: 'none', border: 'none', cursor: 'pointer',
-          color: 'var(--text-tertiary)', padding: '4px',
-          display: 'flex', alignItems: 'center',
-        }}
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-          <path d="M4 6h16M4 12h16M4 18h10"/>
-        </svg>
-      </button>
-
-      <button
-        onClick={handleDelete}
+        onClick={() => setConfirmDelete(true)}
         title="Remove audio"
         style={{
           background: 'none', border: 'none', cursor: 'pointer',
@@ -190,9 +249,86 @@ function AudioNodeView({ node, editor, getPos }) {
         </svg>
       </button>
 
-      {showTranscript && (
-        <TranscriptModal audioId={audioId} onClose={() => setShowTranscript(false)} />
-      )}
+     </div>
+
+     {confirmDelete && (
+       <div style={{
+         padding: '0 12px 10px', display: 'flex', alignItems: 'center', gap: '8px',
+       }}>
+         <p style={{ fontSize: '12px', color: '#FCA5A5', flex: 1 }}>Delete this recording?</p>
+         <button
+           onClick={handleDelete}
+           style={{
+             fontSize: '12px', padding: '4px 10px', borderRadius: '8px',
+             background: 'rgba(239,68,68,0.15)', color: '#FCA5A5',
+             border: '1px solid rgba(239,68,68,0.3)', cursor: 'pointer',
+             fontFamily: 'var(--font-body)',
+           }}
+         >
+           Delete
+         </button>
+         <button
+           onClick={() => setConfirmDelete(false)}
+           style={{
+             fontSize: '12px', padding: '4px 10px', borderRadius: '8px',
+             background: 'var(--bg-secondary)', color: 'var(--text-secondary)',
+             border: '1px solid var(--border-light)', cursor: 'pointer',
+             fontFamily: 'var(--font-body)',
+           }}
+         >
+           Cancel
+         </button>
+       </div>
+     )}
+
+     {expanded && (
+       <div style={{
+         padding: '10px 12px 12px',
+         borderTop: '1px solid var(--border-light)',
+         background: 'var(--bg-primary)',
+       }}>
+         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: transcript || transcriptError ? '10px' : 0 }}>
+           <button
+             onClick={handleTranscribe}
+             disabled={transcribing}
+             style={{
+               fontSize: '12px', fontWeight: 500,
+               color: 'var(--accent)', background: 'var(--accent-light)',
+               border: 'none', padding: '6px 12px', borderRadius: '6px',
+               cursor: transcribing ? 'wait' : 'pointer',
+               fontFamily: 'var(--font-body)',
+               opacity: transcribing ? 0.6 : 1,
+             }}
+           >
+             {transcribing ? 'Transcribing…' : transcript ? 'Re-transcribe' : 'Transcribe'}
+           </button>
+           {transcriptModel && (
+             <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+               {transcriptModel}
+             </span>
+           )}
+         </div>
+         {transcriptError && (
+           <p style={{
+             fontSize: '11px', color: '#FCA5A5',
+             background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)',
+             borderRadius: '6px', padding: '6px 10px', marginBottom: transcript ? '10px' : 0,
+           }}>{transcriptError}</p>
+         )}
+         {transcript && (
+           <p style={{
+             fontSize: '13px', color: 'var(--text-primary)',
+             whiteSpace: 'pre-wrap', lineHeight: 1.5,
+             margin: 0,
+           }}>{transcript}</p>
+         )}
+         {!transcript && !transcribing && !transcriptError && (
+           <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', margin: 0 }}>
+             No transcript yet.
+           </p>
+         )}
+       </div>
+     )}
 
       {objectUrl && (
         <audio
