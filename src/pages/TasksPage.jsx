@@ -99,7 +99,7 @@ export default function TasksPage() {
         position: 'sticky', top: 0,
         background: 'var(--bg-primary)', zIndex: 10,
       }}>
-        <h1 style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-primary)', flexShrink: 0 }}>Tasks</h1>
+        <h1 style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-primary)', flexShrink: 0 }}>Todos</h1>
         <div style={{ position: 'relative', flex: 1, minWidth: 0, maxWidth: '320px', margin: '0 auto' }}>
           <input
             ref={searchRef}
@@ -114,7 +114,7 @@ export default function TasksPage() {
                 applySuggestion(suggestions[0])
               }
             }}
-            placeholder="Search tasks… (use #tag)"
+            placeholder="Search todos..."
             dir="auto"
             style={inputStyle}
           />
@@ -156,7 +156,7 @@ export default function TasksPage() {
             cursor: 'pointer', fontFamily: 'var(--font-body)', flexShrink: 0,
           }}
         >
-          + Add task
+          + Add
         </button>
       </div>
 
