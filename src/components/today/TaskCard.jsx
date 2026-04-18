@@ -57,9 +57,8 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
   }, [defaultExpanded, defaultEditingTitle])
 
   useEffect(() => {
-    if (!editingTitle || !defaultEditingTitle || !titleRef.current) return
+    if (!editingTitle || !titleRef.current) return
     const el = titleRef.current
-    el.innerText = task.title || ''
     el.focus()
     const range = document.createRange()
     const sel = window.getSelection()
@@ -153,18 +152,6 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
   const handleTitleDoubleClick = (e) => {
     e.stopPropagation()
     setEditingTitle(true)
-    setTimeout(() => {
-      if (titleRef.current) {
-        titleRef.current.innerText = task.title || ''
-        titleRef.current.focus()
-        const range = document.createRange()
-        const sel = window.getSelection()
-        range.selectNodeContents(titleRef.current)
-        range.collapse(false)
-        sel.removeAllRanges()
-        sel.addRange(range)
-      }
-    }, 0)
   }
 
   const handleSchedule = () => {
@@ -249,6 +236,7 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
 
         {/* Title */}
         <span
+          key={editingTitle ? 'edit' : 'view'}
           ref={titleRef}
           dir="auto"
           contentEditable={editingTitle ? 'true' : 'false'}
@@ -272,7 +260,7 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
             margin: editingTitle ? '-1px -3px' : '0',
           }}
         >
-          {editingTitle ? null : renderWithHashtags(task.title)}
+          {editingTitle ? task.title : renderWithHashtags(task.title)}
         </span>
 
         {/* Status badges */}
