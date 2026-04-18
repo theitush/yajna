@@ -5,8 +5,9 @@ import { DEFAULT_TEMPLATE, MODE_OFFLINE } from '../lib/constants'
 import {
   getTasks, putTask, putTasks, deleteTask as dbDeleteTask,
   getNotes, putNote, putNotes, deleteNote as dbDeleteNote,
-  getJournal, putJournal, getConfig, putConfig,
+  getJournal, putJournal, getAllJournals, getConfig, putConfig,
 } from '../services/db'
+import { extractHashtags } from '../lib/hashtags'
 import { pushTasks, pushNotes, pushJournal, pushConfig, initialSync, mergeAndPushJournal } from '../services/sync'
 import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, getSyncStatus, retryNow, setPollInterval } from '../services/syncEngine'
 import { pushAudio, pushAudioMetadata, pushPendingAudio, ensureAudioLocal } from '../services/audio'
@@ -163,6 +164,41 @@ const useAppStore = create((set, get) => ({
 
   // Journals
   currentJournal: null,
+  // Tags accumulated from ALL journal weeks (so suggestions don't lose tags
+  // that live in weeks other than the currently-loaded one).
+  journalTagPool: [],
+  loadJournalTagPool: async () => {
+    try {
+      const docs = await getAllJournals()
+      const tagSet = new Set()
+      for (const doc of docs || []) {
+        for (const date in doc.entries || {}) {
+          for (const tag of extractHashtags(doc.entries[date]?.content)) tagSet.add(tag)
+        }
+      }
+      set({ journalTagPool: [...tagSet] })
+    } catch {}
+  },
+  // Aggregated, always-current tag pool across notes, tasks, and journals.
+  // Read via getAllTags() so editor extensions don't need React wiring.
+  getAllTags: () => {
+    const s = get()
+    const tagSet = new Set()
+    for (const n of s.notes) {
+      for (const t of n.tags || []) tagSet.add(String(t).toLowerCase())
+      for (const t of extractHashtags(n.body)) tagSet.add(t)
+    }
+    for (const t of s.tasks) {
+      for (const tag of extractHashtags(`${t.title || ''} ${t.explanation || ''} ${t.feedback || ''} ${t.tags || ''}`)) tagSet.add(tag)
+    }
+    for (const tag of s.journalTagPool) tagSet.add(tag)
+    if (s.currentJournal?.entries) {
+      for (const date in s.currentJournal.entries) {
+        for (const tag of extractHashtags(s.currentJournal.entries[date]?.content)) tagSet.add(tag)
+      }
+    }
+    return [...tagSet].sort()
+  },
   loadJournal: async (week) => {
     let doc = await getJournal(week)
     if (!doc) {
@@ -303,6 +339,7 @@ const useAppStore = create((set, get) => ({
       startSyncEngine((data) => set(data), intervalMs, () => get())
       // Upload any local audio that wasn't synced yet (deferred so it doesn't block UI)
       pushPendingAudio().catch(e => console.warn('pushPendingAudio failed', e))
+      get().loadJournalTagPool()
     } catch (e) {
       console.error('Sync failed', e)
       set({ syncStatus: { state: 'offline' } })
@@ -317,6 +354,7 @@ const useAppStore = create((set, get) => ({
       getTasks(), getNotes(), getConfig(),
     ])
     set({ tasks, notes, config: config || {} })
+    get().loadJournalTagPool()
   },
 }))
 

@@ -124,6 +124,11 @@ export async function putJournal(journalDoc) {
   return db.put(STORE_JOURNALS, journalDoc)
 }
 
+export async function getAllJournals() {
+  const db = await getDB()
+  return db.getAll(STORE_JOURNALS)
+}
+
 // Config
 export async function getConfig() {
   const db = await getDB()

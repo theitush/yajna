@@ -12,6 +12,8 @@ import { today, weekKey, formatDate } from '../../lib/dates'
 import EditorToolbar from '../editor/EditorToolbar'
 import { RTLExtension } from '../editor/RTLExtension'
 import { AudioNode } from '../editor/AudioNode'
+import { HashtagSuggest } from '../editor/HashtagSuggest'
+import { HeadingNoShortcut } from '../editor/HeadingNoShortcut'
 import RecordFab from '../voice/RecordFab'
 
 const HashtagExtension = Extension.create({
@@ -48,6 +50,7 @@ export default function JournalPanel({ onInsertText }) {
   const currentJournal = useAppStore(s => s.currentJournal)
   const updateJournalEntry = useAppStore(s => s.updateJournalEntry)
   const loadJournal = useAppStore(s => s.loadJournal)
+  const getTags = useAppStore.getState().getAllTags
   const saveTimeout = useRef(null)
   const todayStr = today()
 
@@ -59,11 +62,13 @@ export default function JournalPanel({ onInsertText }) {
 
   const editor = useEditor({
     extensions: [
-      StarterKit,
+      StarterKit.configure({ heading: false }),
+      HeadingNoShortcut,
       Placeholder.configure({ placeholder: 'Start writing…' }),
       Highlight.configure({ multicolor: true }),
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
       HashtagExtension,
+      HashtagSuggest.configure({ getTags }),
       RTLExtension,
       AudioNode,
     ],

@@ -14,7 +14,7 @@ const SECTIONS = [
 const HASHTAG_RE = /#([\p{L}\p{N}_-]+)/gu
 
 function extractTags(task) {
-  const text = `${task.title || ''} ${task.explanation || ''} ${task.feedback || ''}`
+  const text = `${task.title || ''} ${task.explanation || ''} ${task.feedback || ''} ${task.tags || ''}`
   const out = new Set()
   for (const m of text.matchAll(HASHTAG_RE)) out.add(m[1].toLowerCase())
   return out
@@ -23,12 +23,15 @@ function extractTags(task) {
 function matchesSearch(task, query) {
   if (!query) return true
   const q = query.toLowerCase()
-  const hay = `${task.title || ''} ${task.explanation || ''} ${task.feedback || ''}`.toLowerCase()
+  const hay = `${task.title || ''} ${task.explanation || ''} ${task.feedback || ''} ${task.tags || ''}`.toLowerCase()
   return hay.includes(q)
 }
 
 export default function TasksPage() {
   const tasks = useAppStore(s => s.tasks)
+  useAppStore(s => s.notes)
+  useAppStore(s => s.currentJournal)
+  useAppStore(s => s.journalTagPool)
   const addTask = useAppStore(s => s.addTask)
   const [showAdd, setShowAdd] = useState(false)
   const [title, setTitle] = useState('')
@@ -38,11 +41,7 @@ export default function TasksPage() {
   const [showSuggestions, setShowSuggestions] = useState(false)
   const searchRef = useRef(null)
 
-  const allTags = useMemo(() => {
-    const s = new Set()
-    for (const t of tasks) for (const tag of extractTags(t)) s.add(tag)
-    return [...s].sort()
-  }, [tasks])
+  const allTags = useAppStore.getState().getAllTags()
 
   // Detect the hashtag token currently being typed (cursor at end of input for simplicity)
   const activeHashtag = useMemo(() => {

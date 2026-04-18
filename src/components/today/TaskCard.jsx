@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import useAppStore from '../../store/useAppStore'
 import { today } from '../../lib/dates'
+import HashtagTextarea from '../HashtagAutocomplete'
 
 const HASHTAG_RE = /(#[\p{L}\p{N}_-]+)/gu
 
@@ -16,17 +17,25 @@ function renderWithHashtags(text) {
 
 export default function TaskCard({ task }) {
   const { markTaskDone, markTaskActive, markTaskReviewed, deleteTask, moveToBacklog, scheduleTask, updateTask } = useAppStore()
+  // Subscribe to anything that can change the tag pool, then ask the store.
+  useAppStore(s => s.notes)
+  useAppStore(s => s.tasks)
+  useAppStore(s => s.currentJournal)
+  useAppStore(s => s.journalTagPool)
+  const allTags = useAppStore.getState().getAllTags()
   const [showReschedule, setShowReschedule] = useState(false)
   const [scheduleDate, setScheduleDate] = useState('')
   const [expanded, setExpanded] = useState(false)
   const [editingTitle, setEditingTitle] = useState(false)
   const [editExplanation, setEditExplanation] = useState(task.explanation || '')
   const [editFeedback, setEditFeedback] = useState(task.feedback || '')
+  const [editTags, setEditTags] = useState(task.tags || '')
   const [confirmDelete, setConfirmDelete] = useState(false)
   const cardRef = useRef(null)
   const titleRef = useRef(null)
   const explanationRef = useRef(null)
   const feedbackRef = useRef(null)
+  const tagsRef = useRef(null)
 
   const autosize = (el) => {
     if (!el) return
@@ -38,26 +47,29 @@ export default function TaskCard({ task }) {
     if (expanded) {
       autosize(explanationRef.current)
       autosize(feedbackRef.current)
+      autosize(tagsRef.current)
     }
-  }, [expanded, editExplanation, editFeedback])
+  }, [expanded, editExplanation, editFeedback, editTags])
 
   const isDone = task.status === 'done' || task.status === 'reviewed'
 
   useEffect(() => {
     setEditExplanation(task.explanation || '')
     setEditFeedback(task.feedback || '')
-  }, [task.explanation, task.feedback])
+    setEditTags(task.tags || '')
+  }, [task.explanation, task.feedback, task.tags])
 
   const commitEdits = useCallback(() => {
     updateTask(task.id, {
       explanation: editExplanation.trim(),
       feedback: editFeedback.trim(),
+      tags: editTags.trim(),
     })
     setExpanded(false)
     setEditingTitle(false)
     setShowReschedule(false)
     setConfirmDelete(false)
-  }, [editExplanation, editFeedback, task.id, updateTask])
+  }, [editExplanation, editFeedback, editTags, task.id, updateTask])
 
   const handleClickOutside = useCallback((e) => {
     if (cardRef.current && !cardRef.current.contains(e.target)) {
@@ -295,7 +307,7 @@ export default function TaskCard({ task }) {
       )}
 
       {/* Collapsed preview */}
-      {!expanded && !confirmDelete && (task.explanation || task.feedback) && (
+      {!expanded && !confirmDelete && (task.explanation || task.feedback || task.tags) && (
         <button onClick={openExpanded} style={{ width: '100%', textAlign: 'start', padding: '0 16px 12px', paddingLeft: '50px', background: 'none', border: 'none', cursor: 'pointer' }}>
           {task.explanation && (
             <p dir="auto" style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', textAlign: 'start' }}>
@@ -307,6 +319,14 @@ export default function TaskCard({ task }) {
               <hr style={{ border: 'none', borderTop: '1px solid var(--border-light)', margin: '6px 0 4px' }} />
               <p dir="auto" style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', textAlign: 'start' }}>
                 {renderWithHashtags(task.feedback)}
+              </p>
+            </>
+          )}
+          {task.tags && (
+            <>
+              <hr style={{ border: 'none', borderTop: '1px solid var(--border-light)', margin: '6px 0 4px' }} />
+              <p dir="auto" style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', textAlign: 'start' }}>
+                {renderWithHashtags(task.tags)}
               </p>
             </>
           )}
@@ -335,6 +355,17 @@ export default function TaskCard({ task }) {
             placeholder="Feedback…"
             dir="auto"
             style={{ ...textareaStyle, opacity: 0.8, overflow: 'hidden' }}
+          />
+          <HashtagTextarea
+            ref={tagsRef}
+            value={editTags}
+            onChange={e => setEditTags(e.target.value)}
+            onKeyDown={handleEditKey}
+            allTags={allTags}
+            rows={1}
+            placeholder="#tags…"
+            dir="auto"
+            style={{ ...textareaStyle, color: 'var(--accent)', fontWeight: 500, overflow: 'hidden' }}
           />
 
           {!isDone && (

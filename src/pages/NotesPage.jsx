@@ -14,6 +14,8 @@ import EditorToolbar from '../components/editor/EditorToolbar'
 import { RTLExtension } from '../components/editor/RTLExtension'
 import { AudioNode } from '../components/editor/AudioNode'
 import { BlockIdExtension } from '../components/editor/BlockIdExtension'
+import { HashtagSuggest } from '../components/editor/HashtagSuggest'
+import { HeadingNoShortcut } from '../components/editor/HeadingNoShortcut'
 import RecordFab from '../components/voice/RecordFab'
 
 const HashtagExtension = Extension.create({
@@ -45,7 +47,7 @@ function extractTags(text) {
   return [...new Set(matches.map(t => t.slice(1)))]
 }
 
-function NoteEditor({ note, onUpdate, onDelete, onEditorReady }) {
+function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags }) {
   const saveTimeout = { current: null }
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleValue, setTitleValue] = useState(note?.title || '')
@@ -53,11 +55,13 @@ function NoteEditor({ note, onUpdate, onDelete, onEditorReady }) {
 
   const editor = useEditor({
     extensions: [
-      StarterKit,
+      StarterKit.configure({ heading: false }),
+      HeadingNoShortcut,
       Placeholder.configure({ placeholder: 'Write your note…' }),
       Highlight.configure({ multicolor: true }),
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
       HashtagExtension,
+      HashtagSuggest.configure({ getTags }),
       RTLExtension,
       AudioNode,
       BlockIdExtension,
@@ -282,6 +286,7 @@ export default function NotesPage() {
   const addNote = useAppStore(s => s.addNote)
   const updateNote = useAppStore(s => s.updateNote)
   const deleteNote = useAppStore(s => s.deleteNote)
+  const getTags = useAppStore.getState().getAllTags
   const [selectedTags, setSelectedTags] = useState([])
   const [selectedNoteId, setSelectedNoteId] = useState(null)
   const [mobileView, setMobileView] = useState('list')
@@ -421,6 +426,7 @@ export default function NotesPage() {
           onUpdate={updateNote}
           onDelete={handleDelete}
           onEditorReady={setActiveEditor}
+          getTags={getTags}
         />
       </div>
       {selectedNote && activeEditor && <RecordFab editor={activeEditor} />}

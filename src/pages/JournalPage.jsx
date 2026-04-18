@@ -14,6 +14,8 @@ import { pullJournal } from '../services/sync'
 import { RTLExtension } from '../components/editor/RTLExtension'
 import { AudioNode } from '../components/editor/AudioNode'
 import { BlockIdExtension } from '../components/editor/BlockIdExtension'
+import { HashtagSuggest } from '../components/editor/HashtagSuggest'
+import { HeadingNoShortcut } from '../components/editor/HeadingNoShortcut'
 import RecordFab from '../components/voice/RecordFab'
 
 function buildWeekDates(week) {
@@ -55,12 +57,14 @@ const HashtagExtension = Extension.create({
   },
 })
 
-function EntryEditor({ content, onSave, dirtyRef, onEditorReady }) {
+function EntryEditor({ content, onSave, dirtyRef, onEditorReady, getTags }) {
   const editor = useEditor({
     extensions: [
-      StarterKit,
+      StarterKit.configure({ heading: false }),
+      HeadingNoShortcut,
       Placeholder.configure({ placeholder: 'Nothing written this day…' }),
       HashtagExtension,
+      HashtagSuggest.configure({ getTags }),
       RTLExtension,
       AudioNode,
       BlockIdExtension,
@@ -98,6 +102,7 @@ export default function JournalPage() {
   const currentJournal = useAppStore(s => s.currentJournal)
   const loadJournal = useAppStore(s => s.loadJournal)
   const updateJournalEntry = useAppStore(s => s.updateJournalEntry)
+  const getTags = useAppStore.getState().getAllTags
   const todayStr = today()
   const [selectedDate, setSelectedDate] = useState(todayStr)
   const [viewedWeek, setViewedWeek] = useState(weekKey(todayStr))
@@ -212,6 +217,7 @@ export default function JournalPage() {
           onSave={handleSave}
           dirtyRef={saveTimeout}
           onEditorReady={setActiveEditor}
+          getTags={getTags}
         />
       </div>
       {activeEditor && <RecordFab editor={activeEditor} />}
