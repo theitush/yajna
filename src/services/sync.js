@@ -84,14 +84,15 @@ export function mergeJournalEntry(localEntry, remoteEntry) {
   const newerStamp = (toMs(localEntry.updatedAt) >= toMs(remoteEntry.updatedAt))
     ? (localEntry.updatedAt || remoteEntry.updatedAt)
     : (remoteEntry.updatedAt || localEntry.updatedAt)
-  return {
+  const out = {
     ...remoteEntry,
     ...localEntry,
     blocks: merged,
-    content: blocksToHtml(merged),
     updatedAt: newerStamp,
     createdAt: localEntry.createdAt || remoteEntry.createdAt,
   }
+  delete out.content
+  return out
 }
 
 function toMs(iso) {

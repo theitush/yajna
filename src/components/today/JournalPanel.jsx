@@ -15,6 +15,7 @@ import { AudioNode } from '../editor/AudioNode'
 import { HashtagSuggest } from '../editor/HashtagSuggest'
 import { HeadingNoShortcut } from '../editor/HeadingNoShortcut'
 import RecordFab from '../voice/RecordFab'
+import { blocksToHtml } from '../../lib/blocks'
 
 const HashtagExtension = Extension.create({
   name: 'hashtag',
@@ -58,7 +59,8 @@ export default function JournalPanel({ onInsertText }) {
     loadJournal(weekKey(todayStr))
   }, [])
 
-  const content = currentJournal?.entries?.[todayStr]?.content || ''
+  const todayEntry = currentJournal?.entries?.[todayStr]
+  const content = (todayEntry?.content ?? blocksToHtml(todayEntry?.blocks)) || ''
 
   const editor = useEditor({
     extensions: [
@@ -82,7 +84,8 @@ export default function JournalPanel({ onInsertText }) {
     },
   })
 
-  const remoteContent = currentJournal?.entries?.[todayStr]?.content
+  const remoteEntry = currentJournal?.entries?.[todayStr]
+  const remoteContent = remoteEntry?.content ?? blocksToHtml(remoteEntry?.blocks)
   useEffect(() => {
     if (!editor || !remoteContent) return
     // Don't overwrite the editor if there's a pending local save —

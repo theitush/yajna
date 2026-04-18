@@ -1,3 +1,5 @@
+import { blocksToHtml } from './blocks'
+
 const HASHTAG_RE = /#([\p{L}\p{N}_-]+)/gu
 
 export function extractHashtags(text) {
@@ -18,7 +20,9 @@ export function collectAllHashtags({ notes = [], tasks = [], journal = null } = 
   }
   if (journal?.entries) {
     for (const date in journal.entries) {
-      for (const tag of extractHashtags(journal.entries[date]?.content)) set.add(tag)
+      const e = journal.entries[date]
+      const text = e?.content ?? blocksToHtml(e?.blocks)
+      for (const tag of extractHashtags(text)) set.add(tag)
     }
   }
   return [...set].sort()

@@ -44,7 +44,13 @@ export function htmlToBlocks(html) {
   container.innerHTML = html
   const out = []
   for (const child of Array.from(container.children)) {
-    const id = child.getAttribute(BLOCK_ID_ATTR) || stableIdFromContent(child.outerHTML)
+    // Empty/whitespace-only blocks are structural spacers, not mergeable
+    // content — give each a fresh uuid so two empty <p></p>s don't collapse
+    // to one id (which caused sync to dedupe legit spacers and produce
+    // ghost duplicates on round-trips).
+    const isEmpty = !child.textContent.trim() && !child.querySelector('[data-audio-id], [audioid], img, video')
+    const id = child.getAttribute(BLOCK_ID_ATTR)
+      || (isEmpty ? uuid() : stableIdFromContent(child.outerHTML))
     out.push({ id, html: child.outerHTML })
   }
   if (out.length === 0 && container.textContent.trim()) {

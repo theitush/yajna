@@ -12,7 +12,7 @@ import { pushTasks, pushNotes, pushJournal, pushConfig, initialSync, mergeAndPus
 import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, getSyncStatus, retryNow, setPollInterval } from '../services/syncEngine'
 import { pushAudio, pushAudioMetadata, pushPendingAudio, ensureAudioLocal } from '../services/audio'
 import { putAudio, getAudio } from '../services/db'
-import { stampBlocks, stampBlocksFromDoc } from '../lib/blocks'
+import { stampBlocks, stampBlocksFromDoc, blocksToHtml, htmlToBlocks } from '../lib/blocks'
 
 const useAppStore = create((set, get) => ({
   // Auth / mode
@@ -175,7 +175,9 @@ const useAppStore = create((set, get) => ({
       const tagSet = new Set()
       for (const doc of docs || []) {
         for (const date in doc.entries || {}) {
-          for (const tag of extractHashtags(doc.entries[date]?.content)) tagSet.add(tag)
+          const e = doc.entries[date]
+          const text = e?.content ?? blocksToHtml(e?.blocks)
+          for (const tag of extractHashtags(text)) tagSet.add(tag)
         }
       }
       set({ journalTagPool: [...tagSet] })
@@ -196,7 +198,9 @@ const useAppStore = create((set, get) => ({
     for (const tag of s.journalTagPool) tagSet.add(tag)
     if (s.currentJournal?.entries) {
       for (const date in s.currentJournal.entries) {
-        for (const tag of extractHashtags(s.currentJournal.entries[date]?.content)) tagSet.add(tag)
+        const e = s.currentJournal.entries[date]
+        const text = e?.content ?? blocksToHtml(e?.blocks)
+        for (const tag of extractHashtags(text)) tagSet.add(tag)
       }
     }
     return [...tagSet].sort()
@@ -224,8 +228,7 @@ const useAppStore = create((set, get) => ({
         entries: {
           ...doc.entries,
           [t]: {
-            content: template,
-            blocks: [],
+            blocks: htmlToBlocks(template).map(b => ({ ...b, updatedAt: new Date(0).toISOString() })),
             createdAt: new Date().toISOString(),
             // Epoch updatedAt: any real edit supersedes the untouched template.
             updatedAt: new Date(0).toISOString(),
@@ -251,18 +254,17 @@ const useAppStore = create((set, get) => ({
     const blocks = incomingBlocks
       ? stampBlocksFromDoc(prior.blocks, incomingBlocks, now)
       : stampBlocks(prior.blocks, content, now)
+    const nextEntry = {
+      ...prior,
+      blocks,
+      updatedAt: now,
+      createdAt: prior.createdAt || now,
+    }
+    // Drop legacy `content` field if present on the prior entry — blocks is now authoritative.
+    delete nextEntry.content
     const updated = {
       ...doc,
-      entries: {
-        ...doc.entries,
-        [date]: {
-          ...prior,
-          content,
-          blocks,
-          updatedAt: now,
-          createdAt: prior.createdAt || now,
-        },
-      },
+      entries: { ...doc.entries, [date]: nextEntry },
     }
     await putJournal(updated)
     set({ currentJournal: updated })

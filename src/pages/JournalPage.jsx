@@ -6,7 +6,7 @@ import { Extension } from '@tiptap/core'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { DOMSerializer } from '@tiptap/pm/model'
-import { docToBlocks } from '../lib/blocks'
+import { docToBlocks, blocksToHtml } from '../lib/blocks'
 import useAppStore from '../store/useAppStore'
 import { today, weekKey, formatDate } from '../lib/dates'
 import { getJournal } from '../services/db'
@@ -172,7 +172,8 @@ export default function JournalPage() {
         </div>
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {weekDates.map(date => {
-            const hasEntry = !!effectiveDoc?.entries?.[date]?.content
+            const dayEntry = effectiveDoc?.entries?.[date]
+            const hasEntry = !!(dayEntry?.content || (dayEntry?.blocks && dayEntry.blocks.length))
             const isToday = date === todayStr
             const isSelected = date === selectedDate
             return (
@@ -213,7 +214,7 @@ export default function JournalPage() {
         </div>
         <EntryEditor
           key={selectedDate}
-          content={entry?.content}
+          content={entry?.content ?? blocksToHtml(entry?.blocks)}
           onSave={handleSave}
           dirtyRef={saveTimeout}
           onEditorReady={setActiveEditor}
