@@ -122,7 +122,6 @@ const useAppStore = create((set, get) => ({
     const note = {
       id: uuid(),
       title,
-      body,
       blocks: stampBlocks([], body, now),
       tags,
       createdAt: now,
@@ -153,6 +152,7 @@ const useAppStore = create((set, get) => ({
         ? stampBlocksFromDoc(note.blocks, nextBlocks, now)
         : stampBlocks(note.blocks, updates.body, now)
     }
+    delete patched.body
     const updated = patched
     await putNote(updated)
     set(s => ({ notes: s.notes.map(n => n.id === id ? updated : n) }))
@@ -190,7 +190,7 @@ const useAppStore = create((set, get) => ({
     const tagSet = new Set()
     for (const n of s.notes) {
       for (const t of n.tags || []) tagSet.add(String(t).toLowerCase())
-      for (const t of extractHashtags(n.body)) tagSet.add(t)
+      for (const t of extractHashtags(n.body ?? blocksToHtml(n.blocks))) tagSet.add(t)
     }
     for (const t of s.tasks) {
       for (const tag of extractHashtags(`${t.title || ''} ${t.explanation || ''} ${t.feedback || ''} ${t.tags || ''}`)) tagSet.add(tag)

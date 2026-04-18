@@ -13,7 +13,7 @@ export function collectAllHashtags({ notes = [], tasks = [], journal = null } = 
   const set = new Set()
   for (const n of notes) {
     for (const t of n.tags || []) set.add(String(t).toLowerCase())
-    for (const t of extractHashtags(n.body)) set.add(t)
+    for (const t of extractHashtags(n.body ?? blocksToHtml(n.blocks))) set.add(t)
   }
   for (const t of tasks) {
     for (const tag of extractHashtags(`${t.title || ''} ${t.explanation || ''} ${t.feedback || ''} ${t.tags || ''}`)) set.add(tag)

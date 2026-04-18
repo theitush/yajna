@@ -8,7 +8,7 @@ import { Extension } from '@tiptap/core'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { DOMSerializer } from '@tiptap/pm/model'
-import { docToBlocks } from '../lib/blocks'
+import { docToBlocks, blocksToHtml } from '../lib/blocks'
 import useAppStore from '../store/useAppStore'
 import EditorToolbar from '../components/editor/EditorToolbar'
 import { RTLExtension } from '../components/editor/RTLExtension'
@@ -66,7 +66,7 @@ function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags }) {
       AudioNode,
       BlockIdExtension,
     ],
-    content: note?.body || '',
+    content: (note?.body ?? blocksToHtml(note?.blocks)) || '',
     onUpdate: ({ editor }) => {
       const body = editor.getHTML()
       const serializer = DOMSerializer.fromSchema(editor.schema)
@@ -82,8 +82,9 @@ function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags }) {
   useEffect(() => {
     if (!editor || !note) return
     const current = editor.getHTML()
-    if (current !== note.body) {
-      editor.commands.setContent(note.body || '', false)
+    const noteHtml = note.body ?? blocksToHtml(note.blocks) ?? ''
+    if (current !== noteHtml) {
+      editor.commands.setContent(noteHtml, false)
     }
     setTitleValue(note.title || '')
     setEditingTitle(false)

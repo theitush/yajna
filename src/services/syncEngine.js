@@ -12,7 +12,7 @@ import { getDriveFileIds, readJsonFile, findFile } from './drive'
 import { getTasks, getNotes, getConfig, putTasks, putNotes, putConfig, putJournal, getAllAudio, putAudio, getAllNotesRaw, getJournal } from './db'
 import { getStoredToken } from './auth'
 import { mergeJournalEntry } from './sync'
-import { mergeBlocks, blocksToHtml, htmlToBlocks } from '../lib/blocks'
+import { mergeBlocks, htmlToBlocks } from '../lib/blocks'
 
 const DEFAULT_POLL_INTERVAL = 1000  // 1 second default
 const RETRY_BASE_MS = 2000         // retry backoff starts at 2s
@@ -223,11 +223,9 @@ async function pollRemote(storeSetter) {
       const localT = new Date(localNote.updatedAt || 0).getTime()
       const remoteT = new Date(remoteNote.updatedAt || 0).getTime()
       const winner = remoteT >= localT ? remoteNote : localNote
-      return {
-        ...winner,
-        blocks,
-        body: blocksToHtml(blocks),
-      }
+      const out = { ...winner, blocks }
+      delete out.body
+      return out
     })
     // Include local-only notes that the remote doesn't know about yet.
     const remoteIds = new Set(remoteNotesArr.map(n => n.id))

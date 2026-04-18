@@ -11,7 +11,7 @@ import {
   getDriveFileIds, readJsonFile, writeJsonFile,
   findFile, writeJsonFile as driveWrite,
 } from './drive'
-import { mergeBlocks, blocksToHtml, htmlToBlocks } from '../lib/blocks'
+import { mergeBlocks, htmlToBlocks } from '../lib/blocks'
 
 const LAST_SYNC_KEY = 'last_sync'
 
@@ -37,11 +37,9 @@ function mergeById(local, remote, opts = {}) {
         const winnerBlocks = Array.isArray(winner.blocks) && winner.blocks.length ? winner.blocks : htmlToBlocks(winner.body || '')
         const loserBlocks = Array.isArray(loser.blocks) && loser.blocks.length ? loser.blocks : htmlToBlocks(loser.body || '')
         const merged = mergeBlocks(loserBlocks, winnerBlocks)
-        map.set(item.id, {
-          ...winner,
-          blocks: merged,
-          body: blocksToHtml(merged),
-        })
+        const mergedNote = { ...winner, blocks: merged }
+        delete mergedNote.body
+        map.set(item.id, mergedNote)
       } else {
         map.set(item.id, winner)
       }
