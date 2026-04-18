@@ -3,14 +3,15 @@ import { v4 as uuid } from 'uuid'
 import { today, weekKey, isVisibleToday } from '../lib/dates'
 import { DEFAULT_TEMPLATE, MODE_OFFLINE } from '../lib/constants'
 import {
-  getTasks, putTask, putTasks, deleteTask as dbDeleteTask,
-  getNotes, putNote, putNotes, deleteNote as dbDeleteNote,
+  getTasks, putTask, putTasks,
+  getNotes, putNote, putNotes,
   getJournal, putJournal, getAllJournals, getConfig, putConfig,
+  getAllTasksRaw, getAllNotesRaw, getAllAudio,
 } from '../services/db'
 import { extractHashtags } from '../lib/hashtags'
 import { pushTasks, pushNotes, pushJournal, pushConfig, initialSync, mergeAndPushJournal } from '../services/sync'
 import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, getSyncStatus, retryNow, setPollInterval } from '../services/syncEngine'
-import { pushAudio, pushAudioMetadata, pushPendingAudio, ensureAudioLocal } from '../services/audio'
+import { pushAudio, pushAudioMetadata, pushPendingAudio, ensureAudioLocal, softDeleteAudio, restoreAudio, hardDeleteAudio, collectAudioIdsFromBlocks } from '../services/audio'
 import { putAudio, getAudio } from '../services/db'
 import { stampBlocks, stampBlocksFromDoc, blocksToHtml, htmlToBlocks } from '../lib/blocks'
 
@@ -92,7 +93,27 @@ const useAppStore = create((set, get) => ({
     await get().updateTask(id, { status: 'scheduled', scheduledDate: date })
   },
   deleteTask: async (id) => {
-    await dbDeleteTask(id)
+    // Keep display fields on the tombstone so Trash can show the task without
+    // re-hydrating content. Title/createdAt survive; everything else is fine
+    // to drop. Status is preserved so we can skip done/reviewed tasks in Trash.
+    const existing = get().tasks.find(t => t.id === id)
+    const now = new Date().toISOString()
+    const tomb = existing
+      ? {
+          id,
+          title: existing.title || '',
+          explanation: existing.explanation || '',
+          feedback: existing.feedback || '',
+          tags: existing.tags || '',
+          status: existing.status || 'active',
+          createdDate: existing.createdDate || null,
+          createdAt: existing.createdAt || now,
+          deleted: true,
+          deletedAt: now,
+          updatedAt: now,
+        }
+      : { id, deleted: true, deletedAt: now, updatedAt: now }
+    await putTask(tomb)
     set(s => ({ tasks: s.tasks.filter(t => t.id !== id) }))
     if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
   },
@@ -159,7 +180,24 @@ const useAppStore = create((set, get) => ({
     if (get().mode !== MODE_OFFLINE) withRetry(pushNotes)()
   },
   deleteNote: async (id) => {
-    await dbDeleteNote(id)
+    // Keep title + blocks so the trashed note is still viewable (and so the
+    // embedded audio inside it can play from Trash). The blocks are already
+    // the source of truth for body content.
+    const existing = get().notes.find(n => n.id === id)
+    const now = new Date().toISOString()
+    const tomb = existing
+      ? {
+          id,
+          title: existing.title || 'Untitled',
+          blocks: existing.blocks || [],
+          tags: existing.tags || [],
+          createdAt: existing.createdAt || now,
+          deleted: true,
+          deletedAt: now,
+          updatedAt: now,
+        }
+      : { id, deleted: true, deletedAt: now, updatedAt: now }
+    await putNote(tomb)
     set(s => ({ notes: s.notes.filter(n => n.id !== id) }))
     if (get().mode !== MODE_OFFLINE) withRetry(pushNotes)()
   },
@@ -306,6 +344,145 @@ const useAppStore = create((set, get) => ({
       withRetry(() => pushAudioMetadata(id))()
     }
     return updated
+  },
+
+  // Trash: soft-deleted tasks, notes, and audio (raw reads; UI filters further).
+  trashedTasks: [],
+  trashedNotes: [],
+  trashedAudio: [],
+  loadTrash: async () => {
+    const [tasksRaw, notesRaw, audioAll] = await Promise.all([
+      getAllTasksRaw(), getAllNotesRaw(), getAllAudio(),
+    ])
+    // Only show tasks that were NOT done/reviewed when deleted.
+    const trashedTasks = tasksRaw.filter(t =>
+      t.deleted && !t.purged && t.title && t.status !== 'done' && t.status !== 'reviewed'
+    )
+    const trashedNotes = notesRaw.filter(n =>
+      n.deleted && !n.purged && (n.title || (n.blocks && n.blocks.length))
+    )
+    const trashedAudio = audioAll.filter(a => a.deleted)
+    set({ trashedTasks, trashedNotes, trashedAudio })
+  },
+  trashAudio: async (id, source) => {
+    await softDeleteAudio(id, source)
+    const all = await getAllAudio()
+    set({ trashedAudio: all.filter(a => a.deleted) })
+  },
+  restoreTrashedTask: async (id) => {
+    const raw = (await getAllTasksRaw()).find(t => t.id === id)
+    if (!raw) return
+    const now = new Date().toISOString()
+    const restored = { ...raw, deleted: false, deletedAt: null, updatedAt: now }
+    delete restored.purged
+    await putTask(restored)
+    set(s => ({
+      trashedTasks: s.trashedTasks.filter(t => t.id !== id),
+      tasks: [...s.tasks.filter(t => t.id !== id), restored],
+    }))
+    if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
+  },
+  restoreTrashedNote: async (id) => {
+    const raw = (await getAllNotesRaw()).find(n => n.id === id)
+    if (!raw) return
+    const now = new Date().toISOString()
+    const restored = { ...raw, deleted: false, deletedAt: null, updatedAt: now }
+    delete restored.purged
+    await putNote(restored)
+    set(s => ({
+      trashedNotes: s.trashedNotes.filter(n => n.id !== id),
+      notes: [...s.notes.filter(n => n.id !== id), restored],
+    }))
+    if (get().mode !== MODE_OFFLINE) withRetry(pushNotes)()
+  },
+  // Restore a trashed audio back into its source note/journal entry. If the
+  // source was itself trashed or purged, returns { ok: false, reason } and
+  // leaves the audio in Trash — the caller surfaces this to the user.
+  restoreTrashedAudio: async (id) => {
+    const rec = await getAudio(id)
+    if (!rec) return { ok: false, reason: 'Audio record not found.' }
+    if (!rec.sourceType || !rec.sourceId) {
+      return { ok: false, reason: 'This audio has no known source to restore to.' }
+    }
+
+    const now = new Date().toISOString()
+    const audioHtml = `<div data-audio-id="${rec.id}" data-duration="${rec.duration || 0}"></div>`
+    const newBlock = { id: uuid(), html: audioHtml, updatedAt: now }
+    const sourceLabel = rec.sourceTitle || (rec.sourceType === 'journal' ? 'journal entry' : 'note')
+
+    if (rec.sourceType === 'note') {
+      const noteRaw = (await getAllNotesRaw()).find(n => n.id === rec.sourceId)
+      if (!noteRaw) {
+        return { ok: false, reason: `Can't restore — source note "${sourceLabel}" was permanently deleted.` }
+      }
+      if (noteRaw.deleted) {
+        return { ok: false, reason: `Can't restore — source note "${sourceLabel}" is in Trash. Restore the note first.` }
+      }
+      const blocks = Array.isArray(noteRaw.blocks) ? [...noteRaw.blocks, newBlock] : [newBlock]
+      const updatedNote = { ...noteRaw, blocks, updatedAt: now }
+      await putNote(updatedNote)
+      await restoreAudio(id)
+      set(s => ({
+        notes: [...s.notes.filter(n => n.id !== updatedNote.id), updatedNote],
+      }))
+      if (get().mode !== MODE_OFFLINE) withRetry(pushNotes)()
+    } else if (rec.sourceType === 'journal') {
+      const date = rec.sourceId
+      const week = weekKey(date)
+      const doc = await getJournal(week)
+      const prior = doc?.entries?.[date]
+      if (!doc || !prior) {
+        return { ok: false, reason: `Can't restore — journal entry for ${sourceLabel} no longer exists.` }
+      }
+      const blocks = Array.isArray(prior.blocks) ? [...prior.blocks, newBlock] : [newBlock]
+      const updatedDoc = {
+        ...doc,
+        entries: {
+          ...doc.entries,
+          [date]: { ...prior, blocks, updatedAt: now, createdAt: prior.createdAt || now },
+        },
+      }
+      await putJournal(updatedDoc)
+      await restoreAudio(id)
+      set(s => (s.currentJournal?.week === week ? { currentJournal: updatedDoc } : {}))
+      if (get().mode !== MODE_OFFLINE) withRetry(() => pushJournal(updatedDoc))()
+    } else {
+      return { ok: false, reason: 'Unknown audio source type.' }
+    }
+
+    const all = await getAllAudio()
+    set({ trashedAudio: all.filter(a => a.deleted) })
+    return { ok: true }
+  },
+  purgeTrashedAudio: async (id) => {
+    await hardDeleteAudio(id)
+    const all = await getAllAudio()
+    set({ trashedAudio: all.filter(a => a.deleted) })
+  },
+  purgeTrashedTask: async (id) => {
+    // Keep the tombstone so other devices see the delete, but mark it purged
+    // so the trash UI ignores it even if raw reads pick it up.
+    const raw = (await getAllTasksRaw()).find(t => t.id === id)
+    if (!raw) return
+    const now = new Date().toISOString()
+    await putTask({ id, deleted: true, deletedAt: raw.deletedAt || now, updatedAt: now, purged: true })
+    set(s => ({ trashedTasks: s.trashedTasks.filter(t => t.id !== id) }))
+    if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
+  },
+  purgeTrashedNote: async (id) => {
+    const raw = (await getAllNotesRaw()).find(n => n.id === id)
+    if (!raw) return
+    // Hard-delete every audio blob embedded in the note so blobs + Drive files go away.
+    const audioIds = collectAudioIdsFromBlocks(raw.blocks)
+    for (const aid of audioIds) {
+      try { await hardDeleteAudio(aid) } catch (e) { console.warn('audio purge failed', aid, e) }
+    }
+    const now = new Date().toISOString()
+    await putNote({ id, deleted: true, deletedAt: raw.deletedAt || now, updatedAt: now, purged: true })
+    set(s => ({ trashedNotes: s.trashedNotes.filter(n => n.id !== id) }))
+    const all = await getAllAudio()
+    set({ trashedAudio: all.filter(a => a.deleted) })
+    if (get().mode !== MODE_OFFLINE) withRetry(pushNotes)()
   },
 
   // Config

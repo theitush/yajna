@@ -163,6 +163,20 @@ export async function uploadAudioFile(parentId, name, blob) {
 }
 
 /**
+ * Permanently delete a file from Drive. Swallows 404 so retries are idempotent.
+ */
+export async function deleteDriveFile(fileId) {
+  if (!fileId) return
+  try {
+    await withTimeout(window.gapi.client.drive.files.delete({ fileId }))
+  } catch (e) {
+    const status = e?.status || e?.result?.error?.code
+    if (status === 404) return
+    throw e
+  }
+}
+
+/**
  * Download a file from Drive as a Blob (used for lazy audio fetch).
  */
 export async function downloadFileBlob(fileId) {

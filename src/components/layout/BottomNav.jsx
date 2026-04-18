@@ -3,8 +3,9 @@ import { NavLink } from 'react-router-dom'
 const tabs = [
   { to: '/', label: 'Today', icon: BookIcon },
   { to: '/notes', label: 'Notes', icon: HashIcon },
-  { to: '/journal', label: 'History', icon: CalendarIcon },
   { to: '/tasks', label: 'Todos', icon: CheckIcon },
+  { to: '/journal', label: 'History', icon: CalendarIcon },
+  { to: '/trash', label: 'Trash', icon: TrashIcon },
 ]
 
 export default function BottomNav() {
@@ -53,4 +54,7 @@ function HashIcon() {
 }
 function CheckIcon() {
   return <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+}
+function TrashIcon() {
+  return <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z"/></svg>
 }

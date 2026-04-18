@@ -264,15 +264,41 @@ async function pollRemote(storeSetter) {
               transcriptModel: entry.transcriptModel || null,
               transcribedAt: entry.transcribedAt || null,
               transcriptSegments: entry.transcriptSegments || null,
+              deleted: entry.deleted || false,
+              deletedAt: entry.deletedAt || null,
+              sourceType: entry.sourceType || null,
+              sourceId: entry.sourceId || null,
+              sourceTitle: entry.sourceTitle || null,
             })
             continue
+          }
+          // Reconcile trash state: newer deletedAt wins, blank on either side means "not deleted".
+          const localDelT = new Date(local.deletedAt || 0).getTime()
+          const remoteDelT = new Date(entry.deletedAt || 0).getTime()
+          let nextDeleted = local.deleted || false
+          let nextDeletedAt = local.deletedAt || null
+          let nextSourceType = local.sourceType || null
+          let nextSourceId = local.sourceId || null
+          let nextSourceTitle = local.sourceTitle || null
+          if (remoteDelT > localDelT) {
+            nextDeleted = entry.deleted || false
+            nextDeletedAt = entry.deletedAt || null
+            nextSourceType = entry.sourceType || nextSourceType
+            nextSourceId = entry.sourceId || nextSourceId
+            nextSourceTitle = entry.sourceTitle || nextSourceTitle
+          } else if (localDelT === 0 && remoteDelT === 0 && entry.deleted && !local.deleted) {
+            nextDeleted = true
+            nextSourceType = entry.sourceType || nextSourceType
+            nextSourceId = entry.sourceId || nextSourceId
+            nextSourceTitle = entry.sourceTitle || nextSourceTitle
           }
           // Merge transcript: prefer whichever side has the newer transcribedAt.
           const localT = new Date(local.transcribedAt || 0).getTime()
           const remoteT = new Date(entry.transcribedAt || 0).getTime()
           const takeRemote = entry.transcribedAt && remoteT >= localT
-          if (!takeRemote && local.transcribedAt) continue
-          if (!entry.transcript && !entry.transcriptSegments) continue
+          const trashChanged = nextDeleted !== !!local.deleted || nextDeletedAt !== (local.deletedAt || null)
+          if (!takeRemote && local.transcribedAt && !trashChanged) continue
+          if (!entry.transcript && !entry.transcriptSegments && !trashChanged) continue
           await putAudio({
             ...local,
             driveFileId: local.driveFileId || entry.driveFileId || null,
@@ -280,6 +306,11 @@ async function pollRemote(storeSetter) {
             transcriptModel: takeRemote ? (entry.transcriptModel || null) : local.transcriptModel,
             transcribedAt: takeRemote ? (entry.transcribedAt || null) : local.transcribedAt,
             transcriptSegments: takeRemote ? (entry.transcriptSegments || null) : local.transcriptSegments,
+            deleted: nextDeleted,
+            deletedAt: nextDeletedAt,
+            sourceType: nextSourceType,
+            sourceId: nextSourceId,
+            sourceTitle: nextSourceTitle,
           })
         }
       } catch (e) {

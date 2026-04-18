@@ -302,8 +302,7 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
 
       {/* Delete confirmation */}
       {confirmDelete && (
-        <div style={{ padding: '0 16px 12px', paddingLeft: '50px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <p style={{ fontSize: '12px', color: '#FCA5A5', flex: 1 }}>Delete this task?</p>
+        <div style={{ padding: '0 16px 12px', paddingLeft: '50px', display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'flex-end' }}>
           <button
             onClick={() => deleteTask(task.id)}
             style={{
@@ -313,7 +312,7 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
               fontFamily: 'var(--font-body)',
             }}
           >
-            Delete
+            Move to trash
           </button>
           <button
             onClick={() => setConfirmDelete(false)}

@@ -97,15 +97,17 @@ export async function deleteNote(id) {
   return db.put(STORE_NOTES, { id, deleted: true, deletedAt: now, updatedAt: now })
 }
 
-// Purge tombstones older than the given cutoff. Called periodically (e.g.
-// during initial sync) to bound storage growth.
+// Purge tombstones that the user has explicitly purged from Trash. We only
+// hard-delete rows the user asked to delete forever — everything else lives
+// in Trash indefinitely until the user manually clears it. The cutoff gives
+// every device a grace window to see the purge marker before we drop the row.
 export async function purgeTombstones(cutoffIso) {
   const db = await getDB()
   for (const store of [STORE_TASKS, STORE_NOTES]) {
     const tx = db.transaction(store, 'readwrite')
     const all = await tx.store.getAll()
     for (const row of all) {
-      if (row.deleted && row.deletedAt && row.deletedAt < cutoffIso) {
+      if (row.deleted && row.purged && row.deletedAt && row.deletedAt < cutoffIso) {
         await tx.store.delete(row.id)
       }
     }

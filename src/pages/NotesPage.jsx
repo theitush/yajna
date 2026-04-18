@@ -63,7 +63,13 @@ function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags }) {
       HashtagExtension,
       HashtagSuggest.configure({ getTags }),
       RTLExtension,
-      AudioNode,
+      AudioNode.configure({
+        getSource: () => ({
+          sourceType: 'note',
+          sourceId: note?.id || null,
+          sourceTitle: note?.title || 'Untitled',
+        }),
+      }),
       BlockIdExtension,
     ],
     content: (note?.body ?? blocksToHtml(note?.blocks)) || '',
@@ -139,7 +145,6 @@ function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags }) {
         )}
         {confirmDelete ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{ fontSize: '12px', color: '#FCA5A5', fontFamily: 'var(--font-body)' }}>Delete?</span>
             <button
               onClick={() => onDelete(note.id)}
               style={{
@@ -149,7 +154,7 @@ function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags }) {
                 fontFamily: 'var(--font-body)',
               }}
             >
-              Delete
+              Move to trash
             </button>
             <button
               onClick={() => setConfirmDelete(false)}

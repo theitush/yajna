@@ -11,10 +11,12 @@ function formatTime(s) {
   return `${m}:${sec.toString().padStart(2, '0')}`
 }
 
-function AudioNodeView({ node, editor, getPos }) {
+function AudioNodeView({ node, editor, getPos, extension }) {
   const audioId = node.attrs.audioId
   const getAudioRecord = useAppStore(s => s.getAudioRecord)
   const saveAudioTranscript = useAppStore(s => s.saveAudioTranscript)
+  const trashAudio = useAppStore(s => s.trashAudio)
+  const readOnly = !!extension?.options?.readOnly
   const config = useAppStore(s => s.config)
   const audioRef = useRef(null)
   const [objectUrl, setObjectUrl] = useState(null)
@@ -182,10 +184,15 @@ function AudioNodeView({ node, editor, getPos }) {
     saveAudioTranscript(audioId, joined, transcriptModel, updated)
   }
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (typeof getPos !== 'function') return
     const pos = getPos()
     if (pos == null) return
+    // Soft-delete first (records source for Trash), then remove from the doc.
+    const getSource = extension?.options?.getSource
+    let source = null
+    try { source = typeof getSource === 'function' ? getSource() : null } catch {}
+    try { await trashAudio(audioId, source) } catch (e) { console.warn('trashAudio failed', e) }
     editor.chain().focus().deleteRange({ from: pos, to: pos + node.nodeSize }).run()
   }
 
@@ -344,9 +351,10 @@ function AudioNodeView({ node, editor, getPos }) {
         </div>
       </div>
 
+      {!readOnly && (
       <button
         onClick={() => setConfirmDelete(true)}
-        title="Remove audio"
+        title="Move to trash"
         style={{
           background: 'none', border: 'none', cursor: 'pointer',
           color: 'var(--text-tertiary)', padding: '4px',
@@ -357,14 +365,14 @@ function AudioNodeView({ node, editor, getPos }) {
           <path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z"/>
         </svg>
       </button>
+      )}
 
      </div>
 
      {confirmDelete && (
        <div style={{
-         padding: '0 12px 10px', display: 'flex', alignItems: 'center', gap: '8px',
+         padding: '0 12px 10px', display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'flex-end',
        }}>
-         <p style={{ fontSize: '12px', color: '#FCA5A5', flex: 1 }}>Delete this recording?</p>
          <button
            onClick={handleDelete}
            style={{
@@ -374,7 +382,7 @@ function AudioNodeView({ node, editor, getPos }) {
              fontFamily: 'var(--font-body)',
            }}
          >
-           Delete
+           Move to trash
          </button>
          <button
            onClick={() => setConfirmDelete(false)}
@@ -425,11 +433,8 @@ function AudioNodeView({ node, editor, getPos }) {
          </div>
          {confirmRetranscribe && (
            <div style={{
-             display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px',
+             display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', justifyContent: 'flex-end',
            }}>
-             <p style={{ fontSize: '12px', color: '#FCA5A5', flex: 1, margin: 0 }}>
-               Overwrite current transcript?
-             </p>
              <button
                onClick={handleTranscribe}
                style={{
@@ -576,6 +581,15 @@ export const AudioNode = Node.create({
   atom: true,
   draggable: false,
   selectable: false,
+
+  addOptions() {
+    return {
+      // getSource: () => ({ sourceType, sourceId, sourceTitle })
+      // Called when the user soft-deletes the audio so Trash can show where it came from.
+      getSource: null,
+      readOnly: false,
+    }
+  },
 
   addAttributes() {
     return {

@@ -7,9 +7,9 @@
  * - audio.json in Drive is a light index of { id, driveFileId, mimeType, createdAt }
  *   so other devices know what exists and can lazy-download on play.
  */
-import { putAudio, getAudio, getAllAudio } from './db'
+import { putAudio, getAudio, getAllAudio, deleteAudio as dbDeleteAudio } from './db'
 import {
-  getDriveFileIds, uploadAudioFile, downloadFileBlob,
+  getDriveFileIds, uploadAudioFile, downloadFileBlob, deleteDriveFile,
   readJsonFile, writeJsonFile,
 } from './drive'
 
@@ -24,6 +24,11 @@ function toIndexEntry(rec) {
     transcriptModel: rec.transcriptModel || null,
     transcribedAt: rec.transcribedAt || null,
     transcriptSegments: rec.transcriptSegments || null,
+    deleted: rec.deleted || false,
+    deletedAt: rec.deletedAt || null,
+    sourceType: rec.sourceType || null,
+    sourceId: rec.sourceId || null,
+    sourceTitle: rec.sourceTitle || null,
   }
 }
 
@@ -118,6 +123,102 @@ export async function ensureAudioLocal(id) {
   }
   await putAudio(record)
   return record
+}
+
+/**
+ * Soft-delete: mark the audio record as trashed and propagate via audio.json.
+ * The blob stays in IDB and in Drive so the user can still play it from Trash.
+ */
+export async function softDeleteAudio(id, source) {
+  const rec = await getAudio(id)
+  if (!rec) return null
+  const now = new Date().toISOString()
+  const updated = {
+    ...rec,
+    deleted: true,
+    deletedAt: now,
+    sourceType: source?.sourceType || rec.sourceType || null,
+    sourceId: source?.sourceId || rec.sourceId || null,
+    sourceTitle: source?.sourceTitle || rec.sourceTitle || null,
+  }
+  await putAudio(updated)
+
+  const ids = await getDriveFileIds()
+  if (!ids || !ids.audioIndexFileId) return updated
+  try {
+    const remoteIndex = await readJsonFile(ids.audioIndexFileId).catch(() => [])
+    const index = Array.isArray(remoteIndex) ? remoteIndex : []
+    const filtered = index.filter(e => e.id !== id)
+    filtered.push(toIndexEntry(updated))
+    await writeJsonFile(ids.rootId, 'audio.json', filtered, ids.audioIndexFileId)
+  } catch (e) {
+    console.warn('softDeleteAudio index push failed', e)
+  }
+  return updated
+}
+
+/**
+ * Restore a soft-deleted audio record.
+ */
+export async function restoreAudio(id) {
+  const rec = await getAudio(id)
+  if (!rec) return null
+  const updated = { ...rec, deleted: false, deletedAt: null }
+  await putAudio(updated)
+  const ids = await getDriveFileIds()
+  if (!ids || !ids.audioIndexFileId) return updated
+  try {
+    const remoteIndex = await readJsonFile(ids.audioIndexFileId).catch(() => [])
+    const index = Array.isArray(remoteIndex) ? remoteIndex : []
+    const filtered = index.filter(e => e.id !== id)
+    filtered.push(toIndexEntry(updated))
+    await writeJsonFile(ids.rootId, 'audio.json', filtered, ids.audioIndexFileId)
+  } catch (e) {
+    console.warn('restoreAudio index push failed', e)
+  }
+  return updated
+}
+
+/**
+ * Hard-delete: remove the blob from IDB, the file from Drive, and the entry
+ * from audio.json. Called from the Trash screen's "Delete permanently".
+ */
+export async function hardDeleteAudio(id) {
+  const rec = await getAudio(id)
+  await dbDeleteAudio(id)
+  const ids = await getDriveFileIds()
+  if (!ids) return
+  if (rec?.driveFileId) {
+    try { await deleteDriveFile(rec.driveFileId) } catch (e) { console.warn('Drive audio delete failed', e) }
+  }
+  if (ids.audioIndexFileId) {
+    try {
+      const remoteIndex = await readJsonFile(ids.audioIndexFileId).catch(() => [])
+      const index = Array.isArray(remoteIndex) ? remoteIndex : []
+      const filtered = index.filter(e => e.id !== id)
+      await writeJsonFile(ids.rootId, 'audio.json', filtered, ids.audioIndexFileId)
+    } catch (e) {
+      console.warn('hardDeleteAudio index push failed', e)
+    }
+  }
+}
+
+/**
+ * Collect all audio ids referenced by a note or journal-entry HTML blob list.
+ */
+export function collectAudioIdsFromBlocks(blocks) {
+  const ids = []
+  if (!Array.isArray(blocks)) return ids
+  const container = document.createElement('div')
+  for (const b of blocks) {
+    if (!b?.html || b.deleted) continue
+    container.innerHTML = b.html
+    for (const el of container.querySelectorAll('[data-audio-id]')) {
+      const id = el.getAttribute('data-audio-id')
+      if (id) ids.push(id)
+    }
+  }
+  return ids
 }
 
 /**

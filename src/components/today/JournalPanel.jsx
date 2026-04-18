@@ -74,7 +74,13 @@ export default function JournalPanel({ onInsertText }) {
       HashtagExtension,
       HashtagSuggest.configure({ getTags }),
       RTLExtension,
-      AudioNode,
+      AudioNode.configure({
+        getSource: () => ({
+          sourceType: 'journal',
+          sourceId: todayStr,
+          sourceTitle: formatDate(todayStr),
+        }),
+      }),
       BlockIdExtension,
     ],
     content,

@@ -15,6 +15,7 @@ import TodayPage from './pages/TodayPage'
 import JournalPage from './pages/JournalPage'
 import NotesPage from './pages/NotesPage'
 import TasksPage from './pages/TasksPage'
+import TrashPage from './pages/TrashPage'
 import SettingsPage from './pages/SettingsPage'
 
 export default function App() {
@@ -269,6 +270,7 @@ export default function App() {
               <Route path="/journal" element={<JournalPage />} />
               <Route path="/notes" element={<NotesPage />} />
               <Route path="/tasks" element={<TasksPage />} />
+              <Route path="/trash" element={<TrashPage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Routes>
           </main>
