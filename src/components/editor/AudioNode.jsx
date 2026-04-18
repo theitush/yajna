@@ -462,7 +462,35 @@ function AudioNodeView({ node, editor, getPos }) {
            }}>{transcriptError}</p>
          )}
          {transcript && Array.isArray(segments) && segments.length > 0 && (
-           <div style={{
+           <div
+             contentEditable
+             suppressContentEditableWarning
+             spellCheck={false}
+             onKeyDown={e => {
+               if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() }
+             }}
+             onMouseDown={e => {
+               const segEl = e.target?.closest?.('[data-segment-idx]')
+               if (!segEl) return
+               const idx = Number(segEl.dataset.segmentIdx)
+               if (Number.isInteger(idx) && segments[idx]) seekTo(segments[idx].start)
+             }}
+             onBlur={e => {
+               const root = e.currentTarget
+               const updated = segments.map((s, idx) => {
+                 const node = root.querySelector(`[data-segment-idx="${idx}"]`)
+                 const text = (node?.textContent || '').replace(/\s+/g, ' ').trim()
+                 return text && text !== s.text ? { ...s, text } : s
+               })
+               const changed = updated.some((s, idx) => s.text !== segments[idx].text)
+               if (!changed) return
+               const joined = updated.map(s => s.text).join(' ')
+               setSegments(updated)
+               setDraftTranscript(joined)
+               setTranscript(joined)
+               saveAudioTranscript(audioId, joined, transcriptModel, updated)
+             }}
+             style={{
                userSelect: 'text', WebkitUserSelect: 'text',
                fontSize: '13px', color: 'var(--text-primary)',
                background: 'var(--bg-secondary)',
@@ -470,52 +498,21 @@ function AudioNodeView({ node, editor, getPos }) {
                padding: '8px 10px', lineHeight: 1.6,
                fontFamily: 'var(--font-body)',
                maxHeight: 260, overflowY: 'auto',
+               outline: 'none',
+               cursor: 'text',
              }}
            >
              {segments.map((s, i) => (
-               <span key={i} style={{ display: 'inline' }}>
-                 <span
-                   contentEditable
-                   suppressContentEditableWarning
-                   spellCheck={false}
-                   // key on text ensures React rebuilds the DOM node when the
-                   // underlying segment text changes from outside (e.g. re-transcribe),
-                   // but does NOT re-render during typing (uncontrolled via dangerouslySetInnerHTML).
-                   dangerouslySetInnerHTML={{ __html: s.text }}
-                   onMouseDown={e => {
-                     // Commit any in-progress edit on a sibling segment first —
-                     // Tiptap's outer non-editable wrapper can swallow the native
-                     // blur, so we can't rely on onBlur alone.
-                     const active = document.activeElement
-                     if (active && active !== e.currentTarget && active.dataset?.segmentEditor) {
-                       const idx = Number(active.dataset.segmentIdx)
-                       if (Number.isInteger(idx)) {
-                         commitSegmentEdit(idx, active.textContent || '')
-                       }
-                     }
-                     // Seek only on a fresh click (not when already focused/editing)
-                     if (active !== e.currentTarget) {
-                       seekTo(s.start)
-                     }
-                   }}
-                   data-segment-editor="1"
-                   data-segment-idx={i}
-                   onBlur={e => commitSegmentEdit(i, e.currentTarget.textContent || '')}
-                   onKeyDown={e => {
-                     if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() }
-                   }}
-                   title={`${formatTime(s.start)} — click to seek, click again to edit`}
-                   style={{
-                     cursor: 'text',
-                     background: i === activeSegmentIdx ? 'var(--accent-light)' : 'transparent',
-                     color: i === activeSegmentIdx ? 'var(--accent)' : 'inherit',
-                     borderRadius: 3,
-                     padding: '0 2px',
-                     outline: 'none',
-                   }}
-                 />
-                 {' '}
-               </span>
+               <span
+                 key={`${i}-${s.text}`}
+                 data-segment-idx={i}
+                 title={`${formatTime(s.start)} — click to seek`}
+                 style={{
+                   background: i === activeSegmentIdx ? 'var(--accent-light)' : 'transparent',
+                   color: i === activeSegmentIdx ? 'var(--accent)' : 'inherit',
+                   borderRadius: 3,
+                 }}
+               >{s.text}{i < segments.length - 1 ? ' ' : ''}</span>
              ))}
            </div>
          )}
