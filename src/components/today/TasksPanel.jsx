@@ -6,9 +6,7 @@ export default function TasksPanel() {
   const tasks = useAppStore(s => s.tasks)
   const addTask = useAppStore(s => s.addTask)
   const reorderTasks = useAppStore(s => s.reorderTasks)
-  const [showAdd, setShowAdd] = useState(false)
-  const [title, setTitle] = useState('')
-  const [explanation, setExplanation] = useState('')
+  const [justAddedId, setJustAddedId] = useState(null)
 
   const [draggingId, setDraggingId] = useState(null)
   const [cloneStyle, setCloneStyle] = useState(null)
@@ -171,11 +169,8 @@ export default function TasksPanel() {
   }, [commitDrop])
 
   const handleAdd = async () => {
-    if (!title.trim()) return
-    await addTask(title.trim(), explanation.trim())
-    setTitle('')
-    setExplanation('')
-    setShowAdd(false)
+    const task = await addTask('')
+    setJustAddedId(task.id)
   }
 
   const draggingTask = draggingId ? todayTasks.find(t => t.id === draggingId) : null
@@ -218,7 +213,7 @@ export default function TasksPanel() {
           )}
         </div>
         <button
-          onClick={() => setShowAdd(s => !s)}
+          onClick={handleAdd}
           style={{
             fontSize: '12px', fontWeight: 500,
             color: 'var(--accent)',
@@ -234,78 +229,7 @@ export default function TasksPanel() {
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        {showAdd && (
-          <div style={{
-            background: 'var(--bg-secondary)',
-            borderRadius: '12px',
-            padding: '12px',
-            border: '1px solid var(--border-mid)',
-            display: 'flex', flexDirection: 'column', gap: '8px',
-          }}>
-            <input
-              autoFocus
-              value={title}
-              onChange={e => setTitle(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleAdd()}
-              placeholder="Task title…"
-              dir="auto"
-              style={{
-                width: '100%', fontSize: '13px',
-                background: 'var(--bg-tertiary)',
-                border: '1px solid var(--border-mid)',
-                borderRadius: '8px', padding: '8px 12px',
-                color: 'var(--text-primary)',
-                fontFamily: 'var(--font-body)',
-                outline: 'none',
-              }}
-            />
-            <textarea
-              value={explanation}
-              onChange={e => setExplanation(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); handleAdd() } }}
-              placeholder="Explanation (optional)…"
-              rows={2}
-              dir="auto"
-              style={{
-                width: '100%', fontSize: '12px',
-                background: 'var(--bg-tertiary)',
-                border: '1px solid var(--border-mid)',
-                borderRadius: '8px', padding: '8px 12px',
-                color: 'var(--text-secondary)',
-                fontFamily: 'var(--font-body)',
-                outline: 'none', resize: 'none',
-              }}
-            />
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <button
-                onClick={handleAdd}
-                style={{
-                  fontSize: '12px', fontWeight: 500,
-                  color: 'var(--accent)',
-                  background: 'var(--accent-light)',
-                  border: 'none', padding: '5px 14px',
-                  borderRadius: '8px', cursor: 'pointer',
-                  fontFamily: 'var(--font-body)',
-                }}
-              >
-                Add task
-              </button>
-              <button
-                onClick={() => setShowAdd(false)}
-                style={{
-                  fontSize: '12px',
-                  color: 'var(--text-tertiary)',
-                  background: 'none', border: 'none',
-                  cursor: 'pointer', fontFamily: 'var(--font-body)',
-                }}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
-
-        {todayTasks.length === 0 && !showAdd && (
+        {todayTasks.length === 0 && (
           <div style={{ textAlign: 'center', padding: '48px 0', color: 'var(--text-tertiary)' }}>
             <p style={{ fontSize: '13px' }}>No tasks for today</p>
             <p style={{ fontSize: '12px', marginTop: '4px' }}>Add a task or schedule something for today</p>
@@ -322,12 +246,16 @@ export default function TasksPanel() {
               cursor: draggingId === task.id ? 'grabbing' : 'default',
               opacity: draggingId === task.id ? 0.25 : 1,
               userSelect: 'none',
-              willChange: 'transform',
+              willChange: draggingId ? 'transform' : 'auto',
               transform: shifts[task.id] ? `translateY(${shifts[task.id]}px)` : 'none',
               transition: draggingId ? 'transform 0.15s ease' : 'none',
             }}
           >
-            <TaskCard task={task} />
+            <TaskCard
+              task={task}
+              defaultExpanded={task.id === justAddedId}
+              defaultEditingTitle={task.id === justAddedId}
+            />
           </div>
         ))}
       </div>

@@ -15,7 +15,7 @@ function renderWithHashtags(text) {
   )
 }
 
-export default function TaskCard({ task }) {
+export default function TaskCard({ task, defaultExpanded = false, defaultEditingTitle = false }) {
   const { markTaskDone, markTaskActive, markTaskReviewed, deleteTask, moveToBacklog, scheduleTask, updateTask } = useAppStore()
   // Subscribe to anything that can change the tag pool, then ask the store.
   useAppStore(s => s.notes)
@@ -25,8 +25,8 @@ export default function TaskCard({ task }) {
   const allTags = useAppStore.getState().getAllTags()
   const [showReschedule, setShowReschedule] = useState(false)
   const [scheduleDate, setScheduleDate] = useState('')
-  const [expanded, setExpanded] = useState(false)
-  const [editingTitle, setEditingTitle] = useState(false)
+  const [expanded, setExpanded] = useState(defaultExpanded)
+  const [editingTitle, setEditingTitle] = useState(defaultEditingTitle)
   const [editExplanation, setEditExplanation] = useState(task.explanation || '')
   const [editFeedback, setEditFeedback] = useState(task.feedback || '')
   const [editTags, setEditTags] = useState(task.tags || '')
@@ -51,6 +51,25 @@ export default function TaskCard({ task }) {
     }
   }, [expanded, editExplanation, editFeedback, editTags])
 
+  useEffect(() => {
+    if (defaultExpanded) setExpanded(true)
+    if (defaultEditingTitle) setEditingTitle(true)
+  }, [defaultExpanded, defaultEditingTitle])
+
+  useEffect(() => {
+    if (!editingTitle || !defaultEditingTitle || !titleRef.current) return
+    const el = titleRef.current
+    el.innerText = task.title || ''
+    el.focus()
+    const range = document.createRange()
+    const sel = window.getSelection()
+    range.selectNodeContents(el)
+    range.collapse(false)
+    sel.removeAllRanges()
+    sel.addRange(range)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingTitle])
+
   const isDone = task.status === 'done' || task.status === 'reviewed'
 
   useEffect(() => {
@@ -60,7 +79,13 @@ export default function TaskCard({ task }) {
   }, [task.explanation, task.feedback, task.tags])
 
   const commitEdits = useCallback(() => {
+    const titleVal = titleRef.current?.innerText.trim() ?? ''
+    if (!titleVal && !editExplanation.trim() && !editFeedback.trim() && !editTags.trim()) {
+      deleteTask(task.id)
+      return
+    }
     updateTask(task.id, {
+      ...(titleVal && titleVal !== task.title ? { title: titleVal } : {}),
       explanation: editExplanation.trim(),
       feedback: editFeedback.trim(),
       tags: editTags.trim(),
@@ -69,7 +94,7 @@ export default function TaskCard({ task }) {
     setEditingTitle(false)
     setShowReschedule(false)
     setConfirmDelete(false)
-  }, [editExplanation, editFeedback, editTags, task.id, updateTask])
+  }, [editExplanation, editFeedback, editTags, task.id, task.title, updateTask, deleteTask])
 
   const handleClickOutside = useCallback((e) => {
     if (cardRef.current && !cardRef.current.contains(e.target)) {
@@ -116,6 +141,13 @@ export default function TaskCard({ task }) {
     if (e.key === 'Escape') {
       titleRef.current?.blur()
     }
+    if (e.key === 'Tab' && !e.shiftKey) {
+      e.preventDefault()
+      const val = titleRef.current?.innerText.trim() ?? ''
+      if (val && val !== task.title) updateTask(task.id, { title: val })
+      setEditingTitle(false)
+      explanationRef.current?.focus()
+    }
   }
 
   const handleTitleDoubleClick = (e) => {
@@ -123,6 +155,7 @@ export default function TaskCard({ task }) {
     setEditingTitle(true)
     setTimeout(() => {
       if (titleRef.current) {
+        titleRef.current.innerText = task.title || ''
         titleRef.current.focus()
         const range = document.createRange()
         const sel = window.getSelection()
@@ -193,6 +226,7 @@ export default function TaskCard({ task }) {
         {/* Checkmark */}
         <button
           onClick={handleCheckmark}
+          tabIndex={-1}
           style={{
             width: 22, height: 22,
             borderRadius: '50%',
@@ -238,7 +272,7 @@ export default function TaskCard({ task }) {
             margin: editingTitle ? '-1px -3px' : '0',
           }}
         >
-          {editingTitle ? task.title : renderWithHashtags(task.title)}
+          {editingTitle ? null : renderWithHashtags(task.title)}
         </span>
 
         {/* Status badges */}
@@ -263,6 +297,7 @@ export default function TaskCard({ task }) {
         {task.status !== 'dismissed' && task.status !== 'reviewed' && (
           <button
             onClick={handleX}
+            tabIndex={-1}
             style={{
               flexShrink: 0,
               color: isDone ? 'var(--green-400)' : 'var(--text-tertiary)',
@@ -323,12 +358,9 @@ export default function TaskCard({ task }) {
             </>
           )}
           {task.tags && (
-            <>
-              <hr style={{ border: 'none', borderTop: '1px solid var(--border-light)', margin: '6px 0 4px' }} />
-              <p dir="auto" style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', textAlign: 'start' }}>
-                {renderWithHashtags(task.tags)}
-              </p>
-            </>
+            <p dir="auto" style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', textAlign: 'start', marginTop: '4px' }}>
+              {renderWithHashtags(task.tags)}
+            </p>
           )}
         </button>
       )}

@@ -8,7 +8,7 @@ function getActiveToken(value, caret) {
 }
 
 const HashtagTextarea = forwardRef(function HashtagTextarea(
-  { value, onChange, allTags, style, onKeyDown, showOnFocus = true, ...rest },
+  { value, onChange, allTags, style, onKeyDown, showOnFocus = true, dropdownPlacement = 'bottom', ...rest },
   ref,
 ) {
   const inner = useRef(null)
@@ -92,7 +92,11 @@ const HashtagTextarea = forwardRef(function HashtagTextarea(
       />
       {open && suggestions.length > 0 && (
         <div ref={listRef} style={{
-          position: 'absolute', top: '100%', left: 0, right: 0, marginTop: '4px',
+          position: 'absolute',
+          ...(dropdownPlacement === 'top'
+            ? { bottom: '100%', marginBottom: '4px' }
+            : { top: '100%', marginTop: '4px' }),
+          left: 0, right: 0,
           background: 'var(--bg-secondary)',
           border: '1px solid var(--border-mid)',
           borderRadius: '8px',
