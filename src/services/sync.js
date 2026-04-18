@@ -11,7 +11,9 @@ import {
   getDriveFileIds, readJsonFile, writeJsonFile,
   findFile, writeJsonFile as driveWrite,
 } from './drive'
-import { mergeBlocks, htmlToBlocks } from '../lib/blocks'
+import { mergeBlocks, htmlToBlocks, purgeOldBlockTombstones } from '../lib/blocks'
+
+const BLOCK_TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 const LAST_SYNC_KEY = 'last_sync'
 
@@ -36,7 +38,8 @@ function mergeById(local, remote, opts = {}) {
         // paragraphs both survive. Nothing gets silently dropped.
         const winnerBlocks = Array.isArray(winner.blocks) && winner.blocks.length ? winner.blocks : htmlToBlocks(winner.body || '')
         const loserBlocks = Array.isArray(loser.blocks) && loser.blocks.length ? loser.blocks : htmlToBlocks(loser.body || '')
-        const merged = mergeBlocks(loserBlocks, winnerBlocks)
+        const cutoff = new Date(Date.now() - BLOCK_TOMBSTONE_TTL_MS).toISOString()
+        const merged = purgeOldBlockTombstones(mergeBlocks(loserBlocks, winnerBlocks), cutoff)
         const mergedNote = { ...winner, blocks: merged }
         delete mergedNote.body
         map.set(item.id, mergedNote)
@@ -78,7 +81,8 @@ export function mergeJournalEntry(localEntry, remoteEntry) {
   const remoteBlocks = Array.isArray(remoteEntry.blocks) && remoteEntry.blocks.length
     ? remoteEntry.blocks
     : htmlToBlocks(remoteEntry.content || '')
-  const merged = mergeBlocks(localBlocks, remoteBlocks)
+  const cutoff = new Date(Date.now() - BLOCK_TOMBSTONE_TTL_MS).toISOString()
+  const merged = purgeOldBlockTombstones(mergeBlocks(localBlocks, remoteBlocks), cutoff)
   const newerStamp = (toMs(localEntry.updatedAt) >= toMs(remoteEntry.updatedAt))
     ? (localEntry.updatedAt || remoteEntry.updatedAt)
     : (remoteEntry.updatedAt || localEntry.updatedAt)

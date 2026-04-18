@@ -71,7 +71,7 @@ function contentKey(el) {
 
 export function blocksToHtml(blocks) {
   if (!Array.isArray(blocks) || blocks.length === 0) return ''
-  return blocks.map(b => b.html).join('')
+  return blocks.filter(b => !b.deleted).map(b => b.html).join('')
 }
 
 /**
@@ -83,13 +83,27 @@ export function stampBlocksFromDoc(prevBlocks, currentBlocks, nowIso) {
   const now = nowIso || new Date().toISOString()
   const prevById = new Map()
   for (const b of prevBlocks || []) prevById.set(b.id, b)
-  return currentBlocks.map(b => {
+  const currentIds = new Set(currentBlocks.map(b => b.id))
+  const out = currentBlocks.map(b => {
     const prior = prevById.get(b.id)
-    if (prior && prior.html === b.html) {
+    if (prior && !prior.deleted && prior.html === b.html) {
       return { id: b.id, html: b.html, updatedAt: prior.updatedAt || now }
     }
     return { id: b.id, html: b.html, updatedAt: now }
   })
+  // Tombstone any prior block whose id is no longer in the editor doc.
+  // Without this, a local delete gets re-introduced on the next sync
+  // because remote still holds the block and merge treats it as
+  // "remote-only, keep."
+  for (const prior of prevBlocks || []) {
+    if (currentIds.has(prior.id)) continue
+    if (prior.deleted) {
+      out.push(prior)
+    } else {
+      out.push({ id: prior.id, deleted: true, updatedAt: now })
+    }
+  }
+  return out
 }
 
 /**
@@ -131,7 +145,16 @@ export function mergeBlocks(localBlocks, remoteBlocks) {
       seen.add(lb.id)
       continue
     }
-    const winner = toMs(rb.updatedAt) > toMs(lb.updatedAt) ? rb : lb
+    // Tombstone semantics: a deletion stamped at time T beats alive content
+    // stamped at the same time T (deletes shouldn't lose to stale edits).
+    // Alive only wins if strictly newer — someone actively re-added content
+    // after the delete.
+    const lt = toMs(lb.updatedAt)
+    const rt = toMs(rb.updatedAt)
+    let winner
+    if (lb.deleted && !rb.deleted) winner = rt > lt ? rb : lb
+    else if (rb.deleted && !lb.deleted) winner = lt > rt ? lb : rb
+    else winner = rt > lt ? rb : lb
     out.push(winner)
     seen.add(lb.id)
   }
@@ -158,6 +181,16 @@ function dedupeById(blocks) {
     }
   }
   return order.map(id => byId.get(id))
+}
+
+/**
+ * Drop block tombstones older than cutoff. Mirrors note/task purge in sync.js:
+ * once every device has had time to see the delete, the tombstone can go.
+ */
+export function purgeOldBlockTombstones(blocks, cutoffIso) {
+  if (!Array.isArray(blocks)) return blocks
+  const cutoff = toMs(cutoffIso)
+  return blocks.filter(b => !(b.deleted && toMs(b.updatedAt) < cutoff))
 }
 
 function blocksEqual(a, b) {
