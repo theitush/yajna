@@ -85,7 +85,6 @@ export default function SettingsPage() {
 
   const [groqKey, setGroqKey] = useState('')
   const [groqModel, setGroqModel] = useState(DEFAULT_GROQ_MODEL)
-  const [template, setTemplate] = useState('')
   const [saved, setSaved] = useState(false)
   const [storageInfo, setStorageInfo] = useState(null)
   const [persistence, setPersistence] = useState(null)
@@ -94,7 +93,6 @@ export default function SettingsPage() {
   useEffect(() => {
     setGroqKey(config?.groqApiKey || '')
     setGroqModel(config?.groqModel || DEFAULT_GROQ_MODEL)
-    setTemplate(config?.journalTemplate || '')
   }, [config])
 
   useEffect(() => {
@@ -110,7 +108,7 @@ export default function SettingsPage() {
   }, [])
 
   const handleSave = async () => {
-    await updateConfig({ groqApiKey: groqKey, groqModel, journalTemplate: template })
+    await updateConfig({ groqApiKey: groqKey, groqModel })
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
@@ -329,21 +327,6 @@ export default function SettingsPage() {
               ))}
             </select>
           </label>
-        </section>
-
-        {/* Journal template */}
-        <section>
-          <h2 style={sectionHeadStyle}>Journal template</h2>
-          <textarea
-            value={template}
-            onChange={e => setTemplate(e.target.value)}
-            rows={8}
-            placeholder={`## Morning\n\n## Working on\n\n## Thinking about\n`}
-            style={{ ...inputStyle, resize: 'none', fontFamily: 'monospace', lineHeight: 1.6 }}
-          />
-          <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '6px' }}>
-            Used for new daily entries. Markdown headings become sections.
-          </p>
         </section>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>

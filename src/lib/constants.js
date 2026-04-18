@@ -9,16 +9,6 @@ export const TASK_STATUS = {
   SCHEDULED: 'scheduled',
 }
 
-export const DEFAULT_TEMPLATE = `## Morning
-
-## Working on
-
-## Thinking about
-
-## End of day
-
-`
-
 export const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
 export const SCOPES = 'https://www.googleapis.com/auth/drive.file'
 

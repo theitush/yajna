@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
 import { today, weekKey, isVisibleToday } from '../lib/dates'
-import { DEFAULT_TEMPLATE, MODE_OFFLINE } from '../lib/constants'
+import { MODE_OFFLINE } from '../lib/constants'
 import {
   getTasks, putTask, putTasks,
   getNotes, putNote, putNotes,
@@ -13,7 +13,7 @@ import { pushTasks, pushNotes, pushJournal, pushConfig, initialSync, mergeAndPus
 import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, getSyncStatus, retryNow, setPollInterval } from '../services/syncEngine'
 import { pushAudio, pushAudioMetadata, pushPendingAudio, ensureAudioLocal, softDeleteAudio, restoreAudio, hardDeleteAudio, collectAudioIdsFromBlocks } from '../services/audio'
 import { putAudio, getAudio } from '../services/db'
-import { stampBlocks, stampBlocksFromDoc, blocksToHtml, htmlToBlocks } from '../lib/blocks'
+import { stampBlocks, stampBlocksFromDoc, blocksToHtml } from '../lib/blocks'
 
 const useAppStore = create((set, get) => ({
   // Auth / mode
@@ -249,26 +249,19 @@ const useAppStore = create((set, get) => ({
       doc = { week, entries: {} }
     }
     const t = today()
-    const config = get().config
-    const template = config?.journalTemplate || DEFAULT_TEMPLATE
 
-    // Merge with Drive FIRST, before inserting any template. Otherwise a fresh
-    // template entry (stamped "now") races real remote content and can win.
     if (get().mode !== MODE_OFFLINE) {
       doc = await mergeAndPushJournal(doc).catch(() => doc)
     }
 
-    // Only insert the template if today's entry is truly absent on both sides
-    // after merge. Mark it with epoch timestamps so any real edit wins merges.
     if (!doc.entries[t]) {
       doc = {
         ...doc,
         entries: {
           ...doc.entries,
           [t]: {
-            blocks: htmlToBlocks(template).map(b => ({ ...b, updatedAt: new Date(0).toISOString() })),
+            blocks: [],
             createdAt: new Date().toISOString(),
-            // Epoch updatedAt: any real edit supersedes the untouched template.
             updatedAt: new Date(0).toISOString(),
           },
         },
