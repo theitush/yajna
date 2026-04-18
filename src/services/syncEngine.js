@@ -289,8 +289,10 @@ async function pollRemote(storeSetter) {
 
     if (storeSetter) {
       // Filter tombstones before hydrating the store — IDB keeps them but the UI must not see them.
+      // Use mergedNotes (block-level merge of local+remote), not the raw remote, or local
+      // edits that haven't flushed to Drive yet get clobbered until next IDB read.
       const visibleTasks = (Array.isArray(tasks) ? tasks : []).filter(t => !t.deleted)
-      const visibleNotes = (Array.isArray(notes) ? notes : []).filter(n => !n.deleted)
+      const visibleNotes = mergedNotes.filter(n => !n.deleted)
       const update = {
         tasks: visibleTasks,
         notes: visibleNotes,
