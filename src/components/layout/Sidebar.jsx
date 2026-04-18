@@ -59,7 +59,7 @@ function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
           }} />
           <span style={{
             fontSize: '11px',
-            color: syncStatus.state === 'waiting' ? 'var(--yellow-500, #eab308)' : 'var(--text-tertiary)',
+            color: 'var(--text-tertiary)',
           }}>
             {statusLabel(syncStatus)}
           </span>
