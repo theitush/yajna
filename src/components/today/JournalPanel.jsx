@@ -6,16 +6,18 @@ import TextAlign from '@tiptap/extension-text-align'
 import { Extension } from '@tiptap/core'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
+import { DOMSerializer } from '@tiptap/pm/model'
 import { useEffect, useCallback, useRef } from 'react'
 import useAppStore from '../../store/useAppStore'
 import { today, weekKey, formatDate } from '../../lib/dates'
 import EditorToolbar from '../editor/EditorToolbar'
 import { RTLExtension } from '../editor/RTLExtension'
 import { AudioNode } from '../editor/AudioNode'
+import { BlockIdExtension } from '../editor/BlockIdExtension'
 import { HashtagSuggest } from '../editor/HashtagSuggest'
 import { HeadingNoShortcut } from '../editor/HeadingNoShortcut'
 import RecordFab from '../voice/RecordFab'
-import { blocksToHtml } from '../../lib/blocks'
+import { docToBlocks, blocksToHtml } from '../../lib/blocks'
 
 const HashtagExtension = Extension.create({
   name: 'hashtag',
@@ -73,13 +75,16 @@ export default function JournalPanel({ onInsertText }) {
       HashtagSuggest.configure({ getTags }),
       RTLExtension,
       AudioNode,
+      BlockIdExtension,
     ],
     content,
     onUpdate: ({ editor }) => {
       const html = editor.getHTML()
+      const serializer = DOMSerializer.fromSchema(editor.schema)
+      const blocks = docToBlocks(editor.state.doc, serializer)
       clearTimeout(saveTimeout.current)
       saveTimeout.current = setTimeout(() => {
-        updateJournalEntry(todayStr, html)
+        updateJournalEntry(todayStr, { html, blocks })
       }, 800)
     },
   })
