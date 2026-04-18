@@ -44,20 +44,29 @@ export function htmlToBlocks(html) {
   container.innerHTML = html
   const out = []
   for (const child of Array.from(container.children)) {
-    // Empty/whitespace-only blocks are structural spacers, not mergeable
-    // content — give each a fresh uuid so two empty <p></p>s don't collapse
-    // to one id (which caused sync to dedupe legit spacers and produce
-    // ghost duplicates on round-trips).
-    const isEmpty = !child.textContent.trim() && !child.querySelector('[data-audio-id], [audioid], img, video')
-    const id = child.getAttribute(BLOCK_ID_ATTR)
-      || (isEmpty ? uuid() : stableIdFromContent(child.outerHTML))
-    out.push({ id, html: child.outerHTML })
+    const existing = child.getAttribute(BLOCK_ID_ATTR)
+    const id = existing || stableIdFromContent(contentKey(child))
+    // updatedAt: 0 — parsed-from-HTML blocks lose to any stamped edit, and
+    // collide deterministically with their peers on other devices.
+    out.push({ id, html: child.outerHTML, updatedAt: new Date(0).toISOString() })
   }
   if (out.length === 0 && container.textContent.trim()) {
     const text = container.textContent
-    out.push({ id: stableIdFromContent(text), html: `<p>${escapeHtml(text)}</p>` })
+    out.push({
+      id: stableIdFromContent(text),
+      html: `<p>${escapeHtml(text)}</p>`,
+      updatedAt: new Date(0).toISOString(),
+    })
   }
   return out
+}
+
+// Content fingerprint used for deterministic ids. Strips data-bid so two
+// devices that stored the same paragraph with different bids converge to
+// the same id on re-parse. Uses textContent + tagName so attribute-order
+// differences don't fork the id either.
+function contentKey(el) {
+  return `${el.tagName}|${el.textContent}`
 }
 
 export function blocksToHtml(blocks) {
@@ -98,13 +107,16 @@ export function stampBlocks(prevBlocks, newHtml, nowIso) {
  * html, same order), local is returned unchanged (prevents merge churn).
  */
 export function mergeBlocks(localBlocks, remoteBlocks) {
-  const local = Array.isArray(localBlocks) ? localBlocks : []
-  const remote = Array.isArray(remoteBlocks) ? remoteBlocks : []
+  // Dedupe each side by id first. Prior bugs produced stored arrays with
+  // duplicate ids and with near-duplicates (same content, different ids);
+  // collapsing here makes every merge an idempotent cleanup pass so existing
+  // corruption in Drive/IDB gets fixed on the next sync.
+  const local = dedupeById(Array.isArray(localBlocks) ? localBlocks : [])
+  const remote = dedupeById(Array.isArray(remoteBlocks) ? remoteBlocks : [])
   if (local.length === 0) return remote.slice()
   if (remote.length === 0) return local.slice()
   if (blocksEqual(local, remote)) return local
 
-  const localMap = new Map(local.map(b => [b.id, b]))
   const remoteMap = new Map(remote.map(b => [b.id, b]))
 
   // Order: prefer local ordering; append any remote-only blocks at the end.
@@ -128,6 +140,24 @@ export function mergeBlocks(localBlocks, remoteBlocks) {
     out.push(rb)
   }
   return out
+}
+
+// Collapse duplicate ids within a single side. Newest updatedAt wins; ties
+// keep the first occurrence so order stays stable.
+function dedupeById(blocks) {
+  const byId = new Map()
+  const order = []
+  for (const b of blocks) {
+    if (!b || b.id == null) continue
+    const prev = byId.get(b.id)
+    if (!prev) {
+      byId.set(b.id, b)
+      order.push(b.id)
+    } else if (toMs(b.updatedAt) > toMs(prev.updatedAt)) {
+      byId.set(b.id, b)
+    }
+  }
+  return order.map(id => byId.get(id))
 }
 
 function blocksEqual(a, b) {
