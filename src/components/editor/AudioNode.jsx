@@ -51,7 +51,10 @@ function AudioNodeView({ node, editor, getPos }) {
       setObjectUrl(url)
       setStatus('ready')
       if (rec.duration) setDuration(rec.duration)
-      if (rec.transcript) {
+      // Only hydrate transcript state if we don't already have one in memory —
+      // loadBlob can be called mid-edit (e.g. clicking another segment seeks,
+      // which may lazy-load the blob), and we must not clobber pending edits.
+      if (rec.transcript && !transcript) {
         setTranscript(rec.transcript)
         setDraftTranscript(rec.transcript)
         setTranscriptModel(rec.transcriptModel || null)
@@ -480,11 +483,23 @@ function AudioNodeView({ node, editor, getPos }) {
                    // but does NOT re-render during typing (uncontrolled via dangerouslySetInnerHTML).
                    dangerouslySetInnerHTML={{ __html: s.text }}
                    onMouseDown={e => {
+                     // Commit any in-progress edit on a sibling segment first —
+                     // Tiptap's outer non-editable wrapper can swallow the native
+                     // blur, so we can't rely on onBlur alone.
+                     const active = document.activeElement
+                     if (active && active !== e.currentTarget && active.dataset?.segmentEditor) {
+                       const idx = Number(active.dataset.segmentIdx)
+                       if (Number.isInteger(idx)) {
+                         commitSegmentEdit(idx, active.textContent || '')
+                       }
+                     }
                      // Seek only on a fresh click (not when already focused/editing)
-                     if (document.activeElement !== e.currentTarget) {
+                     if (active !== e.currentTarget) {
                        seekTo(s.start)
                      }
                    }}
+                   data-segment-editor="1"
+                   data-segment-idx={i}
                    onBlur={e => commitSegmentEdit(i, e.currentTarget.textContent || '')}
                    onKeyDown={e => {
                      if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() }

@@ -243,21 +243,43 @@ async function pollRemote(storeSetter) {
     ])
 
     // Reconcile audio index: add stub records for any remote audio we don't
-    // know about yet. The blob itself is fetched lazily when the user plays it.
+    // know about yet, and merge transcript metadata into existing records.
+    // The blob itself is fetched lazily when the user plays it.
     if (Array.isArray(audioIndex) && audioIndex.length > 0) {
       try {
         const localAudio = await getAllAudio()
-        const localIds = new Set(localAudio.map(a => a.id))
+        const localById = new Map(localAudio.map(a => [a.id, a]))
         for (const entry of audioIndex) {
           if (!entry?.id) continue
-          if (localIds.has(entry.id)) continue
+          const local = localById.get(entry.id)
+          if (!local) {
+            await putAudio({
+              id: entry.id,
+              blob: null,
+              mimeType: entry.mimeType || 'audio/webm',
+              duration: entry.duration || 0,
+              createdAt: entry.createdAt || new Date().toISOString(),
+              driveFileId: entry.driveFileId || null,
+              transcript: entry.transcript || null,
+              transcriptModel: entry.transcriptModel || null,
+              transcribedAt: entry.transcribedAt || null,
+              transcriptSegments: entry.transcriptSegments || null,
+            })
+            continue
+          }
+          // Merge transcript: prefer whichever side has the newer transcribedAt.
+          const localT = new Date(local.transcribedAt || 0).getTime()
+          const remoteT = new Date(entry.transcribedAt || 0).getTime()
+          const takeRemote = entry.transcribedAt && remoteT >= localT
+          if (!takeRemote && local.transcribedAt) continue
+          if (!entry.transcript && !entry.transcriptSegments) continue
           await putAudio({
-            id: entry.id,
-            blob: null,
-            mimeType: entry.mimeType || 'audio/webm',
-            duration: entry.duration || 0,
-            createdAt: entry.createdAt || new Date().toISOString(),
-            driveFileId: entry.driveFileId || null,
+            ...local,
+            driveFileId: local.driveFileId || entry.driveFileId || null,
+            transcript: takeRemote ? (entry.transcript || null) : local.transcript,
+            transcriptModel: takeRemote ? (entry.transcriptModel || null) : local.transcriptModel,
+            transcribedAt: takeRemote ? (entry.transcribedAt || null) : local.transcribedAt,
+            transcriptSegments: takeRemote ? (entry.transcriptSegments || null) : local.transcriptSegments,
           })
         }
       } catch (e) {
