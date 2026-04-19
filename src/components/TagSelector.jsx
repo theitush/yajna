@@ -91,7 +91,7 @@ export default function TagSelector({ value, onChange, allTags, placeholder = "A
   const handleInputChange = (e) => {
     const value = e.target.value
     // Only allow characters valid for hashtags (letters, numbers, underscores, hyphens)
-    const sanitized = value.replace(/[^a-zA-Z0-9_-]/g, '')
+    const sanitized = value.replace(/[^\p{L}\p{N}_-]/gu, '')
     setInputValue(sanitized)
     setShowSuggestions(true)
     setActiveIndex(0)
