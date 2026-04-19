@@ -135,7 +135,7 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
   const handleTitleKey = (e) => {
     if (e.key === 'Enter') {
       e.preventDefault()
-      titleRef.current?.blur()
+      commitEdits()
     }
     if (e.key === 'Escape') {
       titleRef.current?.blur()
