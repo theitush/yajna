@@ -344,20 +344,31 @@ export default function SettingsPage() {
             <hr style={{ border: 'none', borderTop: '1px solid var(--border-light)' }} />
             <section>
               <h2 style={sectionHeadStyle}>Account</h2>
-              <button
-                onClick={handleSignOut}
-                style={{
-                  fontSize: '13px',
-                  color: '#FCA5A5',
-                  background: 'rgba(239,68,68,0.08)',
-                  border: '1px solid rgba(239,68,68,0.2)',
-                  padding: '8px 18px', borderRadius: '8px',
-                  cursor: 'pointer', fontFamily: 'var(--font-body)',
-                  textAlign: 'left',
-                }}
-              >
-                Sign out{userEmail ? ` (${userEmail})` : ''}
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                <button
+                  onClick={handleSignOut}
+                  style={{
+                    fontSize: '13px',
+                    color: '#FCA5A5',
+                    background: 'rgba(239,68,68,0.08)',
+                    border: '1px solid rgba(239,68,68,0.2)',
+                    padding: '8px 18px', borderRadius: '8px',
+                    cursor: 'pointer', fontFamily: 'var(--font-body)',
+                    textAlign: 'left',
+                  }}
+                >
+                  Sign out
+                </button>
+                {userEmail ? (
+                  <span style={{ fontSize: '13px', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+                    {userEmail}
+                  </span>
+                ) : (
+                  <span style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>
+                    Signed in
+                  </span>
+                )}
+              </div>
             </section>
           </>
         )}
