@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import useAppStore from '../../store/useAppStore'
 import { today } from '../../lib/dates'
 import HashtagTextarea from '../HashtagAutocomplete'
+import TagSelector from '../TagSelector'
 
 const HASHTAG_RE = /(#[\p{L}\p{N}_-]+)/gu
 
@@ -35,7 +36,6 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
   const titleRef = useRef(null)
   const explanationRef = useRef(null)
   const feedbackRef = useRef(null)
-  const tagsRef = useRef(null)
 
   const autosize = (el) => {
     if (!el) return
@@ -47,7 +47,6 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
     if (expanded) {
       autosize(explanationRef.current)
       autosize(feedbackRef.current)
-      autosize(tagsRef.current)
     }
   }, [expanded, editExplanation, editFeedback, editTags])
 
@@ -375,16 +374,11 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
             dir="auto"
             style={{ ...textareaStyle, opacity: 0.8, overflow: 'hidden' }}
           />
-          <HashtagTextarea
-            ref={tagsRef}
+          <TagSelector
             value={editTags}
             onChange={e => setEditTags(e.target.value)}
-            onKeyDown={handleEditKey}
             allTags={allTags}
-            rows={1}
-            placeholder="#tags…"
-            dir="auto"
-            style={{ ...textareaStyle, color: 'var(--accent)', fontWeight: 500, overflow: 'hidden' }}
+            placeholder="Tags…"
           />
 
           {!isDone && (
