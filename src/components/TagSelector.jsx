@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import React from 'react'
 
-function TagChip({ tag, onRemove }) {
+const TagChip = ({ tag, onRemove }) => {
   return (
     <span style={{
       display: 'inline-flex',
@@ -41,10 +42,10 @@ function TagChip({ tag, onRemove }) {
   )
 }
 
-export default function TagSelector({ value, onChange, allTags, placeholder = "Add tags..." }) {
+const TagSelector = React.forwardRef(({ value, onChange, allTags, placeholder = "Add tags...", onCommit }, ref) => {
   const [inputValue, setInputValue] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(false)
-  const [activeIndex, setActiveIndex] = useState(0)
+  const [activeIndex, setActiveIndex] = useState(-1)
   const inputRef = useRef(null)
   const containerRef = useRef(null)
 
@@ -59,12 +60,12 @@ export default function TagSelector({ value, onChange, allTags, placeholder = "A
   const suggestions = useMemo(() => {
     if (!inputValue.trim()) return allTags.filter(tag => !currentTags.includes(tag)).slice(0, 10)
     const filtered = allTags
-      .filter(tag => tag.toLowerCase().includes(inputValue.toLowerCase()) && !currentTags.includes(tag))
+      .filter(tag => tag.includes(inputValue) && !currentTags.includes(tag))
       .slice(0, 10)
     // Add option to create new tag if input doesn't match existing
-    const exactMatch = allTags.some(tag => tag.toLowerCase() === inputValue.toLowerCase())
+    const exactMatch = allTags.some(tag => tag === inputValue.trim())
     if (inputValue.trim() && !exactMatch && !currentTags.includes(inputValue.trim())) {
-      filtered.unshift(inputValue.trim()) // Add at beginning as "create new"
+      filtered.push(inputValue.trim()) // Add at end as "create new"
     }
     return filtered
   }, [inputValue, allTags, currentTags])
@@ -80,7 +81,7 @@ export default function TagSelector({ value, onChange, allTags, placeholder = "A
     updateValue(newTags)
     setInputValue('')
     setShowSuggestions(false)
-    setActiveIndex(0)
+    setActiveIndex(-1)
   }, [currentTags, updateValue])
 
   const removeTag = useCallback((tagToRemove) => {
@@ -94,7 +95,7 @@ export default function TagSelector({ value, onChange, allTags, placeholder = "A
     const sanitized = value.replace(/[^\p{L}\p{N}_-]/gu, '')
     setInputValue(sanitized)
     setShowSuggestions(true)
-    setActiveIndex(0)
+    setActiveIndex(-1)
   }
 
   const handleInputKeyDown = (e) => {
@@ -105,15 +106,30 @@ export default function TagSelector({ value, onChange, allTags, placeholder = "A
       } else if (inputValue.trim()) {
         addTag(inputValue.trim())
       }
+    } else if (e.key === 'Tab') {
+      if (showSuggestions && suggestions.length > 0) {
+        e.preventDefault()
+        const indexToUse = activeIndex === -1 ? 0 : activeIndex
+        addTag(suggestions[indexToUse])
+      }
+      // If the dropdown is closed, allow normal Tab behavior to move focus out.
     } else if (e.key === 'ArrowDown') {
       e.preventDefault()
-      setActiveIndex(i => (i + 1) % suggestions.length)
+      setActiveIndex(i => i === -1 ? 0 : (i + 1) % suggestions.length)
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
-      setActiveIndex(i => (i - 1 + suggestions.length) % suggestions.length)
+      setActiveIndex(i => i === -1 ? suggestions.length - 1 : (i - 1 + suggestions.length) % suggestions.length)
     } else if (e.key === 'Escape') {
       setShowSuggestions(false)
-      setActiveIndex(0)
+      setActiveIndex(-1)
+    } else if (e.key === 'Backspace') {
+      if (!inputValue && currentTags.length > 0) {
+        e.preventDefault()
+        removeTag(currentTags[currentTags.length - 1])
+      }
+    } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault()
+      onCommit?.()
     } else if (e.key === ',') {
       e.preventDefault()
       if (inputValue.trim()) {
@@ -146,6 +162,16 @@ export default function TagSelector({ value, onChange, allTags, placeholder = "A
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
+  // Scroll active suggestion into view
+  useEffect(() => {
+    if (showSuggestions && suggestions.length > 0 && activeIndex >= 0) {
+      const activeElement = containerRef.current?.querySelector(`[data-index="${activeIndex}"]`)
+      if (activeElement) {
+        activeElement.scrollIntoView({ block: 'nearest' })
+      }
+    }
+  }, [activeIndex, showSuggestions, suggestions.length])
+
   return (
     <div ref={containerRef} style={{ position: 'relative', width: '100%' }}>
       <div style={{
@@ -164,7 +190,10 @@ export default function TagSelector({ value, onChange, allTags, placeholder = "A
           <TagChip key={tag} tag={tag} onRemove={removeTag} />
         ))}
         <input
-          ref={inputRef}
+          ref={(el) => {
+            inputRef.current = el
+            if (ref) ref.current = el
+          }}
           type="text"
           value={inputValue}
           onChange={handleInputChange}
@@ -205,6 +234,7 @@ export default function TagSelector({ value, onChange, allTags, placeholder = "A
           {suggestions.map((tag, index) => (
             <button
               key={tag}
+              data-index={index}
               onClick={() => handleSuggestionClick(tag)}
               style={{
                 display: 'block',
@@ -213,14 +243,14 @@ export default function TagSelector({ value, onChange, allTags, placeholder = "A
                 fontSize: '12px',
                 padding: '6px 10px',
                 borderRadius: '6px',
-                background: index === activeIndex ? 'var(--bg-tertiary)' : 'none',
+                background: index === activeIndex && activeIndex >= 0 ? 'var(--bg-tertiary)' : 'none',
                 border: 'none',
                 color: 'var(--accent)',
                 cursor: 'pointer',
                 fontFamily: 'var(--font-body)',
               }}
             >
-              {tag === inputValue.trim() && inputValue.trim() && !allTags.some(t => t.toLowerCase() === inputValue.toLowerCase())
+              {tag === inputValue.trim() && inputValue.trim() && !allTags.some(t => t === inputValue.trim())
                 ? `Create "#${tag}"`
                 : `#${tag}`
               }
@@ -230,4 +260,8 @@ export default function TagSelector({ value, onChange, allTags, placeholder = "A
       )}
     </div>
   )
-}
+})
+
+TagSelector.displayName = 'TagSelector'
+
+export default TagSelector

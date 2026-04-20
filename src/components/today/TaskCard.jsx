@@ -36,6 +36,7 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
   const titleRef = useRef(null)
   const explanationRef = useRef(null)
   const feedbackRef = useRef(null)
+  const tagInputRef = useRef(null)
 
   const autosize = (el) => {
     if (!el) return
@@ -104,6 +105,19 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault()
       commitEdits()
+    } else if (e.key === 'Tab' && !e.shiftKey) {
+      e.preventDefault()
+      tagInputRef.current?.focus()
+    }
+  }
+
+  const handleExplanationKey = (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault()
+      commitEdits()
+    } else if (e.key === 'Tab' && !e.shiftKey) {
+      e.preventDefault()
+      feedbackRef.current?.focus()
     }
   }
 
@@ -117,6 +131,18 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
       document.removeEventListener('touchstart', handleClickOutside)
     }
   }, [expanded, handleClickOutside])
+
+  useEffect(() => {
+    if (!expanded) return
+    const handleGlobalKey = (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault()
+        commitEdits()
+      }
+    }
+    document.addEventListener('keydown', handleGlobalKey)
+    return () => document.removeEventListener('keydown', handleGlobalKey)
+  }, [expanded, commitEdits])
 
   const handleCheckmark = () => {
     if (isDone) markTaskActive(task.id)
@@ -358,7 +384,7 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
             ref={explanationRef}
             value={editExplanation}
             onChange={e => setEditExplanation(e.target.value)}
-            onKeyDown={handleEditKey}
+            onKeyDown={handleExplanationKey}
             rows={1}
             placeholder="Explanation…"
             dir="auto"
@@ -375,10 +401,12 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
             style={{ ...textareaStyle, opacity: 0.8, overflow: 'hidden' }}
           />
           <TagSelector
+            ref={tagInputRef}
             value={editTags}
             onChange={e => setEditTags(e.target.value)}
             allTags={allTags}
             placeholder="Tags…"
+            onCommit={commitEdits}
           />
 
           {!isDone && (
