@@ -12,6 +12,75 @@ import { v4 as uuid } from 'uuid'
 
 const BLOCK_ID_ATTR = 'data-bid'
 
+// Fractional-index alphabet. Any two keys can have a new key generated
+// strictly between them, so concurrent inserts on different devices
+// converge to the same order after merge.
+const FI_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz'
+const FI_BASE = FI_ALPHABET.length
+const FI_MIN = FI_ALPHABET[0]
+const FI_MID = FI_ALPHABET[Math.floor(FI_BASE / 2)]
+
+function fiCharAt(s, i) {
+  return i < s.length ? s[i] : FI_MIN
+}
+
+function fiIndexOf(ch) {
+  const i = FI_ALPHABET.indexOf(ch)
+  if (i < 0) throw new Error('fi: bad char ' + ch)
+  return i
+}
+
+/**
+ * Generate a key strictly between `a` and `b` (either may be null for
+ * unbounded). Keys are lexicographically comparable strings. Never returns
+ * a key equal to either bound.
+ */
+export function fiBetween(a, b) {
+  if (a != null && b != null && a >= b) {
+    throw new Error('fi: a must be < b, got ' + a + ',' + b)
+  }
+  let prefix = ''
+  let i = 0
+  // Walk the shared prefix. Once ca < cb, the answer sits inside the
+  // segment above ca; if the gap is >1 in the alphabet we place a middle
+  // char there. Otherwise we adopt ca and extend past `a` far enough to
+  // land strictly above `a` and strictly below `b`.
+  while (true) {
+    const ca = a == null ? FI_MIN : fiCharAt(a, i)
+    const cb = b == null ? null : fiCharAt(b, i)
+    if (ca === cb) {
+      prefix += ca
+      i++
+      continue
+    }
+    const ia = fiIndexOf(ca)
+    const ib = cb == null ? FI_BASE : fiIndexOf(cb)
+    if (ib - ia > 1) {
+      return prefix + FI_ALPHABET[Math.floor((ia + ib) / 2)]
+    }
+    // ib - ia === 1: adopt ca so the result still starts with
+    // prefix+ca (hence < b). Then append the remainder of `a` plus a
+    // middle char — strictly greater than `a` because MID > empty.
+    prefix += ca
+    i++
+    const tail = a == null ? '' : a.slice(i)
+    return prefix + tail + FI_MID
+  }
+}
+
+// Build evenly-spaced keys for a sequence of blocks. Used to seed `order`
+// for legacy blocks that don't have keys yet.
+function fiSequence(n) {
+  const out = []
+  let prev = null
+  for (let i = 0; i < n; i++) {
+    const key = fiBetween(prev, null)
+    out.push(key)
+    prev = key
+  }
+  return out
+}
+
 /**
  * Extract blocks from a TipTap/ProseMirror doc. This is the authoritative
  * path while editing: ids live on node attrs (set by BlockIdExtension), so
@@ -58,6 +127,8 @@ export function htmlToBlocks(html) {
       updatedAt: new Date(0).toISOString(),
     })
   }
+  const keys = fiSequence(out.length)
+  for (let i = 0; i < out.length; i++) out[i].order = keys[i]
   return out
 }
 
@@ -71,7 +142,22 @@ function contentKey(el) {
 
 export function blocksToHtml(blocks) {
   if (!Array.isArray(blocks) || blocks.length === 0) return ''
-  return blocks.filter(b => !b.deleted).map(b => b.html).join('')
+  return sortByOrder(blocks.filter(b => !b.deleted)).map(b => b.html).join('')
+}
+
+// Sort by fractional-index `order`, tie-breaking by id so devices with
+// duplicate/missing keys still converge. Blocks missing `order` sort to
+// the end (legacy data before the fractional-index migration).
+function sortByOrder(blocks) {
+  return blocks.slice().sort((a, b) => {
+    const ao = a.order, bo = b.order
+    if (ao == null && bo == null) return 0
+    if (ao == null) return 1
+    if (bo == null) return -1
+    if (ao < bo) return -1
+    if (ao > bo) return 1
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+  })
 }
 
 /**
@@ -84,12 +170,46 @@ export function stampBlocksFromDoc(prevBlocks, currentBlocks, nowIso) {
   const prevById = new Map()
   for (const b of prevBlocks || []) prevById.set(b.id, b)
   const currentIds = new Set(currentBlocks.map(b => b.id))
-  const out = currentBlocks.map(b => {
+
+  // Assign fractional-index `order` keys in editor order. Pass 1 marks
+  // which prior keys are "anchor" keys — ones we keep, because they're
+  // present and form a strictly-increasing subsequence in editor order.
+  // Pass 2 fills the gaps with fresh keys generated strictly between the
+  // surrounding anchors, so the sequence is monotonic across devices.
+  const priorKey = currentBlocks.map(b => {
     const prior = prevById.get(b.id)
-    if (prior && !prior.deleted && prior.html === b.html) {
-      return { id: b.id, html: b.html, updatedAt: prior.updatedAt || now }
+    return prior && !prior.deleted && prior.order ? prior.order : null
+  })
+  const isAnchor = new Array(currentBlocks.length).fill(false)
+  let lastAnchor = null
+  for (let i = 0; i < currentBlocks.length; i++) {
+    if (priorKey[i] != null && (lastAnchor == null || priorKey[i] > lastAnchor)) {
+      isAnchor[i] = true
+      lastAnchor = priorKey[i]
     }
-    return { id: b.id, html: b.html, updatedAt: now }
+  }
+  const finalOrder = new Array(currentBlocks.length)
+  for (let i = 0; i < currentBlocks.length; i++) {
+    if (isAnchor[i]) {
+      finalOrder[i] = priorKey[i]
+      continue
+    }
+    const lo = i > 0 ? finalOrder[i - 1] : null
+    let hi = null
+    for (let j = i + 1; j < currentBlocks.length; j++) {
+      if (isAnchor[j]) { hi = priorKey[j]; break }
+    }
+    finalOrder[i] = fiBetween(lo, hi)
+  }
+
+  const out = currentBlocks.map((b, i) => {
+    const prior = prevById.get(b.id)
+    const order = finalOrder[i]
+    const orderChanged = !prior || prior.order !== order
+    if (prior && !prior.deleted && prior.html === b.html && !orderChanged) {
+      return { id: b.id, html: b.html, order, updatedAt: prior.updatedAt || now }
+    }
+    return { id: b.id, html: b.html, order, updatedAt: now }
   })
   // Tombstone any prior block whose id is no longer in the editor doc.
   // Without this, a local delete gets re-introduced on the next sync
@@ -100,7 +220,7 @@ export function stampBlocksFromDoc(prevBlocks, currentBlocks, nowIso) {
     if (prior.deleted) {
       out.push(prior)
     } else {
-      out.push({ id: prior.id, deleted: true, updatedAt: now })
+      out.push({ id: prior.id, deleted: true, order: prior.order, updatedAt: now })
     }
   }
   return out
@@ -127,15 +247,15 @@ export function mergeBlocks(localBlocks, remoteBlocks) {
   // corruption in Drive/IDB gets fixed on the next sync.
   const local = dedupeById(Array.isArray(localBlocks) ? localBlocks : [])
   const remote = dedupeById(Array.isArray(remoteBlocks) ? remoteBlocks : [])
-  if (local.length === 0) return remote.slice()
-  if (remote.length === 0) return local.slice()
-  if (blocksEqual(local, remote)) return local
+  if (local.length === 0) return sortByOrder(remote)
+  if (remote.length === 0) return sortByOrder(local)
+  if (blocksEqual(local, remote)) return sortByOrder(local)
 
   const remoteMap = new Map(remote.map(b => [b.id, b]))
 
-  // Order: prefer local ordering; append any remote-only blocks at the end.
-  // If you edit paragraph 2 locally and device B inserts a new paragraph 3,
-  // merge keeps your local P1..P2 order and tacks on P3 after.
+  // Per-block LWW. Ordering is derived from the fractional-index `order`
+  // key afterwards, so the final sequence is identical on every device
+  // regardless of which side arrived first.
   const out = []
   const seen = new Set()
   for (const lb of local) {
@@ -155,6 +275,13 @@ export function mergeBlocks(localBlocks, remoteBlocks) {
     if (lb.deleted && !rb.deleted) winner = rt > lt ? rb : lb
     else if (rb.deleted && !lb.deleted) winner = lt > rt ? lb : rb
     else winner = rt > lt ? rb : lb
+    // Prefer whichever side has an `order` key; if both do, the LWW winner's
+    // key is authoritative. This keeps legacy blocks that gained a key on
+    // one device from losing it on merge.
+    if (winner.order == null) {
+      const alt = winner === lb ? rb : lb
+      if (alt.order != null) winner = { ...winner, order: alt.order }
+    }
     out.push(winner)
     seen.add(lb.id)
   }
@@ -162,7 +289,7 @@ export function mergeBlocks(localBlocks, remoteBlocks) {
     if (seen.has(rb.id)) continue
     out.push(rb)
   }
-  return out
+  return sortByOrder(out)
 }
 
 // Collapse duplicate ids within a single side. Newest updatedAt wins; ties
