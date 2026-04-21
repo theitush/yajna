@@ -66,7 +66,7 @@ function AudioNodeView({ node, editor, getPos, extension }) {
     } catch (e) {
       console.error('Audio load failed', e)
       setStatus('error')
-      setError('Could not load audio')
+      setError(e.message || 'Could not load audio')
       return null
     }
   }
