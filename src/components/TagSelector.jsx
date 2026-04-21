@@ -58,7 +58,7 @@ const TagSelector = React.forwardRef(({ value, onChange, allTags, placeholder = 
 
   // Filter suggestions based on input
   const suggestions = useMemo(() => {
-    if (!inputValue.trim()) return allTags.filter(tag => !currentTags.includes(tag)).slice(0, 10)
+    if (!inputValue.trim()) return allTags.filter(tag => !currentTags.includes(tag)).slice(0, 50)
     const filtered = allTags
       .filter(tag => tag.includes(inputValue) && !currentTags.includes(tag))
       .slice(0, 10)
@@ -201,6 +201,7 @@ const TagSelector = React.forwardRef(({ value, onChange, allTags, placeholder = 
           onFocus={handleInputFocus}
           onBlur={handleInputBlur}
           placeholder={currentTags.length === 0 ? placeholder : ""}
+          dir="auto"
           style={{
             flex: 1,
             minWidth: '100px',
