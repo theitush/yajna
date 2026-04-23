@@ -70,6 +70,8 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
   }, [editingTitle])
 
   const isDone = task.status === 'done' || task.status === 'reviewed'
+  const taskTitle = task.title?.trim() || ''
+  const hasTitle = taskTitle.length > 0
 
   useEffect(() => {
     setEditExplanation(task.explanation || '')
@@ -269,23 +271,32 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
           onBlur={handleTitleBlur}
           onKeyDown={handleTitleKey}
           onDoubleClick={handleTitleDoubleClick}
-          onClick={expanded && !editingTitle ? handleTitleDoubleClick : undefined}
+          onClick={!editingTitle ? handleTitleDoubleClick : undefined}
           style={{
             flex: 1,
+            display: 'inline-block',
+            minWidth: hasTitle || editingTitle ? 'auto' : '6rem',
+            minHeight: '1.4em',
             fontSize: '14px',
             fontWeight: 500,
-            color: isDone ? 'var(--green-800)' : 'var(--text-primary)',
+            color: isDone
+              ? 'var(--green-800)'
+              : hasTitle
+                ? 'var(--text-primary)'
+                : 'var(--text-tertiary)',
+            fontStyle: hasTitle ? 'normal' : 'italic',
             lineHeight: 1.4,
             outline: 'none',
-            cursor: editingTitle ? 'text' : 'default',
+            cursor: 'text',
             textDecoration: isDone ? 'line-through' : 'none',
             borderRadius: editingTitle ? '4px' : 'none',
             boxShadow: editingTitle ? '0 0 0 2px var(--accent)' : 'none',
             padding: editingTitle ? '1px 3px' : '0',
             margin: editingTitle ? '-1px -3px' : '0',
+            userSelect: editingTitle ? 'text' : 'none',
           }}
         >
-          {editingTitle ? task.title : renderWithHashtags(task.title)}
+          {editingTitle ? task.title : (hasTitle ? renderWithHashtags(taskTitle) : 'Untitled')}
         </span>
 
         {/* Status badges */}
