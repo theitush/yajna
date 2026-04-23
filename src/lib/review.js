@@ -25,21 +25,19 @@ export function getTaskReviewRecord(task, date) {
 
 export function isTaskReviewedForDate(task, date) {
   if (getTaskReviewRecord(task, date)?.reviewedAt) return true
-  return task.status === 'reviewed' && task.reviewedDate === date
+  return false
 }
 
 export function getTaskSnapshotForDate(task, date) {
   const createdDate = task.createdDate || task.createdAt?.slice(0, 10)
   if (!createdDate || createdDate > date) return null
+  if (task.status === 'backlog') return null
 
   const scheduledDate = task.scheduledDate || null
   if (scheduledDate && scheduledDate > date) return null
 
   const dismissedDate = task.dismissedDate || null
   if (dismissedDate && dismissedDate <= date) return null
-
-  const reviewedDate = task.reviewedDate || null
-  if (reviewedDate && reviewedDate < date) return null
 
   const doneDate = task.doneDate || null
   if (doneDate && doneDate < date) return null

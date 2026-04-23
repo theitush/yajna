@@ -252,7 +252,7 @@ function TasksReviewPane({ day, openCommentKey, onOpenComment, onCloseComment, o
 
       <div className="review-scroll" style={{ ...scrollPaneStyle, padding: '18px 16px 22px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
         {day.tasks.length === 0 ? (
-          <div style={emptyStateStyle}>No tasks were active or completed on this day.</div>
+          <div style={emptyStateStyle}>No reviewable tasks were created on this day.</div>
         ) : (
           day.tasks.map(task => (
             <ReviewTaskCard
