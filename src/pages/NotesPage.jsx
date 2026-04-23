@@ -55,7 +55,7 @@ function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags }) {
 
   const editor = useEditor({
     extensions: [
-      StarterKit.configure({ heading: false }),
+      StarterKit.configure({ heading: false, bulletList: false, orderedList: false, listItem: false, taskList: false, taskItem: false }),
       HeadingNoShortcut,
       Placeholder.configure({ placeholder: 'Write your note…' }),
       Highlight.configure({ multicolor: true }),

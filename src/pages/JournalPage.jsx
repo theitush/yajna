@@ -60,7 +60,7 @@ const HashtagExtension = Extension.create({
 function EntryEditor({ content, onSave, dirtyRef, onEditorReady, getTags }) {
   const editor = useEditor({
     extensions: [
-      StarterKit.configure({ heading: false }),
+      StarterKit.configure({ heading: false, bulletList: false, orderedList: false, listItem: false, taskList: false, taskItem: false }),
       HeadingNoShortcut,
       Placeholder.configure({ placeholder: 'Nothing written this day…' }),
       HashtagExtension,

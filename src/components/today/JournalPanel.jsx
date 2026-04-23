@@ -66,7 +66,7 @@ export default function JournalPanel({ onInsertText }) {
 
   const editor = useEditor({
     extensions: [
-      StarterKit.configure({ heading: false }),
+      StarterKit.configure({ heading: false, bulletList: false, orderedList: false, listItem: false, taskList: false, taskItem: false }),
       HeadingNoShortcut,
       Placeholder.configure({ placeholder: 'Start writing…' }),
       Highlight.configure({ multicolor: true }),

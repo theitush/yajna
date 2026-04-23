@@ -96,7 +96,7 @@ function NotePreviewModal({ note, onClose }) {
   const html = useMemo(() => blocksToHtml(note?.blocks) || '', [note])
   const editor = useEditor({
     extensions: [
-      StarterKit.configure({ heading: false }),
+      StarterKit.configure({ heading: false, bulletList: false, orderedList: false, listItem: false, taskList: false, taskItem: false }),
       HeadingNoShortcut,
       Highlight.configure({ multicolor: true }),
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
@@ -192,7 +192,7 @@ function AudioTrashCard({ audio, onPurge, onRestore }) {
   const html = `<div data-audio-id="${audio.id}" data-duration="${audio.duration || 0}"></div>`
   const editor = useEditor({
     extensions: [
-      StarterKit.configure({ heading: false }),
+      StarterKit.configure({ heading: false, bulletList: false, orderedList: false, listItem: false, taskList: false, taskItem: false }),
       HeadingNoShortcut,
       AudioNode.configure({ readOnly: true }),
       BlockIdExtension,
