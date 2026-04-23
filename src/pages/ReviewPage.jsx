@@ -312,10 +312,6 @@ export default function ReviewPage() {
     }
   }, [reviewDays, selectedDate, selectedDay])
 
-  const pendingItemsForSelectedDay = selectedDay
-    ? (selectedDay.hasJournal && !selectedDay.journalReviewed ? 1 : 0) + selectedDay.pendingTaskReviews
-    : 0
-
   return (
     <div style={{ display: 'flex', height: '100%', background: 'var(--bg-primary)' }}>
       <style>{`
@@ -361,7 +357,7 @@ export default function ReviewPage() {
               style={sidebarDateButtonStyle(day.date === selectedDay?.date, day.needsReview)}
             >
               <div style={{ minWidth: 0 }}>
-                <div style={sidebarDateTitleStyle(day.needsReview)}>
+                <div style={sidebarDateTitleStyle()}>
                   {new Date(`${day.date}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
                 </div>
               </div>
@@ -390,11 +386,11 @@ export default function ReviewPage() {
                       borderRadius: '999px',
                       padding: '8px 12px',
                       whiteSpace: 'nowrap',
-                      background: day.date === selectedDay?.date ? 'rgba(107,163,214,0.14)' : 'var(--bg-secondary)',
+                      background: day.needsReview ? 'transparent' : 'rgba(16,185,129,0.05)',
                       color: day.date === selectedDay?.date ? 'var(--text-primary)' : 'var(--text-secondary)',
                       fontSize: '12px',
                       fontWeight: 500,
-                      boxShadow: day.date === selectedDay?.date ? 'inset 0 0 0 1px rgba(107,163,214,0.22)' : 'inset 0 0 0 1px var(--border-light)',
+                      boxShadow: day.date === selectedDay?.date ? 'inset 0 0 0 1px rgba(148,163,184,0.24)' : 'inset 0 0 0 1px var(--border-light)',
                     }}
                   >
                     {new Date(`${day.date}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
@@ -410,14 +406,6 @@ export default function ReviewPage() {
                 <h2 style={{ margin: '4px 0 0', fontSize: '22px', fontWeight: 500, color: 'var(--text-primary)' }}>
                   {formatDate(selectedDay.date)}
                 </h2>
-              </div>
-              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                <span style={summaryPillStyle(selectedDay.needsReview)}>
-                  {pendingItemsForSelectedDay > 0 ? `${pendingItemsForSelectedDay} left to review` : 'Fully reviewed'}
-                </span>
-                <span style={summaryPillStyle(false)}>
-                  {selectedDay.tasks.filter(task => task.completed).length} completed
-                </span>
               </div>
             </header>
 
@@ -552,12 +540,8 @@ function sidebarDateButtonStyle(selected, needsReview) {
     borderRadius: '16px',
     padding: '12px 12px',
     marginBottom: '8px',
-    background: selected
-      ? 'rgba(107,163,214,0.12)'
-      : needsReview
-        ? 'transparent'
-        : 'rgba(16,185,129,0.05)',
-    boxShadow: selected ? 'inset 0 0 0 1px rgba(107,163,214,0.22)' : 'none',
+    background: needsReview ? 'transparent' : 'rgba(16,185,129,0.05)',
+    boxShadow: selected ? 'inset 0 0 0 1px rgba(148,163,184,0.24)' : 'none',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'flex-start',
@@ -567,26 +551,11 @@ function sidebarDateButtonStyle(selected, needsReview) {
   }
 }
 
-function sidebarDateTitleStyle(needsReview) {
+function sidebarDateTitleStyle() {
   return {
     fontSize: '13px',
     fontWeight: 500,
     color: 'var(--text-primary)',
-  }
-}
-
-function summaryPillStyle(active) {
-  return {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: '6px',
-    padding: '7px 11px',
-    borderRadius: '999px',
-    background: active ? 'rgba(16,185,129,0.12)' : 'var(--bg-secondary)',
-    color: active ? '#9FE3BF' : 'var(--text-secondary)',
-    boxShadow: active ? 'inset 0 0 0 1px rgba(16,185,129,0.18)' : 'inset 0 0 0 1px var(--border-light)',
-    fontSize: '12px',
-    fontWeight: 500,
   }
 }
 

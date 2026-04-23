@@ -100,10 +100,7 @@ export function buildReviewDays({ tasks, journalDocs, todayStr = today() }) {
       const taskSnapshots = (tasks || [])
         .map(task => getTaskSnapshotForDate(task, date))
         .filter(Boolean)
-        .sort((a, b) => {
-          if (a.completed !== b.completed) return a.completed ? 1 : -1
-          return (a.order ?? Infinity) - (b.order ?? Infinity)
-        })
+        .sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity))
 
       const hasJournal = hasJournalData(journalEntry)
       const journalReviewed = !!journalEntry?.reviewedAt
