@@ -18,6 +18,7 @@ const TagChip = ({ tag, onRemove }) => {
     }}>
       #{tag}
       <button
+        type="button"
         onClick={(e) => { e.preventDefault(); onRemove(tag) }}
         style={{
           background: 'none',
@@ -235,6 +236,11 @@ const TagSelector = React.forwardRef(({ value, onChange, allTags, placeholder = 
           {suggestions.map((tag, index) => (
             <button
               key={tag}
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+              }}
               data-index={index}
               onClick={() => handleSuggestionClick(tag)}
               style={{
