@@ -118,10 +118,13 @@ const useAppStore = create((set, get) => ({
     if (!task || !text?.trim()) return
     const dailyReviews = { ...(task.dailyReviews || {}) }
     const prior = dailyReviews[date] || {}
-    const comments = [...(prior.comments || []), {
-      id: uuid(),
+    const now = new Date().toISOString()
+    const existing = prior.comments?.[prior.comments.length - 1]
+    const comments = [{
+      id: existing?.id || uuid(),
       text: text.trim(),
-      createdAt: new Date().toISOString(),
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
     }]
     dailyReviews[date] = { ...prior, comments }
     await get().updateTask(id, { dailyReviews })

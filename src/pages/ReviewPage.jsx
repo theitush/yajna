@@ -10,54 +10,6 @@ import { AudioNode } from '../components/editor/AudioNode'
 import { BlockIdExtension } from '../components/editor/BlockIdExtension'
 import { HeadingNoShortcut } from '../components/editor/HeadingNoShortcut'
 
-function CommentThread({ comments, placeholder, onAdd }) {
-  const [draft, setDraft] = useState('')
-
-  const handleSubmit = () => {
-    if (!draft.trim()) return
-    onAdd(draft.trim())
-    setDraft('')
-  }
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-      {comments?.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          {comments.map(comment => (
-            <div key={comment.id} style={commentBubbleStyle}>
-              <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
-                {comment.text}
-              </div>
-              <div style={{ marginTop: '6px', fontSize: '10px', color: 'var(--text-tertiary)' }}>
-                {new Date(comment.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        <textarea
-          value={draft}
-          onChange={e => setDraft(e.target.value)}
-          onKeyDown={e => {
-            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-              e.preventDefault()
-              handleSubmit()
-            }
-          }}
-          rows={2}
-          placeholder={placeholder}
-          style={commentInputStyle}
-        />
-        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <button onClick={handleSubmit} style={commentButtonStyle}>Add comment</button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 function CollapsedCommentPreview({ comment }) {
   if (!comment) return null
   return (
@@ -119,14 +71,23 @@ function SingleCommentEditor({ comment, placeholder, onSave }) {
 function IconButton({ active = false, onClick, title, children }) {
   return (
     <button onClick={onClick} title={title} aria-label={title} style={iconButtonStyle(active)}>
-      {children}
+      {active ? children : null}
+    </button>
+  )
+}
+
+function CommentEditButton({ hasComment, onClick }) {
+  const label = hasComment ? 'Edit comment' : 'Add comment'
+  return (
+    <button onClick={onClick} title={label} aria-label={label} style={commentEditButtonStyle}>
+      <PencilIcon />
     </button>
   )
 }
 
 function JournalBlock({ block, comments, onAddComment }) {
   const [hovered, setHovered] = useState(false)
-  const [commentsOpen, setCommentsOpen] = useState(Boolean(comments?.length))
+  const [commentsOpen, setCommentsOpen] = useState(false)
   const singleComment = comments?.[0] || null
   const editor = useEditor({
     editable: false,
@@ -158,17 +119,15 @@ function JournalBlock({ block, comments, onAddComment }) {
       }}
     >
       <div style={{ position: 'absolute', top: '8px', right: 0, opacity: hovered || commentsOpen ? 1 : 0, transition: 'opacity 0.15s' }}>
-        <IconButton active={commentsOpen || comments?.length > 0} onClick={() => setCommentsOpen(v => !v)} title="Comment on paragraph">
-          <PencilIcon />
-        </IconButton>
+        <CommentEditButton hasComment={Boolean(singleComment)} onClick={() => setCommentsOpen(true)} />
       </div>
 
-      <div style={{ paddingRight: '44px' }}>
+      <div style={{ paddingRight: '96px' }}>
         <EditorContent editor={editor} />
       </div>
 
       {!commentsOpen && singleComment && (
-        <div style={{ marginTop: '10px', paddingRight: '44px' }}>
+        <div style={{ marginTop: '10px', paddingRight: '96px' }}>
           <CollapsedCommentPreview comment={singleComment} />
         </div>
       )}
@@ -230,8 +189,8 @@ function ReviewJournalPane({ day, onToggleReview, onAddBlockComment }) {
 }
 
 function ReviewTaskCard({ task, onToggleReview, onAddComment }) {
-  const [commentsOpen, setCommentsOpen] = useState(Boolean(task.comments?.length))
-  const latestComment = task.comments?.[task.comments.length - 1] || null
+  const [commentsOpen, setCommentsOpen] = useState(false)
+  const singleComment = task.comments?.[task.comments.length - 1] || null
 
   const tone = task.completed
     ? (task.reviewed ? 'completedReviewed' : 'completed')
@@ -244,9 +203,7 @@ function ReviewTaskCard({ task, onToggleReview, onAddComment }) {
           <IconButton active={task.reviewed} onClick={onToggleReview} title={task.reviewed ? 'Unreview task' : 'Review task'}>
             <CheckIcon />
           </IconButton>
-          <IconButton active={commentsOpen || task.comments?.length > 0} onClick={() => setCommentsOpen(v => !v)} title="Task comments">
-            <PencilIcon />
-          </IconButton>
+          <CommentEditButton hasComment={Boolean(singleComment)} onClick={() => setCommentsOpen(true)} />
         </div>
 
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -262,18 +219,18 @@ function ReviewTaskCard({ task, onToggleReview, onAddComment }) {
             </div>
           )}
 
-          {!commentsOpen && latestComment && (
+          {!commentsOpen && singleComment && (
             <div style={{ marginTop: '12px' }}>
-              <CollapsedCommentPreview comment={latestComment} />
+              <CollapsedCommentPreview comment={singleComment} />
             </div>
           )}
 
           {commentsOpen && (
             <div style={{ marginTop: '14px' }}>
-              <CommentThread
-                comments={task.comments || []}
+              <SingleCommentEditor
+                comment={singleComment}
                 placeholder="Comment on this task..."
-                onAdd={(text) => {
+                onSave={(text) => {
                   onAddComment(text)
                   setCommentsOpen(false)
                 }}
@@ -515,7 +472,7 @@ export default function ReviewPage() {
 
 function CheckIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
       <polyline points="20 6 9 17 4 12" />
     </svg>
   )
@@ -635,19 +592,36 @@ function summaryPillStyle(active) {
 
 function iconButtonStyle(active) {
   return {
-    width: '28px',
-    height: '28px',
+    width: 22,
+    height: 22,
     borderRadius: '50%',
-    border: 'none',
-    display: 'grid',
-    placeItems: 'center',
+    border: active ? 'none' : '2px solid var(--border-mid)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
     cursor: 'pointer',
-    color: active ? '#E8FFF2' : 'var(--text-tertiary)',
-    background: active ? 'var(--green-500)' : 'var(--bg-secondary)',
-    boxShadow: active ? '0 0 0 3px rgba(16,185,129,0.15)' : 'inset 0 0 0 1px var(--border-light)',
-    transition: 'all 0.15s ease',
+    color: 'white',
+    background: active ? 'var(--green-500)' : 'transparent',
+    boxShadow: active ? '0 0 0 3px rgba(16,185,129,0.2), 0 2px 12px rgba(16,185,129,0.35)' : 'none',
+    transition: 'all 0.2s',
     flexShrink: 0,
   }
+}
+
+const commentEditButtonStyle = {
+  border: 'none',
+  display: 'grid',
+  placeItems: 'center',
+  width: '18px',
+  height: '18px',
+  padding: 0,
+  cursor: 'pointer',
+  color: 'var(--text-secondary)',
+  background: 'transparent',
+  boxShadow: 'none',
+  fontFamily: 'var(--font-body)',
+  transition: 'color 0.15s ease',
+  flexShrink: 0,
 }
 
 function taskCardStyle(tone) {
@@ -657,7 +631,7 @@ function taskCardStyle(tone) {
       background: 'var(--bg-primary)',
     },
     reviewed: {
-      border: '3px solid rgba(34,197,94,0.34)',
+      border: '1px solid rgba(34,197,94,0.34)',
       background: 'var(--bg-primary)',
     },
     completed: {
@@ -665,7 +639,7 @@ function taskCardStyle(tone) {
       background: 'linear-gradient(135deg, rgba(16,185,129,0.12), rgba(16,185,129,0.05))',
     },
     completedReviewed: {
-      border: '3px solid rgba(34,197,94,0.36)',
+      border: '1px solid rgba(34,197,94,0.36)',
       background: 'linear-gradient(135deg, rgba(16,185,129,0.12), rgba(16,185,129,0.05))',
     },
   }[tone]
@@ -692,7 +666,7 @@ function taskTitleStyle(tone) {
 function reviewSurfaceStyle(reviewed) {
   return {
     borderRadius: '16px',
-    border: reviewed ? '3px solid rgba(34,197,94,0.34)' : '1px solid var(--border-light)',
+    border: reviewed ? '1px solid rgba(34,197,94,0.34)' : '1px solid var(--border-light)',
     background: 'var(--bg-primary)',
   }
 }
