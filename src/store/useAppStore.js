@@ -45,7 +45,7 @@ const useAppStore = create((set, get) => ({
   },
   addTask: async (title, explanation = '') => {
     const now = new Date().toISOString()
-    const minOrder = get().tasks.reduce((m, t) => Math.min(m, t.order ?? 0), 0)
+    const maxOrder = get().tasks.reduce((m, t) => Math.max(m, t.order ?? 0), -1)
     const task = {
       id: uuid(),
       title,
@@ -56,7 +56,7 @@ const useAppStore = create((set, get) => ({
       doneDate: null,
       dismissedDate: null,
       scheduledDate: null,
-      order: minOrder - 1,
+      order: maxOrder + 1,
       createdAt: now,
       updatedAt: now,
     }
