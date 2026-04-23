@@ -39,6 +39,8 @@ const useAppStore = create((set, get) => ({
 
   // Tasks
   tasks: [],
+  reviewVersion: 0,
+  bumpReviewVersion: () => set(s => ({ reviewVersion: s.reviewVersion + 1 })),
   loadTasks: async () => {
     const tasks = await getTasks()
     set({ tasks })
@@ -72,6 +74,7 @@ const useAppStore = create((set, get) => ({
     const updated = { ...task, ...updates, updatedAt: new Date().toISOString() }
     await putTask(updated)
     set(s => ({ tasks: s.tasks.map(t => t.id === id ? updated : t) }))
+    get().bumpReviewVersion()
     if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
   },
   markTaskDone: async (id) => {
@@ -91,6 +94,37 @@ const useAppStore = create((set, get) => ({
   },
   scheduleTask: async (id, date) => {
     await get().updateTask(id, { status: 'scheduled', scheduledDate: date })
+  },
+  setTaskReviewedForDate: async (id, date, reviewed) => {
+    const task = get().tasks.find(t => t.id === id)
+    if (!task) return
+    const next = { ...(task.dailyReviews || {}) }
+    const prior = next[date] || {}
+    if (reviewed) {
+      next[date] = {
+        ...prior,
+        reviewedAt: new Date().toISOString(),
+        completed: !!task.doneDate && task.doneDate <= date,
+      }
+    } else {
+      next[date] = { ...prior }
+      delete next[date].reviewedAt
+      if (!next[date].comments?.length) delete next[date]
+    }
+    await get().updateTask(id, { dailyReviews: next })
+  },
+  addTaskReviewComment: async (id, date, text) => {
+    const task = get().tasks.find(t => t.id === id)
+    if (!task || !text?.trim()) return
+    const dailyReviews = { ...(task.dailyReviews || {}) }
+    const prior = dailyReviews[date] || {}
+    const comments = [...(prior.comments || []), {
+      id: uuid(),
+      text: text.trim(),
+      createdAt: new Date().toISOString(),
+    }]
+    dailyReviews[date] = { ...prior, comments }
+    await get().updateTask(id, { dailyReviews })
   },
   deleteTask: async (id) => {
     // Keep display fields on the tombstone so Trash can show the task without
@@ -115,6 +149,7 @@ const useAppStore = create((set, get) => ({
       : { id, deleted: true, deletedAt: now, updatedAt: now }
     await putTask(tomb)
     set(s => ({ tasks: s.tasks.filter(t => t.id !== id) }))
+    get().bumpReviewVersion()
     if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
   },
   reorderTasks: (orderedIds) => {
@@ -273,8 +308,10 @@ const useAppStore = create((set, get) => ({
     return doc
   },
   updateJournalEntry: async (date, payload) => {
-    const doc = get().currentJournal
-    if (!doc) return
+    const targetWeek = weekKey(date)
+    const currentDoc = get().currentJournal?.week === targetWeek ? get().currentJournal : null
+    let doc = currentDoc || await getJournal(targetWeek)
+    if (!doc) doc = { week: targetWeek, entries: {} }
     const prior = doc.entries[date] || {}
     const now = new Date().toISOString()
     // Back-compat: older call sites pass a raw HTML string.
@@ -298,7 +335,66 @@ const useAppStore = create((set, get) => ({
       entries: { ...doc.entries, [date]: nextEntry },
     }
     await putJournal(updated)
-    set({ currentJournal: updated })
+    if (currentDoc) set({ currentJournal: updated })
+    get().bumpReviewVersion()
+    if (get().mode !== MODE_OFFLINE) withRetry(() => pushJournal(updated))()
+  },
+  setJournalEntryReviewed: async (date, reviewed) => {
+    const week = weekKey(date)
+    const currentDoc = get().currentJournal?.week === week ? get().currentJournal : null
+    let doc = currentDoc || await getJournal(week)
+    if (!doc) doc = { week, entries: {} }
+
+    const now = new Date().toISOString()
+    const prior = doc.entries?.[date] || {
+      blocks: [],
+      createdAt: now,
+      updatedAt: new Date(0).toISOString(),
+    }
+    const nextEntry = { ...prior }
+    if (reviewed) nextEntry.reviewedAt = now
+    else delete nextEntry.reviewedAt
+
+    const updated = {
+      ...doc,
+      entries: { ...doc.entries, [date]: nextEntry },
+    }
+
+    await putJournal(updated)
+    if (currentDoc) set({ currentJournal: updated })
+    get().bumpReviewVersion()
+    if (get().mode !== MODE_OFFLINE) withRetry(() => pushJournal(updated))()
+  },
+  addJournalBlockComment: async (date, blockId, text) => {
+    if (!blockId || !text?.trim()) return
+    const week = weekKey(date)
+    const currentDoc = get().currentJournal?.week === week ? get().currentJournal : null
+    let doc = currentDoc || await getJournal(week)
+    if (!doc) doc = { week, entries: {} }
+
+    const now = new Date().toISOString()
+    const prior = doc.entries?.[date] || {
+      blocks: [],
+      createdAt: now,
+      updatedAt: new Date(0).toISOString(),
+    }
+    const blockComments = { ...(prior.blockComments || {}) }
+    const existing = blockComments[blockId]?.[0]
+    blockComments[blockId] = [{
+      id: existing?.id || uuid(),
+      text: text.trim(),
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    }]
+    const nextEntry = { ...prior, blockComments }
+    const updated = {
+      ...doc,
+      entries: { ...doc.entries, [date]: nextEntry },
+    }
+
+    await putJournal(updated)
+    if (currentDoc) set({ currentJournal: updated })
+    get().bumpReviewVersion()
     if (get().mode !== MODE_OFFLINE) withRetry(() => pushJournal(updated))()
   },
 

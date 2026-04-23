@@ -1,234 +1,774 @@
-import { useState, useEffect, useRef } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
-import Placeholder from '@tiptap/extension-placeholder'
-import { Extension } from '@tiptap/core'
-import { Plugin, PluginKey } from '@tiptap/pm/state'
-import { Decoration, DecorationSet } from '@tiptap/pm/view'
-import { DOMSerializer } from '@tiptap/pm/model'
-import { docToBlocks, blocksToHtml } from '../lib/blocks'
+import { getAllJournals } from '../services/db'
 import useAppStore from '../store/useAppStore'
-import { today, weekKey, formatDate } from '../lib/dates'
-import { getJournal } from '../services/db'
-import { pullJournal } from '../services/sync'
+import { formatDate, today } from '../lib/dates'
+import { buildReviewDays } from '../lib/review'
 import { RTLExtension } from '../components/editor/RTLExtension'
 import { AudioNode } from '../components/editor/AudioNode'
 import { BlockIdExtension } from '../components/editor/BlockIdExtension'
-import { HashtagSuggest } from '../components/editor/HashtagSuggest'
 import { HeadingNoShortcut } from '../components/editor/HeadingNoShortcut'
-import RecordFab from '../components/voice/RecordFab'
 
-function buildWeekDates(week) {
-  const [year, w] = week.split('-W')
-  const y = parseInt(year), wn = parseInt(w)
-  const jan4 = new Date(y, 0, 4)
-  const startOfWeek1 = new Date(jan4)
-  startOfWeek1.setDate(jan4.getDate() - ((jan4.getDay() + 6) % 7))
-  const weekStart = new Date(startOfWeek1)
-  weekStart.setDate(startOfWeek1.getDate() + (wn - 1) * 7)
-  return Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(weekStart)
-    d.setDate(weekStart.getDate() + i)
-    return d.toISOString().slice(0, 10)
-  })
+function CommentThread({ comments, placeholder, onAdd }) {
+  const [draft, setDraft] = useState('')
+
+  const handleSubmit = () => {
+    if (!draft.trim()) return
+    onAdd(draft.trim())
+    setDraft('')
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      {comments?.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          {comments.map(comment => (
+            <div key={comment.id} style={commentBubbleStyle}>
+              <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                {comment.text}
+              </div>
+              <div style={{ marginTop: '6px', fontSize: '10px', color: 'var(--text-tertiary)' }}>
+                {new Date(comment.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <textarea
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+              e.preventDefault()
+              handleSubmit()
+            }
+          }}
+          rows={2}
+          placeholder={placeholder}
+          style={commentInputStyle}
+        />
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button onClick={handleSubmit} style={commentButtonStyle}>Add comment</button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
-const HashtagExtension = Extension.create({
-  name: 'hashtag',
-  addProseMirrorPlugins() {
-    return [new Plugin({
-      key: new PluginKey('hashtag'),
-      props: {
-        decorations(state) {
-          const { doc } = state
-          const decorations = []
-          const regex = /#[\w\u0590-\u05FF]+/g
-          doc.descendants((node, pos) => {
-            if (!node.isText) return
-            let match
-            while ((match = regex.exec(node.text)) !== null) {
-              decorations.push(Decoration.inline(pos + match.index, pos + match.index + match[0].length, { class: 'hashtag' }))
-            }
-          })
-          return DecorationSet.create(doc, decorations)
-        },
-      },
-    })]
-  },
-})
+function CollapsedCommentPreview({ comment }) {
+  if (!comment) return null
+  return (
+    <div style={collapsedCommentStyle}>
+      <div style={{ fontSize: '11px', color: 'var(--text-secondary)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+        {comment.text}
+      </div>
+      <div style={{ marginTop: '6px', fontSize: '10px', color: 'var(--text-tertiary)' }}>
+        {comment.updatedAt ? 'Edited' : 'Saved'} {new Date(comment.updatedAt || comment.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+      </div>
+    </div>
+  )
+}
 
-function EntryEditor({ content, onSave, dirtyRef, onEditorReady, getTags }) {
+function SingleCommentEditor({ comment, placeholder, onSave }) {
+  const [draft, setDraft] = useState(comment?.text || '')
+
+  useEffect(() => {
+    setDraft(comment?.text || '')
+  }, [comment?.text])
+
+  const handleSubmit = () => {
+    if (!draft.trim()) return
+    onSave(draft.trim())
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      {comment && (
+        <div style={commentBubbleStyle}>
+          <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>
+            {comment.updatedAt ? 'Edited' : 'Saved'} {new Date(comment.updatedAt || comment.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+          </div>
+        </div>
+      )}
+
+      <textarea
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onKeyDown={e => {
+          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+            e.preventDefault()
+            handleSubmit()
+          }
+        }}
+        rows={3}
+        placeholder={placeholder}
+        style={commentInputStyle}
+      />
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <button onClick={handleSubmit} style={commentButtonStyle}>
+          {comment ? 'Save comment' : 'Add comment'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function IconButton({ active = false, onClick, title, children }) {
+  return (
+    <button onClick={onClick} title={title} aria-label={title} style={iconButtonStyle(active)}>
+      {children}
+    </button>
+  )
+}
+
+function JournalBlock({ block, comments, onAddComment }) {
+  const [hovered, setHovered] = useState(false)
+  const [commentsOpen, setCommentsOpen] = useState(Boolean(comments?.length))
+  const singleComment = comments?.[0] || null
   const editor = useEditor({
+    editable: false,
     extensions: [
       StarterKit.configure({ heading: false, bulletList: false, orderedList: false, listItem: false, taskList: false, taskItem: false }),
       HeadingNoShortcut,
-      Placeholder.configure({ placeholder: 'Nothing written this day…' }),
-      HashtagExtension,
-      HashtagSuggest.configure({ getTags }),
       RTLExtension,
-      AudioNode,
+      AudioNode.configure({ readOnly: true }),
       BlockIdExtension,
     ],
-    content: content || '',
-    onUpdate: ({ editor }) => {
-      const serializer = DOMSerializer.fromSchema(editor.schema)
-      const blocks = docToBlocks(editor.state.doc, serializer)
-      onSave({ html: editor.getHTML(), blocks })
-    },
+    content: block.html || '',
   })
 
   useEffect(() => {
     if (!editor) return
-    // Don't overwrite the editor if there's a pending local save
-    if (dirtyRef?.current) return
-    const current = editor.getHTML()
-    if (current !== (content || '')) {
-      editor.commands.setContent(content || '', { emitUpdate: false })
+    if (editor.getHTML() !== (block.html || '')) {
+      editor.commands.setContent(block.html || '', { emitUpdate: false })
     }
-  }, [editor, content])
-
-  useEffect(() => {
-    if (onEditorReady) onEditorReady(editor || null)
-  }, [editor, onEditorReady])
+  }, [editor, block.html])
 
   return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', fontSize: '14px', color: 'var(--text-primary)' }}>
-      <EditorContent editor={editor} />
+    <div
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        position: 'relative',
+        padding: '10px 0 14px',
+        borderBottom: commentsOpen ? '1px solid var(--border-light)' : '1px solid transparent',
+      }}
+    >
+      <div style={{ position: 'absolute', top: '8px', right: 0, opacity: hovered || commentsOpen ? 1 : 0, transition: 'opacity 0.15s' }}>
+        <IconButton active={commentsOpen || comments?.length > 0} onClick={() => setCommentsOpen(v => !v)} title="Comment on paragraph">
+          <PencilIcon />
+        </IconButton>
+      </div>
+
+      <div style={{ paddingRight: '44px' }}>
+        <EditorContent editor={editor} />
+      </div>
+
+      {!commentsOpen && singleComment && (
+        <div style={{ marginTop: '10px', paddingRight: '44px' }}>
+          <CollapsedCommentPreview comment={singleComment} />
+        </div>
+      )}
+
+      {commentsOpen && (
+        <div style={{ marginTop: '12px', paddingRight: '12px' }}>
+          <SingleCommentEditor
+            comment={singleComment}
+            placeholder="Comment on this paragraph..."
+            onSave={(text) => {
+              onAddComment(text)
+              setCommentsOpen(false)
+            }}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ReviewJournalPane({ day, onToggleReview, onAddBlockComment }) {
+  const blocks = (day.journalEntry?.blocks || []).filter(block => !block.deleted)
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <div style={paneHeaderStyle}>
+        <span style={paneLabelStyle}>Journal</span>
+        <IconButton active={day.journalReviewed} onClick={onToggleReview} title={day.journalReviewed ? 'Unreview journal' : 'Review journal'}>
+          <CheckIcon />
+        </IconButton>
+      </div>
+
+      <div className="review-scroll" style={{ ...scrollPaneStyle, padding: '18px 24px 32px' }}>
+        {blocks.length === 0 ? (
+          <div style={emptyStateStyle}>
+            No journal entry for this day.
+          </div>
+        ) : (
+          blocks.map(block => (
+            <JournalBlock
+              key={block.id}
+              block={block}
+              comments={day.journalEntry?.blockComments?.[block.id] || []}
+              onAddComment={text => onAddBlockComment(block.id, text)}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ReviewTaskCard({ task, onToggleReview, onAddComment }) {
+  const [commentsOpen, setCommentsOpen] = useState(Boolean(task.comments?.length))
+  const latestComment = task.comments?.[task.comments.length - 1] || null
+
+  const tone = task.completed
+    ? (task.reviewed ? 'completedReviewed' : 'completed')
+    : (task.reviewed ? 'reviewed' : 'default')
+
+  return (
+    <article style={taskCardStyle(tone)}>
+      <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flexShrink: 0, paddingTop: '2px' }}>
+          <IconButton active={task.reviewed} onClick={onToggleReview} title={task.reviewed ? 'Unreview task' : 'Review task'}>
+            <CheckIcon />
+          </IconButton>
+          <IconButton active={commentsOpen || task.comments?.length > 0} onClick={() => setCommentsOpen(v => !v)} title="Task comments">
+            <PencilIcon />
+          </IconButton>
+        </div>
+
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            <h3 style={taskTitleStyle(tone)}>{task.title?.trim() || 'Untitled'}</h3>
+            <span style={taskPillStyle(tone)}>
+              {task.completed ? (task.reviewed ? 'done + reviewed' : 'done') : (task.reviewed ? 'reviewed' : 'planned')}
+            </span>
+          </div>
+
+          {(task.explanation || task.feedback || task.tags) && (
+            <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {task.explanation && <p dir="auto" style={taskTextStyle}>{task.explanation}</p>}
+              {task.feedback && <p dir="auto" style={{ ...taskTextStyle, color: 'var(--text-tertiary)' }}>{task.feedback}</p>}
+              {task.tags && <p dir="auto" style={{ ...taskTextStyle, color: 'var(--accent)' }}>{task.tags}</p>}
+            </div>
+          )}
+
+          {!commentsOpen && latestComment && (
+            <div style={{ marginTop: '12px' }}>
+              <CollapsedCommentPreview comment={latestComment} />
+            </div>
+          )}
+
+          {commentsOpen && (
+            <div style={{ marginTop: '14px' }}>
+              <CommentThread
+                comments={task.comments || []}
+                placeholder="Comment on this task..."
+                onAdd={(text) => {
+                  onAddComment(text)
+                  setCommentsOpen(false)
+                }}
+              />
+            </div>
+          )}
+        </div>
+      </div>
+    </article>
+  )
+}
+
+function TasksReviewPane({ day, onToggleTask, onAddTaskComment }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <div style={paneHeaderStyle}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+          <span style={paneLabelStyle}>Tasks</span>
+          <span style={headerCountStyle}>{day.tasks.length}</span>
+        </div>
+      </div>
+
+      <div className="review-scroll" style={{ ...scrollPaneStyle, padding: '18px 16px 22px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        {day.tasks.length === 0 ? (
+          <div style={emptyStateStyle}>No tasks were active or completed on this day.</div>
+        ) : (
+          day.tasks.map(task => (
+            <ReviewTaskCard
+              key={`${day.date}-${task.id}`}
+              task={task}
+              onToggleReview={() => onToggleTask(task)}
+              onAddComment={text => onAddTaskComment(task.id, text)}
+            />
+          ))
+        )}
+      </div>
     </div>
   )
 }
 
 export default function JournalPage() {
-  const currentJournal = useAppStore(s => s.currentJournal)
-  const loadJournal = useAppStore(s => s.loadJournal)
-  const updateJournalEntry = useAppStore(s => s.updateJournalEntry)
-  const getTags = useAppStore.getState().getAllTags
+  const tasks = useAppStore(s => s.tasks)
+  const reviewVersion = useAppStore(s => s.reviewVersion)
+  const setTaskReviewedForDate = useAppStore(s => s.setTaskReviewedForDate)
+  const addTaskReviewComment = useAppStore(s => s.addTaskReviewComment)
+  const setJournalEntryReviewed = useAppStore(s => s.setJournalEntryReviewed)
+  const addJournalBlockComment = useAppStore(s => s.addJournalBlockComment)
+  const [journalDocs, setJournalDocs] = useState([])
+  const [selectedDate, setSelectedDate] = useState(null)
   const todayStr = today()
-  const [selectedDate, setSelectedDate] = useState(todayStr)
-  const [viewedWeek, setViewedWeek] = useState(weekKey(todayStr))
-  const [weekDoc, setWeekDoc] = useState(null)
-  const [activeEditor, setActiveEditor] = useState(null)
-  const saveTimeout = useRef(null)
 
   useEffect(() => {
-    async function load() {
-      let doc = await getJournal(viewedWeek)
-      if (!doc) doc = await pullJournal(viewedWeek)
-      if (!doc) doc = { week: viewedWeek, entries: {} }
-      setWeekDoc(doc)
+    let active = true
+    getAllJournals().then(docs => {
+      if (active) setJournalDocs(docs || [])
+    }).catch(() => {
+      if (active) setJournalDocs([])
+    })
+    return () => {
+      active = false
     }
-    load()
-  }, [viewedWeek])
+  }, [reviewVersion])
 
-  const effectiveDoc = viewedWeek === weekKey(todayStr) ? currentJournal : weekDoc
-  const weekDates = buildWeekDates(viewedWeek)
+  const reviewDays = useMemo(
+    () => buildReviewDays({ tasks, journalDocs, todayStr }),
+    [tasks, journalDocs, todayStr]
+  )
 
-  const handleSave = (payload) => {
-    if (viewedWeek === weekKey(todayStr)) {
-      clearTimeout(saveTimeout.current)
-      saveTimeout.current = setTimeout(() => {
-        updateJournalEntry(selectedDate, payload)
-      }, 800)
+  const pendingDaysCount = reviewDays.filter(day => day.needsReview).length
+  const selectedDay = reviewDays.find(day => day.date === selectedDate) || reviewDays[0] || null
+
+  useEffect(() => {
+    if (!selectedDay && reviewDays[0]) {
+      setSelectedDate(reviewDays[0].date)
+      return
     }
-  }
+    if (selectedDate && !reviewDays.some(day => day.date === selectedDate)) {
+      setSelectedDate(reviewDays[0]?.date || null)
+    }
+  }, [reviewDays, selectedDate, selectedDay])
 
-  const goWeek = (delta) => {
-    const dates = buildWeekDates(viewedWeek)
-    const anchor = new Date(dates[0] + 'T12:00:00')
-    anchor.setDate(anchor.getDate() + delta * 7)
-    const newWeek = weekKey(anchor.toISOString().slice(0, 10))
-    setViewedWeek(newWeek)
-    setSelectedDate(anchor.toISOString().slice(0, 10))
-  }
-
-  const entry = effectiveDoc?.entries?.[selectedDate]
+  const pendingItemsForSelectedDay = selectedDay
+    ? (selectedDay.hasJournal && !selectedDay.journalReviewed ? 1 : 0) + selectedDay.pendingTaskReviews
+    : 0
 
   return (
     <div style={{ display: 'flex', height: '100%', background: 'var(--bg-primary)' }}>
-      {/* Date sidebar */}
-      <div style={{
-        width: '160px', flexShrink: 0,
-        borderRight: '1px solid var(--border-light)',
-        display: 'flex', flexDirection: 'column',
-      }}>
-        <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '8px 12px',
-          borderBottom: '1px solid var(--border-light)',
-        }}>
-          <button
-            onClick={() => goWeek(-1)}
-            style={{ color: 'var(--text-tertiary)', background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}
-          >
-            <ChevronLeft />
-          </button>
-          <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontWeight: 500 }}>{viewedWeek}</span>
-          <button
-            onClick={() => goWeek(1)}
-            style={{ color: 'var(--text-tertiary)', background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}
-          >
-            <ChevronRight />
-          </button>
+      <style>{`
+        .review-scroll {
+          scrollbar-gutter: stable;
+        }
+        .review-scroll::-webkit-scrollbar {
+          width: 10px;
+        }
+        .review-scroll::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        .review-scroll::-webkit-scrollbar-thumb {
+          background: rgba(148, 163, 184, 0.38);
+          border-radius: 999px;
+          border: 2px solid transparent;
+          background-clip: padding-box;
+        }
+        .review-scroll::-webkit-scrollbar-thumb:hover {
+          background: rgba(148, 163, 184, 0.58);
+          border: 2px solid transparent;
+          background-clip: padding-box;
+        }
+      `}</style>
+      <aside className="hidden md:flex" style={sidebarStyle}>
+        <div style={sidebarHeaderStyle}>
+          <div>
+            <div style={eyebrowStyle}>Review</div>
+            <h1 style={{ margin: '6px 0 0', fontSize: '20px', fontWeight: 500, color: 'var(--text-primary)' }}>
+              {pendingDaysCount > 0 ? `Review (${pendingDaysCount})` : 'Review'}
+            </h1>
+          </div>
+          <p style={{ margin: '10px 0 0', fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
+            Past days with journal or task activity, without future dates.
+          </p>
         </div>
-        <div style={{ flex: 1, overflowY: 'auto' }}>
-          {weekDates.map(date => {
-            const dayEntry = effectiveDoc?.entries?.[date]
-            const hasEntry = !!(dayEntry?.content || (dayEntry?.blocks && dayEntry.blocks.length))
-            const isToday = date === todayStr
-            const isSelected = date === selectedDate
-            return (
-              <button
-                key={date}
-                onClick={() => setSelectedDate(date)}
-                style={{
-                  width: '100%', textAlign: 'left',
-                  padding: '8px 12px', fontSize: '12px',
-                  display: 'flex', alignItems: 'center', gap: '8px',
-                  background: isSelected ? 'var(--bg-secondary)' : 'transparent',
-                  borderLeft: isSelected ? '2px solid var(--accent)' : '2px solid transparent',
-                  color: isSelected ? 'var(--text-primary)' : 'var(--text-secondary)',
-                  border: 'none', cursor: 'pointer',
-                  transition: 'all 0.15s',
-                }}
-              >
-                <span style={{
-                  width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
-                  background: hasEntry ? 'var(--accent)' : 'var(--border-mid)',
-                }} />
-                <span>
-                  {new Date(date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
-                  {isToday && <span style={{ marginLeft: '4px', color: 'var(--accent)' }}>·</span>}
-                </span>
-              </button>
-            )
-          })}
-        </div>
-      </div>
 
-      {/* Editor */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--border-light)' }}>
-          <h2 style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-primary)' }}>
-            {formatDate(selectedDate)}
-          </h2>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '10px 10px 18px' }}>
+          {reviewDays.map(day => (
+            <button
+              key={day.date}
+              onClick={() => setSelectedDate(day.date)}
+              style={sidebarDateButtonStyle(day.date === selectedDay?.date, day.needsReview)}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-primary)' }}>
+                  {new Date(`${day.date}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                </div>
+                <div style={{ marginTop: '4px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                  {day.pendingTaskReviews + (day.hasJournal && !day.journalReviewed ? 1 : 0)} pending review
+                </div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                <span style={sidebarMetaStyle(day.needsReview)}>
+                  {day.tasks.length + (day.hasJournal ? 1 : 0)}
+                </span>
+                {day.needsReview ? <ReviewDot /> : <CheckIcon />}
+              </div>
+            </button>
+          ))}
+
+          {reviewDays.length === 0 && (
+            <div style={{ padding: '20px 12px', fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
+              No past journal or task data yet.
+            </div>
+          )}
         </div>
-        <EntryEditor
-          key={selectedDate}
-          content={entry?.content ?? blocksToHtml(entry?.blocks)}
-          onSave={handleSave}
-          dirtyRef={saveTimeout}
-          onEditorReady={setActiveEditor}
-          getTags={getTags}
-        />
-      </div>
-      {activeEditor && <RecordFab editor={activeEditor} />}
+      </aside>
+
+      <main style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        {selectedDay ? (
+          <>
+            <div className="md:hidden" style={{ padding: '12px 16px 0', borderBottom: '1px solid var(--border-light)' }}>
+              <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '12px' }}>
+                {reviewDays.map(day => (
+                  <button
+                    key={`mobile-${day.date}`}
+                    onClick={() => setSelectedDate(day.date)}
+                    style={{
+                      border: 'none',
+                      borderRadius: '999px',
+                      padding: '8px 12px',
+                      whiteSpace: 'nowrap',
+                      background: day.date === selectedDay?.date ? 'rgba(107,163,214,0.14)' : 'var(--bg-secondary)',
+                      color: day.date === selectedDay?.date ? 'var(--text-primary)' : 'var(--text-secondary)',
+                      fontSize: '12px',
+                      fontWeight: 500,
+                      boxShadow: day.date === selectedDay?.date ? 'inset 0 0 0 1px rgba(107,163,214,0.22)' : 'inset 0 0 0 1px var(--border-light)',
+                    }}
+                  >
+                    {new Date(`${day.date}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                    {day.needsReview ? ` / ${day.pendingTaskReviews + (day.hasJournal && !day.journalReviewed ? 1 : 0)}` : ''}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <header style={pageHeaderStyle}>
+              <div>
+                <div style={eyebrowStyle}>Selected day</div>
+                <h2 style={{ margin: '4px 0 0', fontSize: '22px', fontWeight: 500, color: 'var(--text-primary)' }}>
+                  {formatDate(selectedDay.date)}
+                </h2>
+              </div>
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                <span style={summaryPillStyle(selectedDay.needsReview)}>
+                  {pendingItemsForSelectedDay > 0 ? `${pendingItemsForSelectedDay} left to review` : 'Fully reviewed'}
+                </span>
+                <span style={summaryPillStyle(false)}>
+                  {selectedDay.tasks.filter(task => task.completed).length} completed
+                </span>
+              </div>
+            </header>
+
+            <div className="hidden md:flex" style={{ flex: 1, minHeight: 0 }}>
+              <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border-light)' }}>
+                <ReviewJournalPane
+                  day={selectedDay}
+                  onToggleReview={() => setJournalEntryReviewed(selectedDay.date, !selectedDay.journalReviewed)}
+                  onAddBlockComment={(blockId, text) => addJournalBlockComment(selectedDay.date, blockId, text)}
+                />
+              </div>
+              <div style={{ width: '360px', flexShrink: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+                <TasksReviewPane
+                  day={selectedDay}
+                  onToggleTask={task => setTaskReviewedForDate(task.id, selectedDay.date, !task.reviewed)}
+                  onAddTaskComment={(taskId, text) => addTaskReviewComment(taskId, selectedDay.date, text)}
+                />
+              </div>
+            </div>
+
+            <div className="md:hidden review-scroll" style={{ ...scrollPaneStyle, padding: 0 }}>
+              <div style={{ borderBottom: '1px solid var(--border-light)' }}>
+                <ReviewJournalPane
+                  day={selectedDay}
+                  onToggleReview={() => setJournalEntryReviewed(selectedDay.date, !selectedDay.journalReviewed)}
+                  onAddBlockComment={(blockId, text) => addJournalBlockComment(selectedDay.date, blockId, text)}
+                />
+              </div>
+              <div>
+                <TasksReviewPane
+                  day={selectedDay}
+                  onToggleTask={task => setTaskReviewedForDate(task.id, selectedDay.date, !task.reviewed)}
+                  onAddTaskComment={(taskId, text) => addTaskReviewComment(taskId, selectedDay.date, text)}
+                />
+              </div>
+            </div>
+          </>
+        ) : (
+          <div style={{ display: 'grid', placeItems: 'center', flex: 1 }}>
+            <div style={{ textAlign: 'center', maxWidth: '24rem', padding: '24px' }}>
+              <h2 style={{ fontSize: '18px', fontWeight: 500, color: 'var(--text-primary)' }}>Nothing to review yet</h2>
+              <p style={{ marginTop: '8px', fontSize: '13px', color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
+                As soon as you have journal entries or tasks across the days, they'll show up here.
+              </p>
+            </div>
+          </div>
+        )}
+      </main>
     </div>
   )
 }
 
-function ChevronLeft() {
-  return <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><polyline points="15 18 9 12 15 6"/></svg>
+function ReviewDot() {
+  return <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)', display: 'inline-block', flexShrink: 0 }} />
 }
-function ChevronRight() {
-  return <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}><polyline points="9 18 15 12 9 6"/></svg>
+
+function CheckIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  )
+}
+
+function PencilIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  )
+}
+
+const sidebarStyle = {
+  width: '250px',
+  flexShrink: 0,
+  borderRight: '1px solid var(--border-light)',
+  display: 'flex',
+  flexDirection: 'column',
+}
+
+const sidebarHeaderStyle = {
+  padding: '20px 18px 14px',
+  borderBottom: '1px solid var(--border-light)',
+}
+
+const pageHeaderStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: '16px',
+  padding: '18px 22px',
+  borderBottom: '1px solid var(--border-light)',
+}
+
+const paneHeaderStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  padding: '12px 16px',
+  borderBottom: '1px solid var(--border-light)',
+}
+
+const paneLabelStyle = {
+  fontSize: '14px',
+  fontWeight: 500,
+  color: 'var(--text-primary)',
+}
+
+const headerCountStyle = {
+  fontSize: '12px',
+  color: 'var(--text-tertiary)',
+  background: 'var(--bg-secondary)',
+  padding: '1px 8px',
+  borderRadius: '20px',
+}
+
+const eyebrowStyle = {
+  fontSize: '11px',
+  textTransform: 'uppercase',
+  letterSpacing: '0.9px',
+  color: 'var(--text-tertiary)',
+  fontWeight: 500,
+}
+
+const emptyStateStyle = {
+  padding: '18px 0',
+  fontSize: '13px',
+  color: 'var(--text-tertiary)',
+}
+
+function sidebarDateButtonStyle(selected, needsReview) {
+  return {
+    width: '100%',
+    border: 'none',
+    borderRadius: '16px',
+    padding: '12px 12px',
+    marginBottom: '8px',
+    background: selected
+      ? 'rgba(107,163,214,0.12)'
+      : needsReview
+        ? 'rgba(16,185,129,0.05)'
+        : 'transparent',
+    boxShadow: selected ? 'inset 0 0 0 1px rgba(107,163,214,0.22)' : 'none',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '12px',
+    textAlign: 'left',
+    cursor: 'pointer',
+  }
+}
+
+function sidebarMetaStyle(needsReview) {
+  return {
+    minWidth: '28px',
+    height: '28px',
+    borderRadius: '999px',
+    display: 'grid',
+    placeItems: 'center',
+    fontSize: '11px',
+    color: needsReview ? '#9FE3BF' : 'var(--text-tertiary)',
+    background: needsReview ? 'rgba(16,185,129,0.14)' : 'var(--bg-secondary)',
+  }
+}
+
+function summaryPillStyle(active) {
+  return {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '7px 11px',
+    borderRadius: '999px',
+    background: active ? 'rgba(16,185,129,0.12)' : 'var(--bg-secondary)',
+    color: active ? '#9FE3BF' : 'var(--text-secondary)',
+    boxShadow: active ? 'inset 0 0 0 1px rgba(16,185,129,0.18)' : 'inset 0 0 0 1px var(--border-light)',
+    fontSize: '12px',
+    fontWeight: 500,
+  }
+}
+
+function iconButtonStyle(active) {
+  return {
+    width: '28px',
+    height: '28px',
+    borderRadius: '50%',
+    border: 'none',
+    display: 'grid',
+    placeItems: 'center',
+    cursor: 'pointer',
+    color: active ? '#E8FFF2' : 'var(--text-tertiary)',
+    background: active ? 'var(--green-500)' : 'var(--bg-secondary)',
+    boxShadow: active ? '0 0 0 3px rgba(16,185,129,0.15)' : 'inset 0 0 0 1px var(--border-light)',
+    transition: 'all 0.15s ease',
+    flexShrink: 0,
+  }
+}
+
+function taskCardStyle(tone) {
+  const palette = {
+    default: {
+      border: '1px solid var(--border-light)',
+      background: 'var(--bg-primary)',
+    },
+    reviewed: {
+      border: '1px solid rgba(16,185,129,0.16)',
+      background: 'linear-gradient(135deg, rgba(16,185,129,0.08), rgba(16,185,129,0.03))',
+    },
+    completed: {
+      border: '1px solid rgba(16,185,129,0.24)',
+      background: 'linear-gradient(135deg, rgba(16,185,129,0.12), rgba(16,185,129,0.05))',
+    },
+    completedReviewed: {
+      border: '1px solid rgba(16,185,129,0.32)',
+      background: 'linear-gradient(135deg, rgba(16,185,129,0.22), rgba(16,185,129,0.08))',
+    },
+  }[tone]
+
+  return {
+    borderRadius: '14px',
+    padding: '14px',
+    border: palette.border,
+    background: palette.background,
+  }
+}
+
+function taskTitleStyle(tone) {
+  return {
+    margin: 0,
+    fontSize: '14px',
+    fontWeight: 500,
+    color: tone === 'default' ? 'var(--text-primary)' : '#E6FFF0',
+    textDecoration: tone === 'completed' || tone === 'completedReviewed' ? 'line-through' : 'none',
+    lineHeight: 1.4,
+  }
+}
+
+function taskPillStyle(tone) {
+  return {
+    display: 'inline-flex',
+    alignItems: 'center',
+    padding: '3px 8px',
+    borderRadius: '999px',
+    fontSize: '11px',
+    fontWeight: 500,
+    background: tone === 'default' ? 'var(--bg-secondary)' : 'rgba(255,255,255,0.08)',
+    color: tone === 'default' ? 'var(--text-tertiary)' : '#B7F7D1',
+  }
+}
+
+const taskTextStyle = {
+  margin: 0,
+  fontSize: '12px',
+  lineHeight: 1.6,
+  color: 'var(--text-secondary)',
+  whiteSpace: 'pre-wrap',
+}
+
+const commentBubbleStyle = {
+  borderRadius: '12px',
+  background: 'rgba(255,255,255,0.03)',
+  border: '1px solid var(--border-light)',
+  padding: '10px 12px',
+}
+
+const collapsedCommentStyle = {
+  borderRadius: '12px',
+  background: 'rgba(255,255,255,0.025)',
+  border: '1px solid var(--border-light)',
+  padding: '10px 12px',
+}
+
+const commentInputStyle = {
+  width: '100%',
+  resize: 'vertical',
+  minHeight: '64px',
+  borderRadius: '12px',
+  border: '1px solid var(--border-light)',
+  background: 'var(--bg-secondary)',
+  color: 'var(--text-primary)',
+  padding: '10px 12px',
+  fontSize: '12px',
+  fontFamily: 'var(--font-body)',
+  outline: 'none',
+}
+
+const commentButtonStyle = {
+  border: 'none',
+  borderRadius: '999px',
+  padding: '8px 12px',
+  cursor: 'pointer',
+  background: 'var(--accent-light)',
+  color: 'var(--accent)',
+  fontSize: '12px',
+  fontWeight: 500,
+  fontFamily: 'var(--font-body)',
+}
+
+const scrollPaneStyle = {
+  flex: 1,
+  overflowY: 'scroll',
+  overflowX: 'hidden',
+  minHeight: 0,
+  scrollbarWidth: 'thin',
+  scrollbarColor: 'var(--border-mid) transparent',
+  overscrollBehavior: 'contain',
 }

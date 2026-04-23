@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { HashRouter, Routes, Route } from 'react-router-dom'
+import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import useAppStore from './store/useAppStore'
 import { loadGAPI, initGAPI, getStoredToken, getTokenRemainingSeconds, startAuthRedirect, consumeAuthRedirect, storeToken, setAccessToken, trySilentRefresh, scheduleTokenRefresh } from './services/auth'
 import { initDriveStructure } from './services/drive'
@@ -267,7 +267,8 @@ export default function App() {
           <main className="flex-1 overflow-hidden flex flex-col">
             <Routes>
               <Route path="/" element={<TodayPage />} />
-              <Route path="/journal" element={<JournalPage />} />
+              <Route path="/review" element={<JournalPage />} />
+              <Route path="/journal" element={<Navigate to="/review" replace />} />
               <Route path="/notes" element={<NotesPage />} />
               <Route path="/tasks" element={<TasksPage />} />
               <Route path="/trash" element={<TrashPage />} />

@@ -1,13 +1,16 @@
 import { NavLink } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
 import useAppStore, { retryNow } from '../../store/useAppStore'
 import { putMeta } from '../../services/db'
 import { MODE_KEY, MODE_OFFLINE } from '../../lib/constants'
+import { getAllJournals } from '../../services/db'
+import { buildReviewDays } from '../../lib/review'
 
-const items = [
+const baseItems = [
   { to: '/', label: 'Today', icon: BookIcon },
   { to: '/notes', label: 'Notes', icon: HashIcon },
   { to: '/tasks', label: 'Todos', icon: CheckIcon },
-  { to: '/journal', label: 'History', icon: CalendarIcon },
+  { to: '/review', label: 'Review', icon: CalendarIcon },
   { to: '/trash', label: 'Trash', icon: TrashIcon },
 ]
 
@@ -30,7 +33,33 @@ function statusLabel(syncStatus) {
 }
 
 function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
+  const tasks = useAppStore(s => s.tasks)
+  const reviewVersion = useAppStore(s => s.reviewVersion)
+  const [journalDocs, setJournalDocs] = useState([])
   const isClickable = syncStatus.state === 'waiting' || syncStatus.state === 'offline'
+  const reviewCount = useMemo(
+    () => buildReviewDays({ tasks, journalDocs }).filter(day => day.needsReview).length,
+    [tasks, journalDocs]
+  )
+  const items = useMemo(
+    () => baseItems.map(item => item.to === '/review'
+      ? { ...item, label: reviewCount > 0 ? `Review (${reviewCount})` : 'Review' }
+      : item),
+    [reviewCount]
+  )
+
+  useEffect(() => {
+    let active = true
+    getAllJournals().then(docs => {
+      if (active) setJournalDocs(docs || [])
+    }).catch(() => {
+      if (active) setJournalDocs([])
+    })
+    return () => {
+      active = false
+    }
+  }, [reviewVersion])
+
   return (
     <>
       <div style={{ padding: '20px 20px 16px', borderBottom: '1px solid var(--border-light)' }}>
