@@ -12,7 +12,7 @@ import LoginScreen from './components/auth/LoginScreen'
 import Sidebar from './components/layout/Sidebar'
 
 import TodayPage from './pages/TodayPage'
-import JournalPage from './pages/JournalPage'
+import ReviewPage from './pages/ReviewPage'
 import NotesPage from './pages/NotesPage'
 import TasksPage from './pages/TasksPage'
 import TrashPage from './pages/TrashPage'
@@ -267,7 +267,7 @@ export default function App() {
           <main className="flex-1 overflow-hidden flex flex-col">
             <Routes>
               <Route path="/" element={<TodayPage />} />
-              <Route path="/review" element={<JournalPage />} />
+              <Route path="/review" element={<ReviewPage />} />
               <Route path="/journal" element={<Navigate to="/review" replace />} />
               <Route path="/notes" element={<NotesPage />} />
               <Route path="/tasks" element={<TasksPage />} />

@@ -201,7 +201,15 @@ function ReviewJournalPane({ day, onToggleReview, onAddBlockComment }) {
         </IconButton>
       </div>
 
-      <div className="review-scroll" style={{ ...scrollPaneStyle, padding: '18px 24px 32px' }}>
+      <div
+        className="review-scroll"
+        style={{
+          ...scrollPaneStyle,
+          ...reviewSurfaceStyle(day.journalReviewed),
+          margin: '2px 2px 4px',
+          padding: '18px 24px 32px',
+        }}
+      >
         {blocks.length === 0 ? (
           <div style={emptyStateStyle}>
             No journal entry for this day.
@@ -244,9 +252,6 @@ function ReviewTaskCard({ task, onToggleReview, onAddComment }) {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
             <h3 style={taskTitleStyle(tone)}>{task.title?.trim() || 'Untitled'}</h3>
-            <span style={taskPillStyle(tone)}>
-              {task.completed ? (task.reviewed ? 'done + reviewed' : 'done') : (task.reviewed ? 'reviewed' : 'planned')}
-            </span>
           </div>
 
           {(task.explanation || task.feedback || task.tags) && (
@@ -309,7 +314,7 @@ function TasksReviewPane({ day, onToggleTask, onAddTaskComment }) {
   )
 }
 
-export default function JournalPage() {
+export default function ReviewPage() {
   const tasks = useAppStore(s => s.tasks)
   const reviewVersion = useAppStore(s => s.reviewVersion)
   const setTaskReviewedForDate = useAppStore(s => s.setTaskReviewedForDate)
@@ -399,18 +404,9 @@ export default function JournalPage() {
               style={sidebarDateButtonStyle(day.date === selectedDay?.date, day.needsReview)}
             >
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-primary)' }}>
+                <div style={sidebarDateTitleStyle(day.needsReview)}>
                   {new Date(`${day.date}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
                 </div>
-                <div style={{ marginTop: '4px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                  {day.pendingTaskReviews + (day.hasJournal && !day.journalReviewed ? 1 : 0)} pending review
-                </div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-                <span style={sidebarMetaStyle(day.needsReview)}>
-                  {day.tasks.length + (day.hasJournal ? 1 : 0)}
-                </span>
-                {day.needsReview ? <ReviewDot /> : <CheckIcon />}
               </div>
             </button>
           ))}
@@ -517,10 +513,6 @@ export default function JournalPage() {
   )
 }
 
-function ReviewDot() {
-  return <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)', display: 'inline-block', flexShrink: 0 }} />
-}
-
 function CheckIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
@@ -606,28 +598,23 @@ function sidebarDateButtonStyle(selected, needsReview) {
     background: selected
       ? 'rgba(107,163,214,0.12)'
       : needsReview
-        ? 'rgba(16,185,129,0.05)'
-        : 'transparent',
+        ? 'transparent'
+        : 'rgba(16,185,129,0.05)',
     boxShadow: selected ? 'inset 0 0 0 1px rgba(107,163,214,0.22)' : 'none',
     display: 'flex',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
     gap: '12px',
     textAlign: 'left',
     cursor: 'pointer',
   }
 }
 
-function sidebarMetaStyle(needsReview) {
+function sidebarDateTitleStyle(needsReview) {
   return {
-    minWidth: '28px',
-    height: '28px',
-    borderRadius: '999px',
-    display: 'grid',
-    placeItems: 'center',
-    fontSize: '11px',
-    color: needsReview ? '#9FE3BF' : 'var(--text-tertiary)',
-    background: needsReview ? 'rgba(16,185,129,0.14)' : 'var(--bg-secondary)',
+    fontSize: '13px',
+    fontWeight: 500,
+    color: 'var(--text-primary)',
   }
 }
 
@@ -670,21 +657,21 @@ function taskCardStyle(tone) {
       background: 'var(--bg-primary)',
     },
     reviewed: {
-      border: '1px solid rgba(16,185,129,0.16)',
-      background: 'linear-gradient(135deg, rgba(16,185,129,0.08), rgba(16,185,129,0.03))',
+      border: '3px solid rgba(34,197,94,0.34)',
+      background: 'var(--bg-primary)',
     },
     completed: {
       border: '1px solid rgba(16,185,129,0.24)',
       background: 'linear-gradient(135deg, rgba(16,185,129,0.12), rgba(16,185,129,0.05))',
     },
     completedReviewed: {
-      border: '1px solid rgba(16,185,129,0.32)',
-      background: 'linear-gradient(135deg, rgba(16,185,129,0.22), rgba(16,185,129,0.08))',
+      border: '3px solid rgba(34,197,94,0.36)',
+      background: 'linear-gradient(135deg, rgba(16,185,129,0.12), rgba(16,185,129,0.05))',
     },
   }[tone]
 
   return {
-    borderRadius: '14px',
+    borderRadius: '10px',
     padding: '14px',
     border: palette.border,
     background: palette.background,
@@ -696,22 +683,17 @@ function taskTitleStyle(tone) {
     margin: 0,
     fontSize: '14px',
     fontWeight: 500,
-    color: tone === 'default' ? 'var(--text-primary)' : '#E6FFF0',
+    color: 'var(--text-primary)',
     textDecoration: tone === 'completed' || tone === 'completedReviewed' ? 'line-through' : 'none',
     lineHeight: 1.4,
   }
 }
 
-function taskPillStyle(tone) {
+function reviewSurfaceStyle(reviewed) {
   return {
-    display: 'inline-flex',
-    alignItems: 'center',
-    padding: '3px 8px',
-    borderRadius: '999px',
-    fontSize: '11px',
-    fontWeight: 500,
-    background: tone === 'default' ? 'var(--bg-secondary)' : 'rgba(255,255,255,0.08)',
-    color: tone === 'default' ? 'var(--text-tertiary)' : '#B7F7D1',
+    borderRadius: '16px',
+    border: reviewed ? '3px solid rgba(34,197,94,0.34)' : '1px solid var(--border-light)',
+    background: 'var(--bg-primary)',
   }
 }
 
