@@ -10,10 +10,10 @@ import { AudioNode } from '../components/editor/AudioNode'
 import { BlockIdExtension } from '../components/editor/BlockIdExtension'
 import { HeadingNoShortcut } from '../components/editor/HeadingNoShortcut'
 
-function CollapsedCommentPreview({ comment }) {
+function CollapsedCommentPreview({ comment, onClick }) {
   if (!comment) return null
   return (
-    <div style={collapsedCommentStyle}>
+    <div onClick={onClick} style={collapsedCommentStyle}>
       <div style={{ fontSize: '11px', color: 'var(--text-secondary)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
         {comment.text}
       </div>
@@ -24,46 +24,31 @@ function CollapsedCommentPreview({ comment }) {
   )
 }
 
-function SingleCommentEditor({ comment, placeholder, onSave }) {
+function SingleCommentEditor({ comment, placeholder, onSave, onClose }) {
   const [draft, setDraft] = useState(comment?.text || '')
 
-  useEffect(() => {
-    setDraft(comment?.text || '')
-  }, [comment?.text])
-
-  const handleSubmit = () => {
-    if (!draft.trim()) return
-    onSave(draft.trim())
+  const handleCommit = () => {
+    const text = draft.trim()
+    if (text) onSave(text)
+    else onClose()
   }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-      {comment && (
-        <div style={commentBubbleStyle}>
-          <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>
-            {comment.updatedAt ? 'Edited' : 'Saved'} {new Date(comment.updatedAt || comment.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
-          </div>
-        </div>
-      )}
-
       <textarea
         value={draft}
         onChange={e => setDraft(e.target.value)}
         onKeyDown={e => {
           if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
             e.preventDefault()
-            handleSubmit()
+            handleCommit()
           }
         }}
+        onBlur={handleCommit}
         rows={3}
         placeholder={placeholder}
         style={commentInputStyle}
       />
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-        <button onClick={handleSubmit} style={commentButtonStyle}>
-          {comment ? 'Save comment' : 'Add comment'}
-        </button>
-      </div>
     </div>
   )
 }
@@ -85,9 +70,8 @@ function CommentEditButton({ hasComment, onClick }) {
   )
 }
 
-function JournalBlock({ block, comments, onAddComment }) {
+function JournalBlock({ block, comments, commentsOpen, onOpenComment, onCloseComment, onAddComment }) {
   const [hovered, setHovered] = useState(false)
-  const [commentsOpen, setCommentsOpen] = useState(false)
   const singleComment = comments?.[0] || null
   const editor = useEditor({
     editable: false,
@@ -119,28 +103,37 @@ function JournalBlock({ block, comments, onAddComment }) {
       }}
     >
       <div style={{ position: 'absolute', top: '8px', right: 0, opacity: hovered || commentsOpen ? 1 : 0, transition: 'opacity 0.15s' }}>
-        <CommentEditButton hasComment={Boolean(singleComment)} onClick={() => setCommentsOpen(true)} />
+        <CommentEditButton hasComment={Boolean(singleComment)} onClick={onOpenComment} />
       </div>
 
-      <div style={{ paddingRight: '96px' }}>
+      <div
+        onClick={onOpenComment}
+        style={{
+          paddingRight: '96px',
+          cursor: 'pointer',
+          borderRadius: '8px',
+        }}
+      >
         <EditorContent editor={editor} />
       </div>
 
       {!commentsOpen && singleComment && (
         <div style={{ marginTop: '10px', paddingRight: '96px' }}>
-          <CollapsedCommentPreview comment={singleComment} />
+          <CollapsedCommentPreview comment={singleComment} onClick={onOpenComment} />
         </div>
       )}
 
       {commentsOpen && (
         <div style={{ marginTop: '12px', paddingRight: '12px' }}>
           <SingleCommentEditor
+            key={singleComment?.updatedAt || singleComment?.createdAt || 'new-comment'}
             comment={singleComment}
             placeholder="Comment on this paragraph..."
             onSave={(text) => {
               onAddComment(text)
-              setCommentsOpen(false)
+              onCloseComment()
             }}
+            onClose={onCloseComment}
           />
         </div>
       )}
@@ -148,13 +141,13 @@ function JournalBlock({ block, comments, onAddComment }) {
   )
 }
 
-function ReviewJournalPane({ day, onToggleReview, onAddBlockComment }) {
+function ReviewJournalPane({ day, title = 'Journal', openCommentKey, onOpenComment, onCloseComment, onToggleReview, onAddBlockComment }) {
   const blocks = (day.journalEntry?.blocks || []).filter(block => !block.deleted)
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div style={paneHeaderStyle}>
-        <span style={paneLabelStyle}>Journal</span>
+        <span style={paneLabelStyle}>{title}</span>
         <IconButton active={day.journalReviewed} onClick={onToggleReview} title={day.journalReviewed ? 'Unreview journal' : 'Review journal'}>
           <CheckIcon />
         </IconButton>
@@ -179,6 +172,9 @@ function ReviewJournalPane({ day, onToggleReview, onAddBlockComment }) {
               key={block.id}
               block={block}
               comments={day.journalEntry?.blockComments?.[block.id] || []}
+              commentsOpen={openCommentKey === `journal:${day.date}:${block.id}`}
+              onOpenComment={() => onOpenComment(`journal:${day.date}:${block.id}`)}
+              onCloseComment={onCloseComment}
               onAddComment={text => onAddBlockComment(block.id, text)}
             />
           ))
@@ -188,8 +184,7 @@ function ReviewJournalPane({ day, onToggleReview, onAddBlockComment }) {
   )
 }
 
-function ReviewTaskCard({ task, onToggleReview, onAddComment }) {
-  const [commentsOpen, setCommentsOpen] = useState(false)
+function ReviewTaskCard({ task, commentsOpen, onOpenComment, onCloseComment, onToggleReview, onAddComment }) {
   const singleComment = task.comments?.[task.comments.length - 1] || null
 
   const tone = task.completed
@@ -203,7 +198,7 @@ function ReviewTaskCard({ task, onToggleReview, onAddComment }) {
           <IconButton active={task.reviewed} onClick={onToggleReview} title={task.reviewed ? 'Unreview task' : 'Review task'}>
             <CheckIcon />
           </IconButton>
-          <CommentEditButton hasComment={Boolean(singleComment)} onClick={() => setCommentsOpen(true)} />
+          <CommentEditButton hasComment={Boolean(singleComment)} onClick={onOpenComment} />
         </div>
 
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -221,19 +216,21 @@ function ReviewTaskCard({ task, onToggleReview, onAddComment }) {
 
           {!commentsOpen && singleComment && (
             <div style={{ marginTop: '12px' }}>
-              <CollapsedCommentPreview comment={singleComment} />
+              <CollapsedCommentPreview comment={singleComment} onClick={onOpenComment} />
             </div>
           )}
 
           {commentsOpen && (
             <div style={{ marginTop: '14px' }}>
               <SingleCommentEditor
+                key={singleComment?.updatedAt || singleComment?.createdAt || 'new-comment'}
                 comment={singleComment}
                 placeholder="Comment on this task..."
                 onSave={(text) => {
                   onAddComment(text)
-                  setCommentsOpen(false)
+                  onCloseComment()
                 }}
+                onClose={onCloseComment}
               />
             </div>
           )}
@@ -243,9 +240,9 @@ function ReviewTaskCard({ task, onToggleReview, onAddComment }) {
   )
 }
 
-function TasksReviewPane({ day, onToggleTask, onAddTaskComment }) {
+function TasksReviewPane({ day, openCommentKey, onOpenComment, onCloseComment, onToggleTask, onAddTaskComment }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div style={paneHeaderStyle}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
           <span style={paneLabelStyle}>Tasks</span>
@@ -261,6 +258,9 @@ function TasksReviewPane({ day, onToggleTask, onAddTaskComment }) {
             <ReviewTaskCard
               key={`${day.date}-${task.id}`}
               task={task}
+              commentsOpen={openCommentKey === `task:${day.date}:${task.id}`}
+              onOpenComment={() => onOpenComment(`task:${day.date}:${task.id}`)}
+              onCloseComment={onCloseComment}
               onToggleReview={() => onToggleTask(task)}
               onAddComment={text => onAddTaskComment(task.id, text)}
             />
@@ -280,6 +280,9 @@ export default function ReviewPage() {
   const addJournalBlockComment = useAppStore(s => s.addJournalBlockComment)
   const [journalDocs, setJournalDocs] = useState([])
   const [selectedDate, setSelectedDate] = useState(null)
+  const [mobileView, setMobileView] = useState('list')
+  const [mobilePanel, setMobilePanel] = useState('journal')
+  const [openCommentKey, setOpenCommentKey] = useState(null)
   const todayStr = today()
 
   useEffect(() => {
@@ -302,15 +305,12 @@ export default function ReviewPage() {
   const pendingDaysCount = reviewDays.filter(day => day.needsReview).length
   const selectedDay = reviewDays.find(day => day.date === selectedDate) || reviewDays[0] || null
 
-  useEffect(() => {
-    if (!selectedDay && reviewDays[0]) {
-      setSelectedDate(reviewDays[0].date)
-      return
-    }
-    if (selectedDate && !reviewDays.some(day => day.date === selectedDate)) {
-      setSelectedDate(reviewDays[0]?.date || null)
-    }
-  }, [reviewDays, selectedDate, selectedDay])
+  const handleSelectDate = (date) => {
+    setSelectedDate(date)
+    setMobilePanel('journal')
+    setOpenCommentKey(null)
+    setMobileView('detail')
+  }
 
   return (
     <div style={{ display: 'flex', height: '100%', background: 'var(--bg-primary)' }}>
@@ -372,35 +372,95 @@ export default function ReviewPage() {
         </div>
       </aside>
 
-      <main style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+      <div
+        className={mobileView !== 'list' ? 'hidden md:hidden' : 'flex md:hidden'}
+        style={{
+          width: '100%',
+          flexDirection: 'column',
+          background: 'var(--bg-primary)',
+        }}
+      >
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '10px 12px',
+          borderBottom: '1px solid var(--border-light)',
+        }}>
+          <span style={{ fontSize: '10px', fontWeight: 500, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.8px' }}>
+            Review
+          </span>
+          {pendingDaysCount > 0 && (
+            <span style={{
+              fontSize: '12px',
+              color: 'var(--text-tertiary)',
+              background: 'var(--bg-secondary)',
+              padding: '1px 8px',
+              borderRadius: '20px',
+            }}>
+              {pendingDaysCount}
+            </span>
+          )}
+        </div>
+
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          {reviewDays.map(day => (
+            <button
+              key={`mobile-list-${day.date}`}
+              onClick={() => handleSelectDate(day.date)}
+              style={mobileDateButtonStyle(day.date === selectedDay?.date, day.needsReview)}
+            >
+              <div style={{ minWidth: 0 }}>
+                <p style={mobileDateTitleStyle}>{formatDate(day.date)}</p>
+              </div>
+            </button>
+          ))}
+
+          {reviewDays.length === 0 && (
+            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', padding: '12px', lineHeight: 1.6 }}>
+              No past journal or task data yet.
+            </p>
+          )}
+        </div>
+      </div>
+
+      <main
+        className={mobileView !== 'detail' ? 'hidden md:flex' : ''}
+        style={{
+          flex: 1,
+          minWidth: 0,
+          flexDirection: 'column',
+          display: mobileView === 'detail' ? 'flex' : undefined,
+        }}
+      >
         {selectedDay ? (
           <>
-            <div className="md:hidden" style={{ padding: '12px 16px 0', borderBottom: '1px solid var(--border-light)' }}>
-              <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '12px' }}>
-                {reviewDays.map(day => (
-                  <button
-                    key={`mobile-${day.date}`}
-                    onClick={() => setSelectedDate(day.date)}
-                    style={{
-                      border: 'none',
-                      borderRadius: '999px',
-                      padding: '8px 12px',
-                      whiteSpace: 'nowrap',
-                      background: day.needsReview ? 'transparent' : 'rgba(16,185,129,0.05)',
-                      color: day.date === selectedDay?.date ? 'var(--text-primary)' : 'var(--text-secondary)',
-                      fontSize: '12px',
-                      fontWeight: 500,
-                      boxShadow: day.date === selectedDay?.date ? 'inset 0 0 0 1px rgba(148,163,184,0.24)' : 'inset 0 0 0 1px var(--border-light)',
-                    }}
-                  >
-                    {new Date(`${day.date}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                    {day.needsReview ? ` / ${day.pendingTaskReviews + (day.hasJournal && !day.journalReviewed ? 1 : 0)}` : ''}
-                  </button>
-                ))}
-              </div>
+            <div className="flex md:hidden" style={mobileDetailHeaderStyle}>
+              <button
+                onClick={() => setMobileView('list')}
+                style={mobileBackButtonStyle}
+              >
+                &larr; Back
+              </button>
+              <span style={mobileDetailTitleStyle}>{formatDate(selectedDay.date)} - Review</span>
             </div>
 
-            <header style={pageHeaderStyle}>
+            <div className="flex md:hidden" style={{ borderBottom: '1px solid var(--border-light)' }}>
+              <button
+                onClick={() => setMobilePanel('journal')}
+                style={mobileTabStyle(mobilePanel === 'journal')}
+              >
+                Journal
+              </button>
+              <button
+                onClick={() => setMobilePanel('tasks')}
+                style={mobileTabStyle(mobilePanel === 'tasks')}
+              >
+                Tasks
+              </button>
+            </div>
+
+            <header className="hidden md:flex" style={{ ...pageHeaderStyle, display: undefined }}>
               <div>
                 <div style={eyebrowStyle}>Selected day</div>
                 <h2 style={{ margin: '4px 0 0', fontSize: '22px', fontWeight: 500, color: 'var(--text-primary)' }}>
@@ -413,6 +473,9 @@ export default function ReviewPage() {
               <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border-light)' }}>
                 <ReviewJournalPane
                   day={selectedDay}
+                  openCommentKey={openCommentKey}
+                  onOpenComment={setOpenCommentKey}
+                  onCloseComment={() => setOpenCommentKey(null)}
                   onToggleReview={() => setJournalEntryReviewed(selectedDay.date, !selectedDay.journalReviewed)}
                   onAddBlockComment={(blockId, text) => addJournalBlockComment(selectedDay.date, blockId, text)}
                 />
@@ -420,27 +483,35 @@ export default function ReviewPage() {
               <div style={{ width: '360px', flexShrink: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
                 <TasksReviewPane
                   day={selectedDay}
+                  openCommentKey={openCommentKey}
+                  onOpenComment={setOpenCommentKey}
+                  onCloseComment={() => setOpenCommentKey(null)}
                   onToggleTask={task => setTaskReviewedForDate(task.id, selectedDay.date, !task.reviewed)}
                   onAddTaskComment={(taskId, text) => addTaskReviewComment(taskId, selectedDay.date, text)}
                 />
               </div>
             </div>
 
-            <div className="md:hidden review-scroll" style={{ ...scrollPaneStyle, padding: 0 }}>
-              <div style={{ borderBottom: '1px solid var(--border-light)' }}>
+            <div className="md:hidden" style={{ flex: 1, overflow: 'hidden' }}>
+              {mobilePanel === 'journal' ? (
                 <ReviewJournalPane
                   day={selectedDay}
+                  openCommentKey={openCommentKey}
+                  onOpenComment={setOpenCommentKey}
+                  onCloseComment={() => setOpenCommentKey(null)}
                   onToggleReview={() => setJournalEntryReviewed(selectedDay.date, !selectedDay.journalReviewed)}
                   onAddBlockComment={(blockId, text) => addJournalBlockComment(selectedDay.date, blockId, text)}
                 />
-              </div>
-              <div>
+              ) : (
                 <TasksReviewPane
                   day={selectedDay}
+                  openCommentKey={openCommentKey}
+                  onOpenComment={setOpenCommentKey}
+                  onCloseComment={() => setOpenCommentKey(null)}
                   onToggleTask={task => setTaskReviewedForDate(task.id, selectedDay.date, !task.reviewed)}
                   onAddTaskComment={(taskId, text) => addTaskReviewComment(taskId, selectedDay.date, text)}
                 />
-              </div>
+              )}
             </div>
           </>
         ) : (
@@ -479,7 +550,6 @@ const sidebarStyle = {
   width: '250px',
   flexShrink: 0,
   borderRight: '1px solid var(--border-light)',
-  display: 'flex',
   flexDirection: 'column',
 }
 
@@ -557,6 +627,79 @@ function sidebarDateTitleStyle() {
     fontWeight: 500,
     color: 'var(--text-primary)',
   }
+}
+
+function mobileTabStyle(active) {
+  return {
+    flex: 1,
+    padding: '10px 0',
+    fontSize: '13px',
+    fontWeight: 500,
+    fontFamily: 'var(--font-body)',
+    color: active ? 'var(--text-primary)' : 'var(--text-tertiary)',
+    border: 'none',
+    borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+    background: 'none',
+    cursor: 'pointer',
+    transition: 'color 0.15s',
+  }
+}
+
+function mobileDateButtonStyle(selected, needsReview) {
+  return {
+    width: '100%',
+    textAlign: 'left',
+    padding: '12px 12px',
+    borderTop: 'none',
+    borderRight: 'none',
+    borderBottom: '1px solid var(--border-light)',
+    borderLeft: selected ? '2px solid var(--accent)' : '2px solid transparent',
+    background: needsReview ? (selected ? 'var(--bg-secondary)' : 'transparent') : 'rgba(16,185,129,0.05)',
+    cursor: 'pointer',
+    transition: 'background 0.15s',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '12px',
+  }
+}
+
+const mobileDateTitleStyle = {
+  margin: 0,
+  fontSize: '13px',
+  fontWeight: 500,
+  color: 'var(--text-primary)',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+}
+
+const mobileDetailHeaderStyle = {
+  alignItems: 'center',
+  gap: '10px',
+  padding: '8px 16px',
+  borderBottom: '1px solid var(--border-light)',
+}
+
+const mobileBackButtonStyle = {
+  padding: 0,
+  fontSize: '12px',
+  color: 'var(--accent)',
+  background: 'none',
+  border: 'none',
+  cursor: 'pointer',
+  fontFamily: 'var(--font-body)',
+  flexShrink: 0,
+}
+
+const mobileDetailTitleStyle = {
+  fontSize: '12px',
+  fontWeight: 500,
+  color: 'var(--text-primary)',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  minWidth: 0,
 }
 
 function iconButtonStyle(active) {
@@ -648,18 +791,12 @@ const taskTextStyle = {
   whiteSpace: 'pre-wrap',
 }
 
-const commentBubbleStyle = {
-  borderRadius: '12px',
-  background: 'rgba(255,255,255,0.03)',
-  border: '1px solid var(--border-light)',
-  padding: '10px 12px',
-}
-
 const collapsedCommentStyle = {
   borderRadius: '12px',
   background: 'rgba(255,255,255,0.025)',
   border: '1px solid var(--border-light)',
   padding: '10px 12px',
+  cursor: 'pointer',
 }
 
 const commentInputStyle = {
@@ -674,18 +811,6 @@ const commentInputStyle = {
   fontSize: '12px',
   fontFamily: 'var(--font-body)',
   outline: 'none',
-}
-
-const commentButtonStyle = {
-  border: 'none',
-  borderRadius: '999px',
-  padding: '8px 12px',
-  cursor: 'pointer',
-  background: 'var(--accent-light)',
-  color: 'var(--accent)',
-  fontSize: '12px',
-  fontWeight: 500,
-  fontFamily: 'var(--font-body)',
 }
 
 const scrollPaneStyle = {
