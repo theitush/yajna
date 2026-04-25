@@ -176,9 +176,10 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
     }
   }
 
-  const handleTitleDoubleClick = (e) => {
+  const handleTitleClick = (e) => {
     e.stopPropagation()
     setEditingTitle(true)
+    setExpanded(true)
   }
 
   const handleSchedule = () => {
@@ -270,8 +271,8 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
           suppressContentEditableWarning
           onBlur={handleTitleBlur}
           onKeyDown={handleTitleKey}
-          onDoubleClick={handleTitleDoubleClick}
-          onClick={!editingTitle ? handleTitleDoubleClick : undefined}
+          onDoubleClick={handleTitleClick}
+          onClick={!editingTitle ? handleTitleClick : undefined}
           style={{
             flex: 1,
             display: 'inline-block',
