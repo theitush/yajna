@@ -10,7 +10,8 @@ export const TASK_STATUS = {
 }
 
 export const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '453487156075-v3drv8hq708jmkbntgubs4tq31fd3qm9.apps.googleusercontent.com'
-export const AUTH_WORKER_URL = import.meta.env.VITE_AUTH_WORKER_URL || 'https://yajna-auth.yajna-auth.workers.dev'
+const RAW_WORKER_URL = import.meta.env.VITE_AUTH_WORKER_URL || 'https://yajna-auth.yajna-auth.workers.dev'
+export const AUTH_WORKER_URL = RAW_WORKER_URL.replace(/[.\/]+$/, '')
 export const SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email'
 
 export const DB_NAME = 'yajna-db'

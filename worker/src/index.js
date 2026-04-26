@@ -11,9 +11,13 @@ export default {
     const origin = request.headers.get('Origin');
     const allowedOrigin = env.ALLOWED_ORIGIN;
 
+    // Normalize origins for comparison (strip trailing slashes)
+    const normalizedOrigin = origin ? origin.replace(/\/+$/, '') : '';
+    const normalizedAllowed = allowedOrigin ? allowedOrigin.replace(/\/+$/, '') : '';
+
     // CORS headers
     const corsHeaders = {
-      'Access-Control-Allow-Origin': allowedOrigin === '*' ? origin : allowedOrigin,
+      'Access-Control-Allow-Origin': (allowedOrigin === '*' || normalizedOrigin === normalizedAllowed) ? origin : allowedOrigin,
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
       'Access-Control-Max-Age': '86400',
