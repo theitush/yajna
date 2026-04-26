@@ -1,12 +1,11 @@
-import { GOOGLE_CLIENT_ID, SCOPES } from '../lib/constants'
+import { AUTH_WORKER_URL } from '../lib/constants'
 import { getMeta, putMeta } from './db'
 
 const TOKEN_KEY = 'goog_token'
-const AUTH_STATE_KEY = 'goog_auth_state'
+const REFRESH_BLOB_KEY = 'goog_refresh_blob'
 
 let accessToken = null
 let refreshTimer = null
-let gisTokenClient = null
 
 /**
  * Load the GAPI client script
@@ -30,68 +29,6 @@ export function loadGAPI() {
 export async function initGAPI() {
   await window.gapi.client.init({
     discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
-  })
-}
-
-/**
- * Load Google Identity Services. Used for silent token renewal —
- * GIS handles Google's cookie/FedCM quirks better than a raw OAuth iframe.
- */
-export function loadGIS() {
-  return new Promise((resolve, reject) => {
-    if (window.google?.accounts?.oauth2) return resolve()
-    const script = document.createElement('script')
-    script.src = 'https://accounts.google.com/gsi/client'
-    script.async = true
-    script.defer = true
-    script.onload = () => resolve()
-    script.onerror = reject
-    document.head.appendChild(script)
-  })
-}
-
-/**
- * Try to renew the access token silently via GIS. Returns
- * { token, expiresIn } on success, or null on any failure.
- * GIS with prompt: '' uses Google's session cookies without a popup —
- * works on Firefox when the user is actively signed in to Google.
- */
-export async function trySilentRefreshGIS() {
-  try {
-    await loadGIS()
-  } catch {
-    return null
-  }
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => resolve(null), 10_000)
-    try {
-      if (!gisTokenClient) {
-        gisTokenClient = window.google.accounts.oauth2.initTokenClient({
-          client_id: GOOGLE_CLIENT_ID,
-          scope: SCOPES,
-          prompt: '',
-          callback: () => {}, // overwritten per call below
-          error_callback: () => {},
-        })
-      }
-      gisTokenClient.callback = (resp) => {
-        clearTimeout(timeout)
-        if (resp?.access_token) {
-          const expiresIn = parseInt(resp.expires_in || '3600', 10)
-          resolve({ token: resp.access_token, expiresIn })
-        } else {
-          resolve(null)
-        }
-      }
-      gisTokenClient.error_callback = () => {
-        clearTimeout(timeout)
-        resolve(null)
-      }
-      gisTokenClient.requestAccessToken({ prompt: '' })
-    } catch {
-      clearTimeout(timeout)
-      resolve(null)
-    }
   })
 }
 
@@ -120,6 +57,20 @@ export async function clearStoredToken() {
   await putMeta(TOKEN_KEY, null)
 }
 
+export async function storeRefreshBlob(blob) {
+  if (blob) {
+    await putMeta(REFRESH_BLOB_KEY, blob)
+  }
+}
+
+export async function getRefreshBlob() {
+  return await getMeta(REFRESH_BLOB_KEY)
+}
+
+export async function clearRefreshBlob() {
+  await putMeta(REFRESH_BLOB_KEY, null)
+}
+
 export async function getTokenRemainingSeconds() {
   try {
     const stored = await getMeta(TOKEN_KEY)
@@ -130,108 +81,44 @@ export async function getTokenRemainingSeconds() {
   }
 }
 
-function getRedirectUri() {
-  // Strip hash and query so the redirect_uri is deterministic and matches
-  // what we register in the Google Cloud Console.
-  return window.location.origin + window.location.pathname
-}
-
-function randomState() {
-  const arr = new Uint8Array(16)
-  crypto.getRandomValues(arr)
-  return Array.from(arr, (b) => b.toString(16).padStart(2, '0')).join('')
-}
-
 /**
- * Redirect the whole tab to Google's OAuth endpoint (implicit flow).
- * On successful auth Google redirects back to redirect_uri with the access
- * token in the URL fragment. This avoids the popup/COOP issues that break
- * the GIS popup flow on cross-origin hosts like GitHub Pages.
+ * Redirect the whole tab to the Worker's login endpoint.
+ * Worker handles PKCE and redirects to Google.
  */
-export async function startAuthRedirect() {
-  const state = randomState()
-  sessionStorage.setItem(AUTH_STATE_KEY, state)
-  const params = new URLSearchParams({
-    client_id: GOOGLE_CLIENT_ID,
-    redirect_uri: getRedirectUri(),
-    response_type: 'token',
-    scope: SCOPES,
-    include_granted_scopes: 'true',
-    state,
-  })
-  window.location.assign(`https://accounts.google.com/o/oauth2/v2/auth?${params}`)
+export function startAuthRedirect() {
+  const redirect = encodeURIComponent(window.location.origin + window.location.pathname)
+  window.location.assign(`${AUTH_WORKER_URL}/login?redirect=${redirect}`)
 }
 
 /**
- * Try to renew the access token silently. Prefers GIS (works on Firefox
- * with ETP when the user is signed in to Google); falls back to a hidden
- * OAuth iframe if GIS fails.
+ * Try to renew the access token silently via the Worker's /refresh endpoint.
+ * Returns { token, expiresIn } on success, or null on failure.
  */
 export async function trySilentRefresh() {
-  const viaGIS = await trySilentRefreshGIS()
-  if (viaGIS) return viaGIS
-  return trySilentRefreshIframe()
-}
+  const refresh_blob = await getRefreshBlob()
+  if (!refresh_blob) return null
 
-/**
- * Fallback: hidden iframe with prompt=none. Often blocked by Firefox ETP,
- * but works as a last resort on browsers that allow third-party cookies.
- */
-function trySilentRefreshIframe() {
-  return new Promise((resolve) => {
-    const state = randomState()
-    const params = new URLSearchParams({
-      client_id: GOOGLE_CLIENT_ID,
-      redirect_uri: getRedirectUri(),
-      response_type: 'token',
-      scope: SCOPES,
-      include_granted_scopes: 'true',
-      state,
-      prompt: 'none',
+  try {
+    const res = await fetch(`${AUTH_WORKER_URL}/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_blob }),
     })
 
-    const iframe = document.createElement('iframe')
-    iframe.style.display = 'none'
-
-    const timeout = setTimeout(() => {
-      cleanup()
-      resolve(null)
-    }, 10_000)
-
-    function cleanup() {
-      clearTimeout(timeout)
-      if (iframe.parentNode) iframe.parentNode.removeChild(iframe)
+    if (!res.ok) {
+      if (res.status === 401) {
+        await signOut() // Refresh token revoked or invalid
+      }
+      return null
     }
 
-    // Listen for the iframe to load and check its URL for the token
-    iframe.addEventListener('load', () => {
-      try {
-        const hash = iframe.contentWindow.location.hash
-        if (!hash || !hash.includes('access_token=')) {
-          cleanup()
-          resolve(null)
-          return
-        }
-        const fragParams = new URLSearchParams(hash.slice(1))
-        const token = fragParams.get('access_token')
-        const expiresIn = parseInt(fragParams.get('expires_in') || '3600', 10)
-        const returnedState = fragParams.get('state')
-        cleanup()
-        if (!token || returnedState !== state) {
-          resolve(null)
-          return
-        }
-        resolve({ token, expiresIn })
-      } catch {
-        // Cross-origin error means Google showed a login page — silent auth failed
-        cleanup()
-        resolve(null)
-      }
-    })
-
-    document.body.appendChild(iframe)
-    iframe.src = `https://accounts.google.com/o/oauth2/v2/auth?${params}`
-  })
+    const data = await res.json()
+    await storeRefreshBlob(data.refresh_blob) // Persist rotated blob
+    return { token: data.access_token, expiresIn: data.expires_in }
+  } catch (err) {
+    console.error('Silent refresh failed:', err)
+    return null
+  }
 }
 
 /**
@@ -255,36 +142,25 @@ export function scheduleTokenRefresh(expiresInSeconds, onExpired) {
 }
 
 /**
- * If the current URL contains an OAuth redirect response, extract the token,
- * validate state, strip the hash, and return the token. Otherwise return null.
- * Must run before HashRouter reads the URL, because the OAuth response uses
- * the fragment.
+ * If the current URL contains an OAuth redirect response from the Worker,
+ * extract the token and refresh blob, strip the fragment, and return them.
  */
 export function consumeAuthRedirect() {
   const hash = window.location.hash
   if (!hash) return null
-  // If Google returned an error (e.g. access_denied), strip the fragment
-  // so HashRouter doesn't try to match it as a route.
-  if (hash.includes('error=')) {
-    history.replaceState(null, '', window.location.pathname + window.location.search)
-    return null
-  }
-  if (!hash.includes('access_token=')) return null
-  // The hash looks like "#access_token=...&expires_in=...&state=..."
+  
+  if (!hash.includes('access_token=') && !hash.includes('refresh_blob=')) return null
+
   const params = new URLSearchParams(hash.slice(1))
   const token = params.get('access_token')
   const expiresIn = parseInt(params.get('expires_in') || '3600', 10)
-  const state = params.get('state')
-  const expected = sessionStorage.getItem(AUTH_STATE_KEY)
-  sessionStorage.removeItem(AUTH_STATE_KEY)
-  // Strip the OAuth fragment so HashRouter sees a clean URL
+  const refreshBlob = params.get('refresh_blob')
+
+  // Strip the fragment so HashRouter sees a clean URL
   history.replaceState(null, '', window.location.pathname + window.location.search)
+
   if (!token) return null
-  if (!expected || state !== expected) {
-    console.warn('OAuth state mismatch — ignoring redirect response')
-    return null
-  }
-  return { token, expiresIn }
+  return { token, expiresIn, refreshBlob }
 }
 
 export function getAccessToken() {
@@ -314,4 +190,5 @@ export async function signOut() {
   }
   accessToken = null
   await clearStoredToken()
+  await clearRefreshBlob()
 }

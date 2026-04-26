@@ -10,6 +10,7 @@ export const TASK_STATUS = {
 }
 
 export const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
+export const AUTH_WORKER_URL = import.meta.env.VITE_AUTH_WORKER_URL || ''
 export const SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email'
 
 export const DB_NAME = 'yajna-db'

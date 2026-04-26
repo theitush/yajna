@@ -1,0 +1,14 @@
+{
+  "name": "yajna-auth-worker",
+  "version": "1.0.0",
+  "description": "Auth broker for yajna SPA",
+  "main": "src/index.js",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "start": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import useAppStore from './store/useAppStore'
-import { loadGAPI, initGAPI, getStoredToken, getTokenRemainingSeconds, startAuthRedirect, consumeAuthRedirect, storeToken, setAccessToken, trySilentRefresh, scheduleTokenRefresh } from './services/auth'
+import { loadGAPI, initGAPI, getStoredToken, getTokenRemainingSeconds, startAuthRedirect, consumeAuthRedirect, storeToken, storeRefreshBlob, setAccessToken, trySilentRefresh, scheduleTokenRefresh } from './services/auth'
 import { initDriveStructure } from './services/drive'
 import { getMeta, putMeta } from './services/db'
 import { requestStoragePersistence } from './services/storage'
@@ -51,6 +51,7 @@ export default function App() {
         if (redirectResult) {
           // Store token immediately — GAPI load can be slow
           await storeToken(redirectResult.token, redirectResult.expiresIn)
+          await storeRefreshBlob(redirectResult.refreshBlob)
           await putMeta(MODE_KEY, MODE_DRIVE)
           setMode(MODE_DRIVE)
           await bootOffline()
