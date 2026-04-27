@@ -14,7 +14,7 @@ function CollapsedCommentPreview({ comment, onClick }) {
   if (!comment) return null
   return (
     <div onClick={onClick} style={collapsedCommentStyle}>
-      <div style={{ fontSize: '11px', color: 'var(--text-secondary)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+      <div dir="auto" style={{ fontSize: '11px', color: 'var(--text-secondary)', lineHeight: 1.5, whiteSpace: 'pre-wrap', textAlign: 'start' }}>
         {comment.text}
       </div>
       <div style={{ marginTop: '6px', fontSize: '10px', color: 'var(--text-tertiary)' }}>
@@ -36,6 +36,7 @@ function SingleCommentEditor({ comment, placeholder, onSave, onClose }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
       <textarea
+        dir="auto"
         value={draft}
         onChange={e => setDraft(e.target.value)}
         onKeyDown={e => {
@@ -48,6 +49,7 @@ function SingleCommentEditor({ comment, placeholder, onSave, onClose }) {
         rows={3}
         placeholder={placeholder}
         style={commentInputStyle}
+        autoFocus
       />
     </div>
   )
@@ -203,7 +205,7 @@ function ReviewTaskCard({ task, commentsOpen, onOpenComment, onCloseComment, onT
 
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-            <h3 style={taskTitleStyle(tone)}>{task.title?.trim() || 'Untitled'}</h3>
+            <h3 dir="auto" style={taskTitleStyle(tone)}>{task.title?.trim() || 'Untitled'}</h3>
           </div>
 
           {(task.explanation || task.feedback || task.tags) && (
@@ -772,6 +774,8 @@ function taskTitleStyle(tone) {
     color: 'var(--text-primary)',
     textDecoration: tone === 'completed' || tone === 'completedReviewed' ? 'line-through' : 'none',
     lineHeight: 1.4,
+    textAlign: 'start',
+    width: '100%',
   }
 }
 
@@ -789,6 +793,8 @@ const taskTextStyle = {
   lineHeight: 1.6,
   color: 'var(--text-secondary)',
   whiteSpace: 'pre-wrap',
+  textAlign: 'start',
+  width: '100%',
 }
 
 const collapsedCommentStyle = {
@@ -811,6 +817,7 @@ const commentInputStyle = {
   fontSize: '12px',
   fontFamily: 'var(--font-body)',
   outline: 'none',
+  textAlign: 'start',
 }
 
 const scrollPaneStyle = {

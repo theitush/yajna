@@ -55,7 +55,7 @@ function TaskTrashCard({ task, onPurge, onRestore }) {
     <div style={cardStyle}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <p style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-primary)' }}>
+          <p dir="auto" style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-primary)', textAlign: 'start' }}>
             {task.title || '(untitled task)'}
           </p>
           <p style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
@@ -70,9 +70,9 @@ function TaskTrashCard({ task, onPurge, onRestore }) {
       </div>
       {expanded && hasDetail && (
         <div style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '6px', paddingLeft: '2px' }}>
-          {task.explanation && <p dir="auto" style={{ whiteSpace: 'pre-wrap' }}>{task.explanation}</p>}
-          {task.feedback && <p dir="auto" style={{ whiteSpace: 'pre-wrap', color: 'var(--text-tertiary)' }}>{task.feedback}</p>}
-          {task.tags && <p dir="auto" style={{ color: 'var(--accent)', fontWeight: 500 }}>{task.tags}</p>}
+          {task.explanation && <p dir="auto" style={{ whiteSpace: 'pre-wrap', textAlign: 'start' }}>{task.explanation}</p>}
+          {task.feedback && <p dir="auto" style={{ whiteSpace: 'pre-wrap', color: 'var(--text-tertiary)', textAlign: 'start' }}>{task.feedback}</p>}
+          {task.tags && <p dir="auto" style={{ color: 'var(--accent)', fontWeight: 500, textAlign: 'start' }}>{task.tags}</p>}
         </div>
       )}
       <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
