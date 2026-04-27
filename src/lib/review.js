@@ -65,12 +65,19 @@ export function collectJournalEntries(journalDocs) {
   return entries
 }
 
-export function buildReviewDays({ tasks, journalDocs, todayStr = today() }) {
+export function buildReviewDays({ tasks, journalDocs, reviews, todayStr = today() }) {
   const journalEntries = collectJournalEntries(journalDocs)
   const relevantDates = new Set()
 
   for (const date of Object.keys(journalEntries)) {
     if (date <= todayStr && hasJournalData(journalEntries[date])) relevantDates.add(date)
+  }
+
+  // Also include dates from the global reviews index if they have a review timestamp
+  if (reviews) {
+    for (const date of Object.keys(reviews)) {
+      if (date <= todayStr) relevantDates.add(date)
+    }
   }
 
   let earliestDate = todayStr
@@ -101,7 +108,7 @@ export function buildReviewDays({ tasks, journalDocs, todayStr = today() }) {
         .sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity))
 
       const hasJournal = hasJournalData(journalEntry)
-      const journalReviewed = !!journalEntry?.reviewedAt
+      const journalReviewed = !!(reviews?.[date] || journalEntry?.reviewedAt)
       const pendingTaskReviews = taskSnapshots.filter(task => !task.reviewed).length
       const needsReview = (hasJournal && !journalReviewed) || pendingTaskReviews > 0
 

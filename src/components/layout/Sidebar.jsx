@@ -34,12 +34,14 @@ function statusLabel(syncStatus) {
 
 function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
   const tasks = useAppStore(s => s.tasks)
+  const reviews = useAppStore(s => s.reviews)
   const reviewVersion = useAppStore(s => s.reviewVersion)
   const [journalDocs, setJournalDocs] = useState([])
   const isClickable = syncStatus.state === 'waiting' || syncStatus.state === 'offline'
+
   const reviewCount = useMemo(
-    () => buildReviewDays({ tasks, journalDocs }).filter(day => day.needsReview).length,
-    [tasks, journalDocs]
+    () => buildReviewDays({ tasks, journalDocs, reviews }).filter(day => day.needsReview).length,
+    [tasks, journalDocs, reviews]
   )
   const items = useMemo(
     () => baseItems.map(item => item.to === '/review'

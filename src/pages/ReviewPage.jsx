@@ -275,17 +275,23 @@ function TasksReviewPane({ day, openCommentKey, onOpenComment, onCloseComment, o
 
 export default function ReviewPage() {
   const tasks = useAppStore(s => s.tasks)
+  const reviews = useAppStore(s => s.reviews)
   const reviewVersion = useAppStore(s => s.reviewVersion)
   const setTaskReviewedForDate = useAppStore(s => s.setTaskReviewedForDate)
   const addTaskReviewComment = useAppStore(s => s.addTaskReviewComment)
   const setJournalEntryReviewed = useAppStore(s => s.setJournalEntryReviewed)
   const addJournalBlockComment = useAppStore(s => s.addJournalBlockComment)
+  const syncAllJournals = useAppStore(s => s.syncAllJournals)
   const [journalDocs, setJournalDocs] = useState([])
   const [selectedDate, setSelectedDate] = useState(null)
   const [mobileView, setMobileView] = useState('list')
   const [mobilePanel, setMobilePanel] = useState('journal')
   const [openCommentKey, setOpenCommentKey] = useState(null)
   const todayStr = today()
+
+  useEffect(() => {
+    syncAllJournals().catch(console.error)
+  }, [syncAllJournals])
 
   useEffect(() => {
     let active = true
@@ -300,8 +306,8 @@ export default function ReviewPage() {
   }, [reviewVersion])
 
   const reviewDays = useMemo(
-    () => buildReviewDays({ tasks, journalDocs, todayStr }),
-    [tasks, journalDocs, todayStr]
+    () => buildReviewDays({ tasks, journalDocs, reviews, todayStr }),
+    [tasks, journalDocs, reviews, todayStr]
   )
 
   const pendingDaysCount = reviewDays.filter(day => day.needsReview).length

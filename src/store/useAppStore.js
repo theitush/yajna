@@ -9,10 +9,10 @@ import {
   getAllTasksRaw, getAllNotesRaw, getAllAudio,
 } from '../services/db'
 import { extractHashtags } from '../lib/hashtags'
-import { pushTasks, pushNotes, pushJournal, pushConfig, initialSync, mergeAndPushJournal } from '../services/sync'
+import { pushTasks, pushNotes, pushJournal, pushConfig, pushReviews, initialSync, mergeAndPushJournal } from '../services/sync'
 import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, getSyncStatus, retryNow, setPollInterval } from '../services/syncEngine'
 import { pushAudio, pushAudioMetadata, pushPendingAudio, ensureAudioLocal, softDeleteAudio, restoreAudio, hardDeleteAudio, collectAudioIdsFromBlocks } from '../services/audio'
-import { putAudio, getAudio } from '../services/db'
+import { putAudio, getAudio, getReviews, putReviews } from '../services/db'
 import { stampBlocks, stampBlocksFromDoc, blocksToHtml } from '../lib/blocks'
 
 const useAppStore = create((set, get) => ({
@@ -39,11 +39,27 @@ const useAppStore = create((set, get) => ({
 
   // Tasks
   tasks: [],
+  reviews: {}, // date -> reviewedAt (ISO)
   reviewVersion: 0,
   bumpReviewVersion: () => set(s => ({ reviewVersion: s.reviewVersion + 1 })),
-  loadTasks: async () => {
-    const tasks = await getTasks()
-    set({ tasks })
+  migrateJournalReviews: async () => {
+    const docs = await getAllJournals()
+    if (!docs?.length) return
+    const index = {}
+    let found = false
+    for (const doc of docs) {
+      for (const [date, entry] of Object.entries(doc.entries || {})) {
+        if (entry.reviewedAt) {
+          index[date] = entry.reviewedAt
+          found = true
+        }
+      }
+    }
+    if (found) {
+      await putReviews(index)
+      set({ reviews: index })
+      if (get().mode !== MODE_OFFLINE) withRetry(pushReviews)()
+    }
   },
   addTask: async (title, explanation = '') => {
     const now = new Date().toISOString()
@@ -339,8 +355,11 @@ const useAppStore = create((set, get) => ({
     }
     await putJournal(updated)
     if (currentDoc) set({ currentJournal: updated })
+
     get().bumpReviewVersion()
-    if (get().mode !== MODE_OFFLINE) withRetry(() => pushJournal(updated))()
+    if (get().mode !== MODE_OFFLINE) {
+      withRetry(() => pushJournal(updated))()
+    }
   },
   setJournalEntryReviewed: async (date, reviewed) => {
     const week = weekKey(date)
@@ -365,8 +384,19 @@ const useAppStore = create((set, get) => ({
 
     await putJournal(updated)
     if (currentDoc) set({ currentJournal: updated })
+
+    // Update global reviews index
+    const nextReviews = { ...get().reviews }
+    if (reviewed) nextReviews[date] = now
+    else delete nextReviews[date]
+    await putReviews(nextReviews)
+    set({ reviews: nextReviews })
+
     get().bumpReviewVersion()
-    if (get().mode !== MODE_OFFLINE) withRetry(() => pushJournal(updated))()
+    if (get().mode !== MODE_OFFLINE) {
+      withRetry(() => pushJournal(updated))()
+      withRetry(pushReviews)()
+    }
   },
   addJournalBlockComment: async (date, blockId, text) => {
     if (!blockId || !text?.trim()) return
@@ -401,6 +431,14 @@ const useAppStore = create((set, get) => ({
     if (get().mode !== MODE_OFFLINE) withRetry(() => pushJournal(updated))()
   },
 
+  syncAllJournals: async () => {
+    if (get().mode === MODE_OFFLINE) return
+    const docs = await getAllJournals()
+    if (!docs?.length) return
+    // Merge all existing local journals with Drive.
+    await Promise.all(docs.map(doc => mergeAndPushJournal(doc)))
+    get().bumpReviewVersion()
+  },
   // Audio (local-first, lazy Drive sync)
   saveAudioBlob: async (blob, duration = 0) => {
     const id = uuid()
@@ -599,10 +637,10 @@ const useAppStore = create((set, get) => ({
     set({ syncing: true, syncStatus: { state: 'syncing' } })
     try {
       const result = await initialSync()
-      const [tasks, notes, config] = result
-        ? [result.mergedTasks, result.mergedNotes, result.mergedConfig]
-        : await Promise.all([getTasks(), getNotes(), getConfig()])
-      set({ tasks, notes, config: config || {}, lastSync: Date.now() })
+      const [tasks, notes, config, reviews] = result
+        ? [result.mergedTasks, result.mergedNotes, result.mergedConfig, result.mergedReviews]
+        : await Promise.all([getTasks(), getNotes(), getConfig(), getReviews()])
+      set({ tasks, notes, config: config || {}, reviews: reviews || {}, lastSync: Date.now() })
 
       // Start the sync engine for continuous polling + auto-reconnect
       onSyncStatus((s) => {
@@ -623,11 +661,15 @@ const useAppStore = create((set, get) => ({
 
   // Offline mode boot: just load from IDB
   bootOffline: async () => {
-    const [tasks, notes, config] = await Promise.all([
-      getTasks(), getNotes(), getConfig(),
+    const [tasks, notes, config, reviews] = await Promise.all([
+      getTasks(), getNotes(), getConfig(), getReviews(),
     ])
-    set({ tasks, notes, config: config || {} })
+    set({ tasks, notes, config: config || {}, reviews: reviews || {} })
     get().loadJournalTagPool()
+    // Migrate reviews if the index is empty but journals exist
+    if (Object.keys(reviews || {}).length === 0) {
+      get().migrateJournalReviews()
+    }
   },
 }))
 

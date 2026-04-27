@@ -205,14 +205,18 @@ export async function initDriveStructure() {
     return fileId
   }
 
-  const [tasksFileId, notesFileId, configFileId, audioIndexFileId] = await Promise.all([
+  const [tasksFileId, notesFileId, configFileId, audioIndexFileId, reviewsFileId] = await Promise.all([
     ensureFile('tasks.json', []),
     ensureFile('notes.json', []),
     ensureFile('config.json', {}),
     ensureFile('audio.json', []),
+    ensureFile('reviews.json', {}),
   ])
 
-  const ids = { rootId, journalsFolderId, audioFolderId, tasksFileId, notesFileId, configFileId, audioIndexFileId }
+  const ids = {
+    rootId, journalsFolderId, audioFolderId,
+    tasksFileId, notesFileId, configFileId, audioIndexFileId, reviewsFileId
+  }
   await putMeta(FILES_KEY, ids)
   return ids
 }

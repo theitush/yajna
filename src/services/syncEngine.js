@@ -9,9 +9,9 @@
  *   { state: 'waiting', retryIn: <seconds remaining> }
  */
 import { getDriveFileIds, readJsonFile, findFile } from './drive'
-import { getTasks, getNotes, getConfig, putTasks, putNotes, putConfig, putJournal, getAllAudio, putAudio, getAllNotesRaw, getJournal } from './db'
+import { getTasks, getNotes, getConfig, getReviews, putTasks, putNotes, putConfig, putJournal, putReviews, getAllAudio, putAudio, getAllNotesRaw, getJournal } from './db'
 import { getStoredToken } from './auth'
-import { mergeJournalEntry } from './sync'
+import { mergeJournalEntry, pushReviews } from './sync'
 import { mergeBlocks, htmlToBlocks, purgeOldBlockTombstones } from '../lib/blocks'
 
 const BLOCK_TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000
@@ -192,11 +192,12 @@ async function pollRemote(storeSetter) {
 
     setStatus({ state: 'syncing' })
 
-    const [tasks, notes, config, audioIndex] = await Promise.all([
+    const [tasks, notes, config, audioIndex, reviews] = await Promise.all([
       readJsonFile(ids.tasksFileId),
       readJsonFile(ids.notesFileId),
       readJsonFile(ids.configFileId),
       ids.audioIndexFileId ? readJsonFile(ids.audioIndexFileId).catch(() => []) : Promise.resolve([]),
+      ids.reviewsFileId ? readJsonFile(ids.reviewsFileId).catch(() => []) : Promise.resolve([]),
     ])
 
     // A local write raced with our pull — discard, the user's edit is fresher.
@@ -240,6 +241,7 @@ async function pollRemote(storeSetter) {
       putTasks(Array.isArray(tasks) ? tasks : []),
       putNotes(mergedNotes),
       putConfig(config || {}),
+      putReviews(reviews || {}),
     ])
 
     // Reconcile audio index: add stub records for any remote audio we don't
@@ -351,6 +353,7 @@ async function pollRemote(storeSetter) {
         tasks: visibleTasks,
         notes: visibleNotes,
         config: config || {},
+        reviews: reviews || {},
       }
       if (updatedJournal !== undefined) {
         update.currentJournal = updatedJournal

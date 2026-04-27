@@ -6,6 +6,7 @@
 import {
   getTasks, putTasks, getNotes, putNotes, putJournal, getConfig, putConfig,
   putMeta, getAllTasksRaw, getAllNotesRaw, purgeTombstones,
+  getReviews, putReviews,
 } from './db'
 import {
   getDriveFileIds, readJsonFile, writeJsonFile,
@@ -110,33 +111,38 @@ export async function mergeWithDrive() {
   const ids = await getDriveFileIds()
   if (!ids) return
 
-  const [remoteTasks, remoteNotes, remoteConfig] = await Promise.all([
+  const [remoteTasks, remoteNotes, remoteConfig, remoteReviews] = await Promise.all([
     readJsonFile(ids.tasksFileId),
     readJsonFile(ids.notesFileId),
     readJsonFile(ids.configFileId),
+    readJsonFile(ids.reviewsFileId),
   ])
 
   // Use raw reads so tombstones participate in the merge.
-  const [localTasks, localNotes, localConfig] = await Promise.all([
+  const [localTasks, localNotes, localConfig, localReviews] = await Promise.all([
     getAllTasksRaw(),
     getAllNotesRaw(),
     getConfig(),
+    getReviews(),
   ])
 
   const mergedTasks = mergeById(localTasks, Array.isArray(remoteTasks) ? remoteTasks : [])
   const mergedNotes = mergeById(localNotes, Array.isArray(remoteNotes) ? remoteNotes : [], { mergeBody: true })
   const mergedConfig = { ...(localConfig || {}), ...(remoteConfig || {}) }
+  const mergedReviews = { ...(localReviews || {}), ...(remoteReviews || {}) }
 
   // Write merged data (including tombstones) back to local and Drive
   await Promise.all([
     putTasks(mergedTasks),
     putNotes(mergedNotes),
     putConfig(mergedConfig),
+    putReviews(mergedReviews),
   ])
   await Promise.all([
     writeJsonFile(ids.rootId, 'tasks.json', mergedTasks, ids.tasksFileId),
     writeJsonFile(ids.rootId, 'notes.json', mergedNotes, ids.notesFileId),
     writeJsonFile(ids.rootId, 'config.json', mergedConfig, ids.configFileId),
+    writeJsonFile(ids.rootId, 'reviews.json', mergedReviews, ids.reviewsFileId),
   ])
 
   // Purge tombstones older than 30 days so storage doesn't grow unbounded.
@@ -150,6 +156,7 @@ export async function mergeWithDrive() {
     mergedTasks: mergedTasks.filter(t => !t.deleted),
     mergedNotes: mergedNotes.filter(n => !n.deleted),
     mergedConfig,
+    mergedReviews,
   }
 }
 
@@ -161,16 +168,18 @@ export async function pullFromDrive() {
   const ids = await getDriveFileIds()
   if (!ids) return
 
-  const [tasks, notes, config] = await Promise.all([
+  const [tasks, notes, config, reviews] = await Promise.all([
     readJsonFile(ids.tasksFileId),
     readJsonFile(ids.notesFileId),
     readJsonFile(ids.configFileId),
+    readJsonFile(ids.reviewsFileId),
   ])
 
   await Promise.all([
     putTasks(Array.isArray(tasks) ? tasks : []),
     putNotes(Array.isArray(notes) ? notes : []),
     putConfig(config || {}),
+    putReviews(reviews || {}),
   ])
 
   await putMeta(LAST_SYNC_KEY, Date.now())
@@ -217,14 +226,36 @@ export async function pushConfig() {
 }
 
 /**
- * Push a journal week doc to Drive
+ * Push reviews index to Drive. Merges with remote first.
+ */
+export async function pushReviews() {
+  const ids = await getDriveFileIds()
+  if (!ids) return null
+  const local = await getReviews()
+  const remote = await readJsonFile(ids.reviewsFileId)
+  const merged = { ...(remote || {}), ...(local || {}) }
+  await putReviews(merged)
+  await writeJsonFile(ids.rootId, 'reviews.json', merged, ids.reviewsFileId)
+  return merged
+}
+
+/**
+ * Push a journal week doc to Drive. Merges with remote first so concurrent
+ * edits from other devices aren't lost.
  */
 export async function pushJournal(weekDoc) {
   const ids = await getDriveFileIds()
-  if (!ids) return
+  if (!ids) return null
   const filename = `${weekDoc.week}.json`
   const existingId = await findFile(ids.journalsFolderId, filename)
-  await driveWrite(ids.journalsFolderId, filename, weekDoc, existingId)
+  let merged = weekDoc
+  if (existingId) {
+    const remote = await readJsonFile(existingId)
+    if (remote) merged = mergeJournalDocs(weekDoc, remote)
+  }
+  await putJournal(merged)
+  await driveWrite(ids.journalsFolderId, filename, merged, existingId)
+  return merged
 }
 
 /**

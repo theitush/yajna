@@ -1,7 +1,7 @@
 import { openDB } from 'idb'
 import {
   DB_NAME, DB_VERSION,
-  STORE_TASKS, STORE_NOTES, STORE_JOURNALS, STORE_CONFIG, STORE_META, STORE_AUDIO,
+  STORE_TASKS, STORE_NOTES, STORE_JOURNALS, STORE_CONFIG, STORE_META, STORE_AUDIO, STORE_REVIEWS,
 } from '../lib/constants'
 
 let dbPromise = null
@@ -28,6 +28,9 @@ function getDB() {
         }
         if (!db.objectStoreNames.contains(STORE_AUDIO)) {
           db.createObjectStore(STORE_AUDIO, { keyPath: 'id' })
+        }
+        if (!db.objectStoreNames.contains(STORE_REVIEWS)) {
+          db.createObjectStore(STORE_REVIEWS)
         }
       },
     })
@@ -173,4 +176,15 @@ export async function getMeta(key) {
 export async function putMeta(key, value) {
   const db = await getDB()
   return db.put(STORE_META, value, key)
+}
+
+// Reviews index (global map of date -> reviewedAt)
+export async function getReviews() {
+  const db = await getDB()
+  return db.get(STORE_REVIEWS, 'index') || {}
+}
+
+export async function putReviews(reviews) {
+  const db = await getDB()
+  return db.put(STORE_REVIEWS, reviews, 'index')
 }
