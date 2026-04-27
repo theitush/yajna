@@ -26,6 +26,7 @@ let pollTimer = null
 let retryTimer = null
 let countdownTimer = null
 let retryCount = 0
+let retryStartTime = 0
 let listeners = new Set()
 let status = { state: 'synced' }
 let running = false
@@ -110,6 +111,8 @@ export function retryNow() {
   clearInterval(countdownTimer)
   retryTimer = null
   countdownTimer = null
+  retryCount = 0
+  retryStartTime = 0
 
   if (pendingPush) {
     setStatus({ state: 'syncing' })
@@ -130,6 +133,7 @@ export function retryNow() {
 function handleOnline() {
   if (!running) return
   retryCount = 0
+  retryStartTime = 0
   clearTimeout(retryTimer)
   clearInterval(countdownTimer)
 
@@ -413,6 +417,18 @@ function scheduleRetry(pushFn) {
     return
   }
 
+  if (retryCount === 0) {
+    retryStartTime = Date.now()
+  }
+
+  const elapsed = Date.now() - retryStartTime
+  if (elapsed > 30000) {
+    console.warn('Sync retry limit reached (30s). Staying offline.')
+    setStatus({ state: 'offline' })
+    // keep pendingPush so user can click to retry manually
+    return
+  }
+
   const delayMs = Math.min(RETRY_BASE_MS * Math.pow(2, retryCount), RETRY_MAX_MS)
   retryCount++
   let remaining = Math.ceil(delayMs / 1000)
@@ -454,6 +470,7 @@ async function executePush(pushFn) {
   try {
     await pushFn()
     retryCount = 0
+    retryStartTime = 0
     pendingPush = null
     setStatus({ state: 'synced' })
     // Update hash so our own write doesn't trigger re-pull

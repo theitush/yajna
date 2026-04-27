@@ -92,51 +92,56 @@ export function startAuthRedirect() {
 
 /**
  * Try to renew the access token silently via the Worker's /refresh endpoint.
- * Returns { token, expiresIn } on success, or null on failure.
+ * Returns { token, expiresIn } on success, or null on auth failure (401).
+ * Throws on network/server error so the caller can distinguish and retry.
  */
 export async function trySilentRefresh() {
   const refresh_blob = await getRefreshBlob()
   if (!refresh_blob) return null
 
-  try {
-    const res = await fetch(`${AUTH_WORKER_URL}/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_blob }),
-    })
+  const res = await fetch(`${AUTH_WORKER_URL}/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_blob }),
+  })
 
-    if (!res.ok) {
-      if (res.status === 401) {
-        await signOut() // Refresh token revoked or invalid
-      }
+  if (!res.ok) {
+    if (res.status === 401) {
+      await signOut() // Refresh token revoked or invalid
       return null
     }
-
-    const data = await res.json()
-    await storeRefreshBlob(data.refresh_blob) // Persist rotated blob
-    return { token: data.access_token, expiresIn: data.expires_in }
-  } catch (err) {
-    console.error('Silent refresh failed:', err)
-    return null
+    throw new Error(`Refresh failed: ${res.status}`)
   }
+
+  const data = await res.json()
+  await storeRefreshBlob(data.refresh_blob) // Persist rotated blob
+  return { token: data.access_token, expiresIn: data.expires_in }
 }
 
 /**
  * Schedule a silent token refresh 5 minutes before the token expires.
- * Calls onExpired() if silent refresh fails so the app can re-prompt login.
+ * Calls onExpired() if silent refresh fails permanently (401).
+ * If it fails due to network, it will keep retrying every 30s.
  */
 export function scheduleTokenRefresh(expiresInSeconds, onExpired) {
   if (refreshTimer) clearTimeout(refreshTimer)
   // Refresh 5 minutes before expiry, minimum 30 seconds from now
   const refreshIn = Math.max((expiresInSeconds - 300) * 1000, 30_000)
   refreshTimer = setTimeout(async () => {
-    const result = await trySilentRefresh()
-    if (result) {
-      setAccessToken(result.token)
-      await storeToken(result.token, result.expiresIn)
-      scheduleTokenRefresh(result.expiresIn, onExpired)
-    } else if (onExpired) {
-      onExpired()
+    try {
+      const result = await trySilentRefresh()
+      if (result) {
+        setAccessToken(result.token)
+        await storeToken(result.token, result.expiresIn)
+        scheduleTokenRefresh(result.expiresIn, onExpired)
+      } else if (onExpired) {
+        // null means 401 or no refresh blob — permanent failure
+        onExpired()
+      }
+    } catch (err) {
+      console.warn('Silent refresh network error, retrying in 30s:', err)
+      // Network error — retry in 30s indefinitely until success or 401
+      scheduleTokenRefresh(330, onExpired) // 330s total means retry in 30s (330-300=30)
     }
   }, refreshIn)
 }

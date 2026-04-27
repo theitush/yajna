@@ -113,19 +113,24 @@ export default function App() {
                 return
               }
               // Token expired — try silent refresh
-              const refreshed = await trySilentRefresh()
-              if (refreshed) {
-                await storeToken(refreshed.token, refreshed.expiresIn)
-                setAccessToken(refreshed.token)
-                scheduleTokenRefresh(refreshed.expiresIn, handleTokenExpired)
-                fetchUserEmail()
-                await initDriveStructure()
-                await runInitialSync()
-                await loadJournal(weekKey(today()))
-                return
+              try {
+                const refreshed = await trySilentRefresh()
+                if (refreshed) {
+                  await storeToken(refreshed.token, refreshed.expiresIn)
+                  setAccessToken(refreshed.token)
+                  scheduleTokenRefresh(refreshed.expiresIn, handleTokenExpired)
+                  fetchUserEmail()
+                  await initDriveStructure()
+                  await runInitialSync()
+                  await loadJournal(weekKey(today()))
+                  return
+                }
+                // Silent refresh returned null — permanent failure (401)
+                handleTokenExpired()
+              } catch (e) {
+                console.warn('Background Drive connect network error:', e)
+                setSyncStatus({ state: 'offline' })
               }
-              // Silent refresh failed — session expired
-              handleTokenExpired()
             } catch (e) {
               console.error('Background Drive connect failed:', e)
               setSyncStatus({ state: 'offline' })
@@ -161,13 +166,20 @@ export default function App() {
           return
         }
         // Token expired while tab was backgrounded — try silent refresh
-        const refreshed = await trySilentRefresh()
-        if (refreshed) {
-          await storeToken(refreshed.token, refreshed.expiresIn)
-          setAccessToken(refreshed.token)
-          scheduleTokenRefresh(refreshed.expiresIn, handleTokenExpired)
-        } else {
-          handleTokenExpired()
+        try {
+          const refreshed = await trySilentRefresh()
+          if (refreshed) {
+            await storeToken(refreshed.token, refreshed.expiresIn)
+            setAccessToken(refreshed.token)
+            scheduleTokenRefresh(refreshed.expiresIn, handleTokenExpired)
+          } else {
+            // null means permanent failure (401)
+            handleTokenExpired()
+          }
+        } catch (e) {
+          console.warn('Visibility change refresh network error:', e)
+          // Don't logout on network error, just let it be offline
+          setSyncStatus({ state: 'offline' })
         }
       })()
     }

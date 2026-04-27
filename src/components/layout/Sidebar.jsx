@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom'
 import { useEffect, useMemo, useState } from 'react'
 import useAppStore, { retryNow } from '../../store/useAppStore'
 import { putMeta } from '../../services/db'
-import { MODE_KEY, MODE_OFFLINE } from '../../lib/constants'
+import { MODE_KEY, MODE_OFFLINE, MODE_DRIVE } from '../../lib/constants'
 import { getAllJournals } from '../../services/db'
 import { buildReviewDays } from '../../lib/review'
 
@@ -38,6 +38,7 @@ function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
   const reviewVersion = useAppStore(s => s.reviewVersion)
   const [journalDocs, setJournalDocs] = useState([])
   const isClickable = syncStatus.state === 'waiting' || syncStatus.state === 'offline'
+  const isDriveMode = useAppStore(s => s.mode === MODE_DRIVE)
 
   const reviewCount = useMemo(
     () => buildReviewDays({ tasks, journalDocs, reviews }).filter(day => day.needsReview).length,
@@ -62,6 +63,17 @@ function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
     }
   }, [reviewVersion])
 
+  const handleClick = () => {
+    if (!isClickable) return
+    if (isDriveMode && syncStatus.state === 'offline') {
+      retryNow()
+    } else if (syncStatus.state === 'offline') {
+      handleConnectDrive()
+    } else {
+      retryNow()
+    }
+  }
+
   return (
     <>
       <div style={{ padding: '20px 20px 16px', borderBottom: '1px solid var(--border-light)' }}>
@@ -75,7 +87,7 @@ function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
           journal · notes · todos
         </div>
         <div
-          onClick={isClickable ? (syncStatus.state === 'offline' ? handleConnectDrive : retryNow) : undefined}
+          onClick={handleClick}
           title={isClickable ? 'Click to retry now' : undefined}
           style={{
             display: 'flex', alignItems: 'center', gap: '5px', marginTop: '6px',
