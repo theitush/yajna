@@ -260,42 +260,59 @@ const useAppStore = create((set, get) => ({
   currentJournal: null,
   // Tags accumulated from ALL journal weeks (so suggestions don't lose tags
   // that live in weeks other than the currently-loaded one).
-  journalTagPool: [],
+  journalTagPool: {},
   loadJournalTagPool: async () => {
     try {
       const docs = await getAllJournals()
-      const tagSet = new Set()
+      const usage = {}
       for (const doc of docs || []) {
         for (const date in doc.entries || {}) {
           const e = doc.entries[date]
           const text = e?.content ?? blocksToHtml(e?.blocks)
-          for (const tag of extractHashtags(text)) tagSet.add(tag)
+          const ts = new Date(e.updatedAt || 0).getTime()
+          for (const tag of extractHashtags(text)) {
+            const lower = tag.toLowerCase()
+            if (!usage[lower] || usage[lower] < ts) usage[lower] = ts
+          }
         }
       }
-      set({ journalTagPool: [...tagSet] })
+      set({ journalTagPool: usage })
     } catch {}
   },
   // Aggregated, always-current tag pool across notes, tasks, and journals.
   // Read via getAllTags() so editor extensions don't need React wiring.
   getAllTags: () => {
     const s = get()
-    const tagSet = new Set()
+    const usage = { ...s.journalTagPool }
+
+    const bump = (tag, ts) => {
+      const t = String(tag).toLowerCase()
+      if (!usage[t] || usage[t] < ts) usage[t] = ts
+    }
+
     for (const n of s.notes) {
-      for (const t of n.tags || []) tagSet.add(String(t).toLowerCase())
-      for (const t of extractHashtags(n.body ?? blocksToHtml(n.blocks))) tagSet.add(t)
+      const ts = new Date(n.updatedAt || 0).getTime()
+      for (const t of n.tags || []) bump(t, ts)
+      for (const t of extractHashtags(n.body ?? blocksToHtml(n.blocks))) bump(t, ts)
     }
     for (const t of s.tasks) {
-      for (const tag of extractHashtags(`${t.title || ''} ${t.explanation || ''} ${t.feedback || ''} ${t.tags || ''}`)) tagSet.add(tag)
+      const ts = new Date(t.updatedAt || 0).getTime()
+      const text = `${t.title || ''} ${t.explanation || ''} ${t.feedback || ''} ${t.tags || ''}`
+      for (const tag of extractHashtags(text)) bump(tag, ts)
     }
-    for (const tag of s.journalTagPool) tagSet.add(tag)
     if (s.currentJournal?.entries) {
       for (const date in s.currentJournal.entries) {
         const e = s.currentJournal.entries[date]
+        const ts = new Date(e.updatedAt || 0).getTime()
         const text = e?.content ?? blocksToHtml(e?.blocks)
-        for (const tag of extractHashtags(text)) tagSet.add(tag)
+        for (const tag of extractHashtags(text)) bump(tag, ts)
       }
     }
-    return [...tagSet].sort()
+
+    return Object.keys(usage).sort((a, b) => {
+      const diff = (usage[b] || 0) - (usage[a] || 0)
+      return diff || a.localeCompare(b)
+    })
   },
   loadJournal: async (week) => {
     let doc = await getJournal(week)
