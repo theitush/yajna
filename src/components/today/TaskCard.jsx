@@ -297,7 +297,7 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
             userSelect: editingTitle ? 'text' : 'none',
           }}
         >
-          {editingTitle ? task.title : (hasTitle ? renderWithHashtags(taskTitle) : 'Untitled')}
+          {editingTitle ? task.title : (hasTitle ? renderWithHashtags(taskTitle) : '')}
         </span>
 
         {/* Status badges */}
