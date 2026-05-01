@@ -114,7 +114,12 @@ export function htmlToBlocks(html) {
   const out = []
   for (const child of Array.from(container.children)) {
     const existing = child.getAttribute(BLOCK_ID_ATTR)
-    const id = existing || stableIdFromContent(contentKey(child))
+    const hasContent = child.textContent.trim().length > 0
+    // If it has content, use its ID or a stable ID.
+    // If it's empty, use a stable content-based ID so all empty paragraphs
+    // across all devices share the same "anonymous" identity.
+    const id = existing || (hasContent ? stableIdFromContent(contentKey(child)) : 'empty-' + out.length)
+    
     // updatedAt: 0 — parsed-from-HTML blocks lose to any stamped edit, and
     // collide deterministically with their peers on other devices.
     out.push({ id, html: child.outerHTML, updatedAt: new Date(0).toISOString() })

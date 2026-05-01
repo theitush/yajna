@@ -49,14 +49,24 @@ export const BlockIdExtension = Extension.create({
             // Only top-level blocks (direct children of the doc).
             if (parent !== newState.doc) return
             const bid = node.attrs?.bid
-            if (!bid || seen.has(bid)) {
-              // Missing, or duplicated by a split/paste → assign fresh id.
-              const fresh = uuid()
-              tr.setNodeMarkup(pos, undefined, { ...node.attrs, bid: fresh })
-              seen.add(fresh)
+            const hasContent = node.textContent.trim().length > 0
+            
+            if (hasContent) {
+              if (!bid || seen.has(bid)) {
+                // Typed something but no ID (or duplicate) -> assign fresh UUID.
+                const fresh = uuid()
+                tr.setNodeMarkup(pos, undefined, { ...node.attrs, bid: fresh })
+                seen.add(fresh)
+                changed = true
+              } else {
+                seen.add(bid)
+              }
+            } else if (bid) {
+              // Empty paragraph but has an ID -> strip it so it becomes anonymous.
+              // This prevents Enter from carrying over the ID of the split paragraph
+              // and prevents empty paragraphs from cluttering the sync with UUIDs.
+              tr.setNodeMarkup(pos, undefined, { ...node.attrs, bid: null })
               changed = true
-            } else {
-              seen.add(bid)
             }
             return false
           })
