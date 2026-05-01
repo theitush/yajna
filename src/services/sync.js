@@ -71,7 +71,7 @@ function mergeJournalDocs(local, remote) {
 /**
  * Merge two journal entries at the block level. Concurrent edits on
  * different paragraphs both survive; same-paragraph conflicts keep both
- * (loser is appended as a conflict-marked block).
+ * (the loser is split into a new block with a conflict marker).
  */
 export function mergeJournalEntry(localEntry, remoteEntry) {
   if (!localEntry) return remoteEntry

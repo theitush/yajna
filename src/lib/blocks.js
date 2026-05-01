@@ -92,11 +92,18 @@ export function docToBlocks(doc, serializer) {
   if (!doc || !serializer) return []
   const out = []
   doc.forEach((node) => {
-    const id = node.attrs?.bid || uuid()
     const fragment = serializer.serializeNode(node)
     const container = document.createElement('div')
     container.appendChild(fragment)
-    out.push({ id, html: container.innerHTML })
+    const html = container.innerHTML
+    
+    // If bid is missing from attrs, try to get it from serialized HTML,
+    // otherwise fallback to stable content-based id.
+    const id = node.attrs?.bid || 
+               container.firstElementChild?.getAttribute(BLOCK_ID_ATTR) || 
+               stableIdFromContent(contentKey(container.firstElementChild || container))
+    
+    out.push({ id, html })
   })
   return out
 }
@@ -272,9 +279,47 @@ export function mergeBlocks(localBlocks, remoteBlocks) {
     const lt = toMs(lb.updatedAt)
     const rt = toMs(rb.updatedAt)
     let winner
-    if (lb.deleted && !rb.deleted) winner = rt > lt ? rb : lb
-    else if (rb.deleted && !lb.deleted) winner = lt > rt ? lb : rb
-    else winner = rt > lt ? rb : lb
+    if (lb.deleted && !rb.deleted) {
+      winner = rt > lt ? rb : lb
+    } else if (rb.deleted && !lb.deleted) {
+      winner = lt > rt ? lb : rb
+    } else if (!lb.deleted && !rb.deleted && lb.html !== rb.html) {
+      // Content conflict! Keep both to avoid data loss.
+      // Winner keeps the id; loser gets a fresh id and a conflict flag.
+      const win = rt > lt ? rb : lb
+      const lose = win === lb ? rb : lb
+      out.push(win)
+      // The loser block needs a fresh id so it doesn't collide again,
+      // and a fractional index that places it immediately after the winner.
+      const freshId = uuid()
+      // Find the smallest order that is strictly greater than win.order
+      const after = remote.concat(local)
+        .filter(b => b && b.order > win.order)
+        .sort((a, b) => a.order < b.order ? -1 : 1)[0]
+      const freshOrder = fiBetween(win.order, after?.order)
+      
+      // Inject conflict marker into HTML
+      const parser = new DOMParser()
+      const doc = parser.parseFromString(lose.html, 'text/html')
+      const el = doc.body.firstElementChild
+      if (el) {
+        el.setAttribute(BLOCK_ID_ATTR, freshId)
+        el.setAttribute('data-conflict', '1')
+        out.push({
+          ...lose,
+          id: freshId,
+          order: freshOrder,
+          html: el.outerHTML,
+          updatedAt: lose.updatedAt,
+        })
+      } else {
+        out.push({ ...lose, id: freshId, order: freshOrder })
+      }
+      seen.add(lb.id)
+      continue
+    } else {
+      winner = rt > lt ? rb : lb
+    }
     // Prefer whichever side has an `order` key; if both do, the LWW winner's
     // key is authoritative. This keeps legacy blocks that gained a key on
     // one device from losing it on merge.
