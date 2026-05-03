@@ -197,3 +197,11 @@ export async function signOut() {
   await clearStoredToken()
   await clearRefreshBlob()
 }
+
+/**
+ * Check if an error is an authentication failure (401 or 403)
+ */
+export function isAuthError(e) {
+  const code = e?.status || e?.result?.error?.code
+  return code === 401 || code === 403
+}

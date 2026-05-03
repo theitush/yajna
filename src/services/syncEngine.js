@@ -10,7 +10,7 @@
  */
 import { getDriveFileIds, readJsonFile, findFile } from './drive'
 import { getTasks, getNotes, getConfig, getReviews, putTasks, putNotes, putConfig, putJournal, putReviews, getAllAudio, putAudio, getAllNotesRaw, getJournal } from './db'
-import { getStoredToken, trySilentRefresh, storeToken, setAccessToken, scheduleTokenRefresh } from './auth'
+import { getStoredToken, trySilentRefresh, storeToken, setAccessToken, scheduleTokenRefresh, isAuthError } from './auth'
 import { mergeJournalEntry, pushReviews } from './sync'
 import { mergeBlocks, htmlToBlocks, purgeOldBlockTombstones } from '../lib/blocks'
 
@@ -129,11 +129,6 @@ export function retryNow() {
 }
 
 // --- Internal ---
-
-function isAuthError(e) {
-  const code = e?.status || e?.result?.error?.code
-  return code === 401 || code === 403
-}
 
 async function ensureValidToken() {
   const token = await getStoredToken()
@@ -415,7 +410,9 @@ async function getRemoteHash(ids) {
       try {
         journalFileId = await findFile(ids.journalsFolderId, `${currentJournal.week}.json`)
         if (journalFileId) fileIds.push(journalFileId)
-      } catch {}
+      } catch (e) {
+        if (isAuthError(e)) throw e
+      }
     }
   }
 
@@ -427,7 +424,8 @@ async function getRemoteHash(ids) {
           fields: 'modifiedTime',
         })
         return res.result.modifiedTime
-      } catch {
+      } catch (e) {
+        if (isAuthError(e)) throw e
         return null
       }
     })

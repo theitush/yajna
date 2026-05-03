@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import useAppStore from './store/useAppStore'
-import { loadGAPI, initGAPI, getStoredToken, getTokenRemainingSeconds, startAuthRedirect, consumeAuthRedirect, storeToken, storeRefreshBlob, setAccessToken, trySilentRefresh, scheduleTokenRefresh } from './services/auth'
+import { loadGAPI, initGAPI, getStoredToken, getTokenRemainingSeconds, startAuthRedirect, consumeAuthRedirect, storeToken, storeRefreshBlob, setAccessToken, trySilentRefresh, scheduleTokenRefresh, isAuthError } from './services/auth'
 import { initDriveStructure } from './services/drive'
 import { getMeta, putMeta } from './services/db'
 import { requestStoragePersistence } from './services/storage'
@@ -71,7 +71,11 @@ export default function App() {
               await loadJournal(weekKey(today()))
             } catch (e) {
               console.error('Background Drive init after redirect failed:', e)
-              setSyncStatus({ state: 'offline' })
+              if (isAuthError(e)) {
+                setSyncStatus({ state: 'error', message: 'Session expired', isAuth: true })
+              } else {
+                setSyncStatus({ state: 'offline' })
+              }
             }
           })()
           return
@@ -128,11 +132,19 @@ export default function App() {
                 handleTokenExpired()
               } catch (e) {
                 console.warn('Background Drive connect network error:', e)
-                setSyncStatus({ state: 'offline' })
+                if (isAuthError(e)) {
+                  setSyncStatus({ state: 'error', message: 'Session expired', isAuth: true })
+                } else {
+                  setSyncStatus({ state: 'offline' })
+                }
               }
             } catch (e) {
               console.error('Background Drive connect failed:', e)
-              setSyncStatus({ state: 'offline' })
+              if (isAuthError(e)) {
+                setSyncStatus({ state: 'error', message: 'Session expired', isAuth: true })
+              } else {
+                setSyncStatus({ state: 'offline' })
+              }
             }
           })()
           return
@@ -177,8 +189,11 @@ export default function App() {
           }
         } catch (e) {
           console.warn('Visibility change refresh network error:', e)
-          // Don't logout on network error, just let it be offline
-          setSyncStatus({ state: 'offline' })
+          if (isAuthError(e)) {
+            setSyncStatus({ state: 'error', message: 'Session expired', isAuth: true })
+          } else {
+            setSyncStatus({ state: 'offline' })
+          }
         }
       })()
     }

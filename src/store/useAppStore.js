@@ -684,6 +684,11 @@ const useAppStore = create((set, get) => ({
       } else {
         set({ syncStatus: { state: 'offline' } })
       }
+      // Ensure the sync engine is at least initialized so retryNow() works
+      onSyncStatus((s) => {
+        useAppStore.getState().setSyncStatus(s)
+      })
+      startSyncEngine((data) => set(data), 1000, () => get())
     } finally {
       set({ syncing: false })
     }
