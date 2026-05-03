@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useRef, useCallback } from 'react'
+import { v4 as uuid } from 'uuid'
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { getAllJournals } from '../services/db'
@@ -72,9 +73,12 @@ function CommentEditButton({ hasComment, onClick }) {
   )
 }
 
-function JournalBlock({ block, comments, commentsOpen, onOpenComment, onCloseComment, onAddComment }) {
+function JournalBlock({ block, comments, commentsOpen, onOpenComment, onCloseComment, onAddComment, editable = false, onSaveBlock }) {
   const [hovered, setHovered] = useState(false)
+  const [isEditing, setIsEditing] = useState(false)
   const singleComment = comments?.[0] || null
+  const isRtl = block.html?.includes('dir="rtl"')
+
   const editor = useEditor({
     editable: false,
     extensions: [
@@ -94,6 +98,37 @@ function JournalBlock({ block, comments, commentsOpen, onOpenComment, onCloseCom
     }
   }, [editor, block.html])
 
+  useEffect(() => {
+    if (!editor) return
+    editor.setEditable(isEditing)
+    if (isEditing) {
+      editor.commands.focus('end')
+    }
+  }, [editor, isEditing])
+
+  useEffect(() => {
+    if (!editor) return
+    const handleBlur = () => {
+      if (isEditing) {
+        const html = editor.getHTML()
+        if (html !== block.html) {
+          onSaveBlock(html)
+        }
+        setIsEditing(false)
+      }
+    }
+    editor.on('blur', handleBlur)
+    return () => editor.off('blur', handleBlur)
+  }, [editor, isEditing, block.html, onSaveBlock])
+
+  const handleBlockClick = (e) => {
+    if (editable) {
+      setIsEditing(true)
+    } else {
+      onOpenComment()
+    }
+  }
+
   return (
     <div
       onMouseEnter={() => setHovered(true)}
@@ -104,29 +139,47 @@ function JournalBlock({ block, comments, commentsOpen, onOpenComment, onCloseCom
         borderBottom: commentsOpen ? '1px solid var(--border-light)' : '1px solid transparent',
       }}
     >
-      <div style={{ position: 'absolute', top: '8px', right: 0, opacity: hovered || commentsOpen ? 1 : 0, transition: 'opacity 0.15s' }}>
-        <CommentEditButton hasComment={Boolean(singleComment)} onClick={onOpenComment} />
-      </div>
+      {!editable && (
+        <div style={{ 
+          position: 'absolute', 
+          top: '8px', 
+          [isRtl ? 'left' : 'right']: 0, 
+          opacity: hovered || commentsOpen ? 1 : 0, 
+          transition: 'opacity 0.15s' 
+        }}>
+          <CommentEditButton hasComment={Boolean(singleComment)} onClick={onOpenComment} />
+        </div>
+      )}
 
       <div
-        onClick={onOpenComment}
+        onClick={handleBlockClick}
         style={{
-          paddingRight: '96px',
-          cursor: 'pointer',
+          paddingRight: (!editable && !isRtl) ? '96px' : '0',
+          paddingLeft: (!editable && isRtl) ? '96px' : '0',
+          cursor: editable ? 'text' : 'pointer',
           borderRadius: '8px',
+          textAlign: 'start',
         }}
       >
         <EditorContent editor={editor} />
       </div>
 
-      {!commentsOpen && singleComment && (
-        <div style={{ marginTop: '10px', paddingRight: '96px' }}>
+      {!editable && !commentsOpen && singleComment && (
+        <div style={{ 
+          marginTop: '10px', 
+          paddingRight: isRtl ? '0' : '96px',
+          paddingLeft: isRtl ? '96px' : '0'
+        }}>
           <CollapsedCommentPreview comment={singleComment} onClick={onOpenComment} />
         </div>
       )}
 
       {commentsOpen && (
-        <div style={{ marginTop: '12px', paddingRight: '12px' }}>
+        <div style={{ 
+          marginTop: '12px', 
+          paddingRight: isRtl ? '0' : '12px',
+          paddingLeft: isRtl ? '12px' : '0'
+        }}>
           <SingleCommentEditor
             key={singleComment?.updatedAt || singleComment?.createdAt || 'new-comment'}
             comment={singleComment}
@@ -143,16 +196,18 @@ function JournalBlock({ block, comments, commentsOpen, onOpenComment, onCloseCom
   )
 }
 
-function ReviewJournalPane({ day, title = 'Journal', openCommentKey, onOpenComment, onCloseComment, onToggleReview, onAddBlockComment }) {
+function ReviewJournalPane({ day, title = 'Journal', openCommentKey, onOpenComment, onCloseComment, onToggleReview, onAddBlockComment, editable = false, onUpdateBlock }) {
   const blocks = (day.journalEntry?.blocks || []).filter(block => !block.deleted)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div style={paneHeaderStyle}>
         <span style={paneLabelStyle}>{title}</span>
-        <IconButton active={day.journalReviewed} onClick={onToggleReview} title={day.journalReviewed ? 'Unreview journal' : 'Review journal'}>
-          <CheckIcon />
-        </IconButton>
+        {!editable && (
+          <IconButton active={day.journalReviewed} onClick={onToggleReview} title={day.journalReviewed ? 'Unreview journal' : 'Review journal'}>
+            <CheckIcon />
+          </IconButton>
+        )}
       </div>
 
       <div
@@ -165,9 +220,18 @@ function ReviewJournalPane({ day, title = 'Journal', openCommentKey, onOpenComme
         }}
       >
         {blocks.length === 0 ? (
-          <div style={emptyStateStyle}>
-            No journal entry for this day.
-          </div>
+          editable ? (
+            <div 
+              onClick={() => onUpdateBlock('initial-block', '<p></p>')}
+              style={{ ...emptyStateStyle, cursor: 'pointer', fontStyle: 'italic' }}
+            >
+              Click here to add a journal entry...
+            </div>
+          ) : (
+            <div style={emptyStateStyle}>
+              No journal entry for this day.
+            </div>
+          )
         ) : (
           blocks.map(block => (
             <JournalBlock
@@ -178,6 +242,8 @@ function ReviewJournalPane({ day, title = 'Journal', openCommentKey, onOpenComme
               onOpenComment={() => onOpenComment(`journal:${day.date}:${block.id}`)}
               onCloseComment={onCloseComment}
               onAddComment={text => onAddBlockComment(block.id, text)}
+              editable={editable}
+              onSaveBlock={html => onUpdateBlock(block.id, html)}
             />
           ))
         )}
@@ -186,43 +252,169 @@ function ReviewJournalPane({ day, title = 'Journal', openCommentKey, onOpenComme
   )
 }
 
-function ReviewTaskCard({ task, commentsOpen, onOpenComment, onCloseComment, onToggleReview, onAddComment }) {
+function ReviewTaskCard({ task, commentsOpen, onOpenComment, onCloseComment, onToggleReview, onAddComment, editable = false, onUpdateTask, onToggleCompletion }) {
+  const [isEditing, setIsEditing] = useState(false)
+  const [editTitle, setEditTitle] = useState(task.title || '')
+  const [editExplanation, setEditExplanation] = useState(task.explanation || '')
+  const [editFeedback, setEditFeedback] = useState(task.feedback || '')
+  const [editTags, setEditTags] = useState(task.tags || '')
+  const cardRef = useRef(null)
+
+  useEffect(() => {
+    setEditTitle(task.title || '')
+    setEditExplanation(task.explanation || '')
+    setEditFeedback(task.feedback || '')
+    setEditTags(task.tags || '')
+  }, [task])
+
   const singleComment = task.comments?.[task.comments.length - 1] || null
 
-  const tone = task.completed
+  const isCompleted = task.completed
+  const tone = isCompleted
     ? (task.reviewed ? 'completedReviewed' : 'completed')
     : (task.reviewed ? 'reviewed' : 'default')
 
+  const handleCommit = useCallback(() => {
+    if (isEditing) {
+      onUpdateTask({
+        title: editTitle,
+        explanation: editExplanation,
+        feedback: editFeedback,
+        tags: editTags
+      })
+      setIsEditing(false)
+    }
+  }, [isEditing, editTitle, editExplanation, editFeedback, editTags, onUpdateTask])
+
+  useEffect(() => {
+    if (!isEditing) return
+    const onClick = (e) => {
+      if (cardRef.current && !cardRef.current.contains(e.target)) {
+        handleCommit()
+      }
+    }
+    window.addEventListener('mousedown', onClick)
+    return () => window.removeEventListener('mousedown', onClick)
+  }, [isEditing, handleCommit])
+
+  const handleCardClick = () => {
+    if (editable) {
+      setIsEditing(true)
+    } else {
+      onOpenComment()
+    }
+  }
+
   return (
-    <article style={taskCardStyle(tone)}>
+    <article ref={cardRef} style={taskCardStyle(tone, editable)}>
       <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flexShrink: 0, paddingTop: '2px' }}>
-          <IconButton active={task.reviewed} onClick={onToggleReview} title={task.reviewed ? 'Unreview task' : 'Review task'}>
-            <CheckIcon />
-          </IconButton>
-          <CommentEditButton hasComment={Boolean(singleComment)} onClick={onOpenComment} />
+          {editable ? (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                onToggleCompletion()
+              }}
+              style={{
+                width: 22, height: 22,
+                borderRadius: '50%',
+                border: isCompleted ? 'none' : '2px solid var(--border-mid)',
+                background: isCompleted ? 'var(--green-500)' : 'transparent',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: 'white',
+                cursor: 'pointer',
+                boxShadow: isCompleted ? '0 0 0 3px rgba(16,185,129,0.2), 0 2px 12px rgba(16,185,129,0.35)' : 'none',
+                padding: 0,
+              }}
+              title={isCompleted ? 'Mark as active' : 'Mark as done'}
+            >
+              {isCompleted && <CheckIcon />}
+            </button>
+          ) : (
+            <>
+              <IconButton active={task.reviewed} onClick={onToggleReview} title={task.reviewed ? 'Unreview task' : 'Review task'}>
+                <CheckIcon />
+              </IconButton>
+              <CommentEditButton hasComment={Boolean(singleComment)} onClick={onOpenComment} />
+            </>
+          )}
         </div>
 
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-            <h3 dir="auto" style={taskTitleStyle(tone)}>{task.title?.trim() || 'Untitled'}</h3>
-          </div>
+          {isEditing ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <input
+                value={editTitle}
+                onChange={e => setEditTitle(e.target.value)}
+                placeholder="Title..."
+                style={{ ...commentInputStyle, minHeight: 'auto', fontWeight: 500 }}
+                autoFocus
+              />
+              <textarea
+                value={editExplanation}
+                onChange={e => setEditExplanation(e.target.value)}
+                placeholder="Explanation..."
+                style={{ ...commentInputStyle, minHeight: '40px' }}
+                rows={2}
+              />
+              <textarea
+                value={editFeedback}
+                onChange={e => setEditFeedback(e.target.value)}
+                placeholder="Feedback..."
+                style={{ ...commentInputStyle, minHeight: '40px', opacity: 0.8 }}
+                rows={2}
+              />
+              <input
+                value={editTags}
+                onChange={e => setEditTags(e.target.value)}
+                placeholder="Tags (e.g. #work #personal)..."
+                style={{ ...commentInputStyle, minHeight: 'auto' }}
+              />
+              <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                <button
+                  onClick={handleCommit}
+                  style={{
+                    fontSize: '11px', padding: '4px 12px', borderRadius: '6px',
+                    background: 'var(--accent)', color: 'white', border: 'none', cursor: 'pointer'
+                  }}
+                >
+                  Save
+                </button>
+                <button
+                  onClick={() => setIsEditing(false)}
+                  style={{
+                    fontSize: '11px', padding: '4px 12px', borderRadius: '6px',
+                    background: 'var(--bg-secondary)', color: 'var(--text-secondary)',
+                    border: '1px solid var(--border-light)', cursor: 'pointer'
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div onClick={handleCardClick} style={{ cursor: editable ? 'text' : 'pointer' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <h3 dir="auto" style={taskTitleStyle(tone)}>{task.title?.trim() || 'Untitled'}</h3>
+              </div>
 
-          {(task.explanation || task.feedback || task.tags) && (
-            <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              {task.explanation && <p dir="auto" style={taskTextStyle}>{task.explanation}</p>}
-              {task.feedback && <p dir="auto" style={{ ...taskTextStyle, color: 'var(--text-tertiary)' }}>{task.feedback}</p>}
-              {task.tags && <p dir="auto" style={{ ...taskTextStyle, color: 'var(--accent)' }}>{task.tags}</p>}
+              {(task.explanation || task.feedback || task.tags) && (
+                <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {task.explanation && <p dir="auto" style={taskTextStyle}>{task.explanation}</p>}
+                  {task.feedback && <p dir="auto" style={{ ...taskTextStyle, color: 'var(--text-tertiary)' }}>{task.feedback}</p>}
+                  {task.tags && <p dir="auto" style={{ ...taskTextStyle, color: 'var(--accent)' }}>{task.tags}</p>}
+                </div>
+              )}
             </div>
           )}
 
-          {!commentsOpen && singleComment && (
+          {!isEditing && !commentsOpen && singleComment && (
             <div style={{ marginTop: '12px' }}>
               <CollapsedCommentPreview comment={singleComment} onClick={onOpenComment} />
             </div>
           )}
 
-          {commentsOpen && (
+          {!isEditing && commentsOpen && (
             <div style={{ marginTop: '14px' }}>
               <SingleCommentEditor
                 key={singleComment?.updatedAt || singleComment?.createdAt || 'new-comment'}
@@ -242,7 +434,7 @@ function ReviewTaskCard({ task, commentsOpen, onOpenComment, onCloseComment, onT
   )
 }
 
-function TasksReviewPane({ day, openCommentKey, onOpenComment, onCloseComment, onToggleTask, onAddTaskComment }) {
+function TasksReviewPane({ day, openCommentKey, onOpenComment, onCloseComment, onToggleTask, onAddTaskComment, editable = false, onUpdateTask, onToggleCompletion }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div style={paneHeaderStyle}>
@@ -265,6 +457,9 @@ function TasksReviewPane({ day, openCommentKey, onOpenComment, onCloseComment, o
               onCloseComment={onCloseComment}
               onToggleReview={() => onToggleTask(task)}
               onAddComment={text => onAddTaskComment(task.id, text)}
+              editable={editable}
+              onUpdateTask={updates => onUpdateTask(task.id, updates)}
+              onToggleCompletion={() => onToggleCompletion(task.id)}
             />
           ))
         )}
@@ -281,12 +476,15 @@ export default function ReviewPage() {
   const addTaskReviewComment = useAppStore(s => s.addTaskReviewComment)
   const setJournalEntryReviewed = useAppStore(s => s.setJournalEntryReviewed)
   const addJournalBlockComment = useAppStore(s => s.addJournalBlockComment)
+  const updateTask = useAppStore(s => s.updateTask)
+  const updateJournalEntry = useAppStore(s => s.updateJournalEntry)
   const syncAllJournals = useAppStore(s => s.syncAllJournals)
   const [journalDocs, setJournalDocs] = useState([])
   const [selectedDate, setSelectedDate] = useState(null)
   const [mobileView, setMobileView] = useState('list')
   const [mobilePanel, setMobilePanel] = useState('journal')
   const [openCommentKey, setOpenCommentKey] = useState(null)
+  const [mode, setMode] = useState('review') // 'review' | 'edit'
   const todayStr = today()
 
   useEffect(() => {
@@ -318,6 +516,75 @@ export default function ReviewPage() {
     setMobilePanel('journal')
     setOpenCommentKey(null)
     setMobileView('detail')
+  }
+
+  const handleUpdateJournalBlock = async (blockId, html) => {
+    if (!selectedDay) return
+    const priorBlocks = selectedDay.journalEntry?.blocks || []
+    
+    // Parse the incoming HTML to extract blocks. 
+    // We use a temporary container to let htmlToBlocks do the work.
+    const container = document.createElement('div')
+    container.innerHTML = html
+    
+    // If TipTap returned multiple top-level blocks (e.g. user pressed Enter),
+    // we need to preserve them as separate blocks so they can be commented on individually.
+    const incomingBlocks = Array.from(container.children).map((child, i) => {
+      const bid = child.getAttribute('data-bid') || (i === 0 && blockId !== 'initial-block' ? blockId : uuid())
+      return {
+        id: bid,
+        html: child.outerHTML,
+        updatedAt: new Date().toISOString()
+      }
+    })
+
+    let nextBlocks
+    if (blockId === 'initial-block' && priorBlocks.length === 0) {
+      nextBlocks = incomingBlocks
+    } else {
+      // Replace the old block with the new set of blocks
+      const idx = priorBlocks.findIndex(b => b.id === blockId)
+      if (idx === -1) {
+        nextBlocks = [...priorBlocks, ...incomingBlocks]
+      } else {
+        nextBlocks = [...priorBlocks]
+        nextBlocks.splice(idx, 1, ...incomingBlocks)
+      }
+    }
+
+    await updateJournalEntry(selectedDay.date, { blocks: nextBlocks })
+    
+    // Unreview if edited
+    if (selectedDay.journalReviewed) {
+      await setJournalEntryReviewed(selectedDay.date, false)
+    }
+  }
+
+  const handleUpdateTask = async (taskId, updates) => {
+    if (!selectedDay) return
+    await updateTask(taskId, updates)
+    // Unreview if edited
+    const task = selectedDay.tasks.find(t => t.id === taskId)
+    if (task?.reviewed) {
+      await setTaskReviewedForDate(taskId, selectedDay.date, false)
+    }
+  }
+
+  const handleToggleTaskCompletion = async (taskId) => {
+    if (!selectedDay) return
+    const snapshot = selectedDay.tasks.find(t => t.id === taskId)
+    if (!snapshot) return
+
+    const isNowDone = !snapshot.completed
+    await updateTask(taskId, {
+      status: isNowDone ? 'done' : 'active',
+      doneDate: isNowDone ? selectedDay.date : null
+    })
+
+    // Unreview if changed
+    if (snapshot.reviewed) {
+      await setTaskReviewedForDate(taskId, selectedDay.date, false)
+    }
   }
 
   return (
@@ -443,14 +710,22 @@ export default function ReviewPage() {
       >
         {selectedDay ? (
           <>
-            <div className="flex md:hidden" style={mobileDetailHeaderStyle}>
+            <div className="flex md:hidden" style={{ ...mobileDetailHeaderStyle, justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <button
+                  onClick={() => setMobileView('list')}
+                  style={mobileBackButtonStyle}
+                >
+                  &larr; Back
+                </button>
+                <span style={mobileDetailTitleStyle}>{formatDate(selectedDay.date)}</span>
+              </div>
               <button
-                onClick={() => setMobileView('list')}
-                style={mobileBackButtonStyle}
+                onClick={() => setMode(m => m === 'review' ? 'edit' : 'review')}
+                style={modeToggleStyle(mode)}
               >
-                &larr; Back
+                {mode === 'review' ? 'Review' : 'Edit'}
               </button>
-              <span style={mobileDetailTitleStyle}>{formatDate(selectedDay.date)} - Review</span>
             </div>
 
             <div className="flex md:hidden" style={{ borderBottom: '1px solid var(--border-light)' }}>
@@ -475,6 +750,12 @@ export default function ReviewPage() {
                   {formatDate(selectedDay.date)}
                 </h2>
               </div>
+              <button
+                onClick={() => setMode(m => m === 'review' ? 'edit' : 'review')}
+                style={modeToggleStyle(mode)}
+              >
+                {mode === 'review' ? 'Review' : 'Edit'}
+              </button>
             </header>
 
             <div className="hidden md:flex" style={{ flex: 1, minHeight: 0 }}>
@@ -486,6 +767,8 @@ export default function ReviewPage() {
                   onCloseComment={() => setOpenCommentKey(null)}
                   onToggleReview={() => setJournalEntryReviewed(selectedDay.date, !selectedDay.journalReviewed)}
                   onAddBlockComment={(blockId, text) => addJournalBlockComment(selectedDay.date, blockId, text)}
+                  editable={mode === 'edit'}
+                  onUpdateBlock={handleUpdateJournalBlock}
                 />
               </div>
               <div style={{ width: '360px', flexShrink: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
@@ -496,6 +779,9 @@ export default function ReviewPage() {
                   onCloseComment={() => setOpenCommentKey(null)}
                   onToggleTask={task => setTaskReviewedForDate(task.id, selectedDay.date, !task.reviewed)}
                   onAddTaskComment={(taskId, text) => addTaskReviewComment(taskId, selectedDay.date, text)}
+                  editable={mode === 'edit'}
+                  onUpdateTask={handleUpdateTask}
+                  onToggleCompletion={handleToggleTaskCompletion}
                 />
               </div>
             </div>
@@ -509,6 +795,8 @@ export default function ReviewPage() {
                   onCloseComment={() => setOpenCommentKey(null)}
                   onToggleReview={() => setJournalEntryReviewed(selectedDay.date, !selectedDay.journalReviewed)}
                   onAddBlockComment={(blockId, text) => addJournalBlockComment(selectedDay.date, blockId, text)}
+                  editable={mode === 'edit'}
+                  onUpdateBlock={handleUpdateJournalBlock}
                 />
               ) : (
                 <TasksReviewPane
@@ -518,6 +806,9 @@ export default function ReviewPage() {
                   onCloseComment={() => setOpenCommentKey(null)}
                   onToggleTask={task => setTaskReviewedForDate(task.id, selectedDay.date, !task.reviewed)}
                   onAddTaskComment={(taskId, text) => addTaskReviewComment(taskId, selectedDay.date, text)}
+                  editable={mode === 'edit'}
+                  onUpdateTask={handleUpdateTask}
+                  onToggleCompletion={handleToggleTaskCompletion}
                 />
               )}
             </div>
@@ -744,7 +1035,25 @@ const commentEditButtonStyle = {
   flexShrink: 0,
 }
 
-function taskCardStyle(tone) {
+function modeToggleStyle(mode) {
+  const isReview = mode === 'review'
+  return {
+    padding: '6px 16px',
+    borderRadius: '20px',
+    fontSize: '12px',
+    fontWeight: 600,
+    border: 'none',
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
+    background: isReview ? 'var(--green-500)' : '#EAB308', // Warm yellow
+    color: isReview ? 'white' : 'white',
+    boxShadow: isReview 
+      ? '0 2px 8px rgba(34,197,94,0.3)' 
+      : '0 2px 8px rgba(234,179,8,0.3)',
+  }
+}
+
+function taskCardStyle(tone, editable = false) {
   const palette = {
     default: {
       border: '1px solid var(--border-light)',
@@ -769,16 +1078,19 @@ function taskCardStyle(tone) {
     padding: '14px',
     border: palette.border,
     background: palette.background,
+    transition: 'all 0.2s ease',
+    boxShadow: editable ? '0 0 0 1px var(--border-light)' : 'none',
   }
 }
 
 function taskTitleStyle(tone) {
+  const isCompleted = tone === 'completed' || tone === 'completedReviewed'
   return {
     margin: 0,
     fontSize: '14px',
     fontWeight: 500,
-    color: 'var(--text-primary)',
-    textDecoration: tone === 'completed' || tone === 'completedReviewed' ? 'line-through' : 'none',
+    color: isCompleted ? 'var(--green-800)' : 'var(--text-primary)',
+    textDecoration: isCompleted ? 'line-through' : 'none',
     lineHeight: 1.4,
     textAlign: 'start',
     width: '100%',
