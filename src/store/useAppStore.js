@@ -19,10 +19,12 @@ const useAppStore = create((set, get) => ({
   // Auth / mode
   isAuthenticated: false,
   isInitializing: true,
+  initError: null,
   mode: null, // 'drive' | 'offline'
   userEmail: null,
   setAuthenticated: (v) => set({ isAuthenticated: v }),
   setInitializing: (v) => set({ isInitializing: v }),
+  setInitError: (v) => set({ initError: v }),
   setMode: (mode) => set({ mode }),
   fetchUserEmail: async () => {
     try {
@@ -649,7 +651,13 @@ const useAppStore = create((set, get) => ({
   syncing: false,
   lastSync: null,
   syncStatus: { state: 'offline' }, // { state: 'synced'|'syncing'|'offline'|'waiting', retryIn?: number }
-  setSyncStatus: (s) => set({ syncStatus: s, syncing: s.state === 'syncing' }),
+  setSyncStatus: (s) => {
+    const updates = { syncStatus: s, syncing: s.state === 'syncing' }
+    if (s.isAuth) {
+      updates.initError = s.message || 'Session expired. Please sign in again.'
+    }
+    set(updates)
+  },
   runInitialSync: async () => {
     set({ syncing: true, syncStatus: { state: 'syncing' } })
     try {
@@ -670,7 +678,12 @@ const useAppStore = create((set, get) => ({
       get().loadJournalTagPool()
     } catch (e) {
       console.error('Sync failed', e)
-      set({ syncStatus: { state: 'offline' } })
+      const code = e?.status || e?.result?.error?.code
+      if (code === 401 || code === 403) {
+        get().setSyncStatus({ state: 'error', message: 'Session expired', isAuth: true })
+      } else {
+        set({ syncStatus: { state: 'offline' } })
+      }
     } finally {
       set({ syncing: false })
     }

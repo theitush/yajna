@@ -20,14 +20,13 @@ import SettingsPage from './pages/SettingsPage'
 
 export default function App() {
   const {
-    isAuthenticated, isInitializing,
-    setAuthenticated, setInitializing,
+    isAuthenticated, isInitializing, initError,
+    setAuthenticated, setInitializing, setInitError,
     setMode, runInitialSync, bootOffline, loadJournal, fetchUserEmail, setSyncStatus,
   } = useAppStore()
   const syncStatus = useAppStore(s => s.syncStatus)
   const mode = useAppStore(s => s.mode)
   const [loginLoading, setLoginLoading] = useState(false)
-  const [initError, setInitError] = useState(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   const effectiveSyncStatus = mode === MODE_OFFLINE ? { state: 'offline' } : syncStatus

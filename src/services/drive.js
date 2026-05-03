@@ -114,7 +114,7 @@ export async function writeJsonFile(parentId, name, data, existingFileId = null)
   const token = window.gapi.client.getToken()?.access_token
 
   if (existingFileId) {
-    await fetch(
+    const res = await fetch(
       `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart`,
       {
         method: 'PATCH',
@@ -122,6 +122,12 @@ export async function writeJsonFile(parentId, name, data, existingFileId = null)
         body: form,
       }
     )
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      const error = new Error(err.error?.message || `Drive patch failed: ${res.status}`)
+      error.status = res.status
+      throw error
+    }
     return existingFileId
   } else {
     const res = await fetch(
@@ -132,6 +138,12 @@ export async function writeJsonFile(parentId, name, data, existingFileId = null)
         body: form,
       }
     )
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      const error = new Error(err.error?.message || `Drive create failed: ${res.status}`)
+      error.status = res.status
+      throw error
+    }
     const json = await res.json()
     return json.id
   }
@@ -159,6 +171,12 @@ export async function uploadAudioFile(parentId, name, blob) {
       body: form,
     }
   )
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    const error = new Error(err.error?.message || `Audio upload failed: ${res.status}`)
+    error.status = res.status
+    throw error
+  }
   return res.json()
 }
 

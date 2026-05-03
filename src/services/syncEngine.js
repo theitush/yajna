@@ -10,7 +10,7 @@
  */
 import { getDriveFileIds, readJsonFile, findFile } from './drive'
 import { getTasks, getNotes, getConfig, getReviews, putTasks, putNotes, putConfig, putJournal, putReviews, getAllAudio, putAudio, getAllNotesRaw, getJournal } from './db'
-import { getStoredToken } from './auth'
+import { getStoredToken, trySilentRefresh, storeToken, setAccessToken, scheduleTokenRefresh } from './auth'
 import { mergeJournalEntry, pushReviews } from './sync'
 import { mergeBlocks, htmlToBlocks, purgeOldBlockTombstones } from '../lib/blocks'
 
@@ -130,6 +130,32 @@ export function retryNow() {
 
 // --- Internal ---
 
+function isAuthError(e) {
+  const code = e?.status || e?.result?.error?.code
+  return code === 401 || code === 403
+}
+
+async function ensureValidToken() {
+  const token = await getStoredToken()
+  if (token) {
+    setAccessToken(token)
+    return true
+  }
+
+  // Token expired or missing — try background refresh
+  try {
+    const refreshed = await trySilentRefresh()
+    if (refreshed) {
+      await storeToken(refreshed.token, refreshed.expiresIn)
+      setAccessToken(refreshed.token)
+      return true
+    }
+  } catch (e) {
+    console.warn('Sync engine token refresh failed:', e)
+  }
+  return false
+}
+
 function handleOnline() {
   if (!running) return
   retryCount = 0
@@ -175,27 +201,24 @@ export function setPollInterval(ms) {
 }
 
 async function pollRemote(storeSetter) {
-  if (!running || !navigator.onLine) return
-  // Skip polling entirely if a push is in flight — our own upload is about to
-  // change the remote state, so any pull right now is stale by definition.
-  if (pushesInFlight > 0 || pendingPush) return
-
+  if (!running || pushesInFlight > 0) return
   const startGen = writeGeneration
-
   try {
-    const token = await getStoredToken()
-    if (!token) return
-
     const ids = await getDriveFileIds()
     if (!ids) return
 
+    // Ensure we have a valid token before starting network calls.
+    // If refresh fails, we'll hit the catch block and set status to unauthorized.
+    const hasToken = await ensureValidToken()
+    if (!hasToken) {
+      setStatus({ state: 'error', message: 'Session expired', isAuth: true })
+      return
+    }
+
     const { hash, journalFileId } = await getRemoteHash(ids)
     if (hash === lastRemoteHash) return
-    // Bail if a local write happened while we were fetching the hash
-    if (writeGeneration !== startGen || pushesInFlight > 0) return
 
     setStatus({ state: 'syncing' })
-
     const [tasks, notes, config, audioIndex, reviews] = await Promise.all([
       readJsonFile(ids.tasksFileId),
       readJsonFile(ids.notesFileId),
@@ -369,7 +392,9 @@ async function pollRemote(storeSetter) {
     setStatus({ state: 'synced' })
   } catch (e) {
     console.warn('Poll failed:', e.message || e)
-    if (!navigator.onLine) {
+    if (isAuthError(e)) {
+      setStatus({ state: 'error', message: 'Session expired', isAuth: true })
+    } else if (!navigator.onLine) {
       setStatus({ state: 'offline' })
     }
   }
@@ -465,6 +490,15 @@ async function executePush(pushFn) {
     scheduleRetry(pushFn)
     return
   }
+
+  // Ensure we have a valid token before starting network calls.
+  const hasToken = await ensureValidToken()
+  if (!hasToken) {
+    pendingPush = pushFn
+    setStatus({ state: 'error', message: 'Session expired', isAuth: true })
+    return
+  }
+
   setStatus({ state: 'syncing' })
   pushesInFlight++
   try {
@@ -480,7 +514,12 @@ async function executePush(pushFn) {
     } catch {}
   } catch (e) {
     console.warn('Push failed:', e.message || e)
-    scheduleRetry(pushFn)
+    if (isAuthError(e)) {
+      pendingPush = pushFn
+      setStatus({ state: 'error', message: 'Session expired', isAuth: true })
+    } else {
+      scheduleRetry(pushFn)
+    }
   } finally {
     pushesInFlight--
   }

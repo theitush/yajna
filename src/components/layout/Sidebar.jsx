@@ -15,6 +15,7 @@ const baseItems = [
 ]
 
 function statusDot(syncStatus) {
+  if (syncStatus.isAuth) return 'var(--red-500, #ef4444)'
   switch (syncStatus.state) {
     case 'synced': return 'var(--green-500)'
     case 'syncing': return 'var(--accent)'
@@ -24,6 +25,7 @@ function statusDot(syncStatus) {
 }
 
 function statusLabel(syncStatus) {
+  if (syncStatus.isAuth) return 'sign in'
   switch (syncStatus.state) {
     case 'synced': return 'synced'
     case 'syncing': return 'syncing\u2026'
@@ -37,7 +39,7 @@ function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
   const reviews = useAppStore(s => s.reviews)
   const reviewVersion = useAppStore(s => s.reviewVersion)
   const [journalDocs, setJournalDocs] = useState([])
-  const isClickable = syncStatus.state === 'waiting' || syncStatus.state === 'offline'
+  const isClickable = syncStatus.state === 'waiting' || syncStatus.state === 'offline' || syncStatus.isAuth
   const isDriveMode = useAppStore(s => s.mode === MODE_DRIVE)
 
   const reviewCount = useMemo(
@@ -65,6 +67,10 @@ function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
 
   const handleClick = () => {
     if (!isClickable) return
+    if (syncStatus.isAuth) {
+      handleConnectDrive()
+      return
+    }
     if (isDriveMode && syncStatus.state === 'offline') {
       retryNow()
     } else if (syncStatus.state === 'offline') {
