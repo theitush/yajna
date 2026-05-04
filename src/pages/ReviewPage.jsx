@@ -10,6 +10,19 @@ import { RTLExtension } from '../components/editor/RTLExtension'
 import { AudioNode } from '../components/editor/AudioNode'
 import { BlockIdExtension } from '../components/editor/BlockIdExtension'
 import { HeadingNoShortcut } from '../components/editor/HeadingNoShortcut'
+import TagSelector from '../components/TagSelector'
+
+const HASHTAG_RE = /(#[\p{L}\p{N}_-]+)/gu
+
+function renderWithHashtags(text) {
+  if (!text) return text
+  const parts = String(text).split(HASHTAG_RE)
+  return parts.map((part, i) =>
+    part.startsWith('#')
+      ? <span key={i} style={{ color: 'var(--accent)', fontWeight: 500 }}>{part}</span>
+      : part
+  )
+}
 
 function CollapsedCommentPreview({ comment, onClick }) {
   if (!comment) return null
@@ -252,7 +265,7 @@ function ReviewJournalPane({ day, title = 'Journal', openCommentKey, onOpenComme
   )
 }
 
-function ReviewTaskCard({ 
+function ReviewTaskCard({
   task, 
   commentsOpen, 
   onOpenComment, 
@@ -263,7 +276,8 @@ function ReviewTaskCard({
   onUpdateTask, 
   onToggleCompletion,
   defaultExpanded = false,
-  defaultEditingTitle = false
+  defaultEditingTitle = false,
+  allTags = []
 }) {
   const [isEditing, setIsEditing] = useState(defaultExpanded || defaultEditingTitle)
   const [editTitle, setEditTitle] = useState(task.title || '')
@@ -271,6 +285,8 @@ function ReviewTaskCard({
   const [editFeedback, setEditFeedback] = useState(task.feedback || '')
   const [editTags, setEditTags] = useState(task.tags || '')
   const cardRef = useRef(null)
+  const feedbackRef = useRef(null)
+  const tagInputRef = useRef(null)
 
   useEffect(() => {
     if (defaultEditingTitle || defaultExpanded) {
@@ -379,22 +395,43 @@ function ReviewTaskCard({
               <textarea
                 value={editExplanation}
                 onChange={e => setEditExplanation(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault()
+                    handleCommit()
+                  } else if (e.key === 'Tab' && !e.shiftKey) {
+                    e.preventDefault()
+                    feedbackRef.current?.focus()
+                  }
+                }}
                 placeholder="Explanation..."
                 style={{ ...commentInputStyle, minHeight: '40px' }}
                 rows={2}
               />
               <textarea
+                ref={feedbackRef}
                 value={editFeedback}
                 onChange={e => setEditFeedback(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault()
+                    handleCommit()
+                  } else if (e.key === 'Tab' && !e.shiftKey) {
+                    e.preventDefault()
+                    tagInputRef.current?.focus()
+                  }
+                }}
                 placeholder="Feedback..."
                 style={{ ...commentInputStyle, minHeight: '40px', opacity: 0.8 }}
                 rows={2}
               />
-              <input
+              <TagSelector
+                ref={tagInputRef}
                 value={editTags}
                 onChange={e => setEditTags(e.target.value)}
-                placeholder="Tags (e.g. #work #personal)..."
-                style={{ ...commentInputStyle, minHeight: 'auto' }}
+                allTags={allTags}
+                placeholder="Tags…"
+                onCommit={handleCommit}
               />
               <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
                 <button
@@ -426,9 +463,9 @@ function ReviewTaskCard({
 
               {(task.explanation || task.feedback || task.tags) && (
                 <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  {task.explanation && <p dir="auto" style={taskTextStyle}>{task.explanation}</p>}
-                  {task.feedback && <p dir="auto" style={{ ...taskTextStyle, color: 'var(--text-tertiary)' }}>{task.feedback}</p>}
-                  {task.tags && <p dir="auto" style={{ ...taskTextStyle, color: 'var(--accent)' }}>{task.tags}</p>}
+                  {task.explanation && <p dir="auto" style={taskTextStyle}>{renderWithHashtags(task.explanation)}</p>}
+                  {task.feedback && <p dir="auto" style={{ ...taskTextStyle, color: 'var(--text-tertiary)' }}>{renderWithHashtags(task.feedback)}</p>}
+                  {task.tags && <p dir="auto" style={{ ...taskTextStyle, color: 'var(--text-tertiary)' }}>{renderWithHashtags(task.tags)}</p>}
                 </div>
               )}
             </div>
@@ -460,7 +497,7 @@ function ReviewTaskCard({
   )
 }
 
-function TasksReviewPane({ day, openCommentKey, onOpenComment, onCloseComment, onToggleTask, onAddTaskComment, editable = false, onUpdateTask, onToggleCompletion, onAddTask }) {
+function TasksReviewPane({ day, openCommentKey, onOpenComment, onCloseComment, onToggleTask, onAddTaskComment, editable = false, onUpdateTask, onToggleCompletion, onAddTask, allTags }) {
   const [justAddedId, setJustAddedId] = useState(null)
 
   useEffect(() => {
@@ -517,6 +554,7 @@ function TasksReviewPane({ day, openCommentKey, onOpenComment, onCloseComment, o
               onToggleCompletion={() => onToggleCompletion(task.id)}
               defaultExpanded={task.id === justAddedId}
               defaultEditingTitle={task.id === justAddedId}
+              allTags={allTags}
             />
           ))
         )}
@@ -527,6 +565,9 @@ function TasksReviewPane({ day, openCommentKey, onOpenComment, onCloseComment, o
 
 export default function ReviewPage() {
   const tasks = useAppStore(s => s.tasks)
+  const notes = useAppStore(s => s.notes)
+  const currentJournal = useAppStore(s => s.currentJournal)
+  const journalTagPool = useAppStore(s => s.journalTagPool)
   const reviews = useAppStore(s => s.reviews)
   const reviewVersion = useAppStore(s => s.reviewVersion)
   const setTaskReviewedForDate = useAppStore(s => s.setTaskReviewedForDate)
@@ -544,6 +585,11 @@ export default function ReviewPage() {
   const [openCommentKey, setOpenCommentKey] = useState(null)
   const [mode, setMode] = useState('review') // 'review' | 'edit'
   const todayStr = today()
+
+  const allTags = useMemo(
+    () => useAppStore.getState().getAllTags(),
+    [tasks, notes, currentJournal, journalTagPool]
+  )
 
   useEffect(() => {
     syncAllJournals().catch(console.error)
@@ -846,6 +892,7 @@ export default function ReviewPage() {
                   onUpdateTask={handleUpdateTask}
                   onToggleCompletion={handleToggleTaskCompletion}
                   onAddTask={handleAddTask}
+                  allTags={allTags}
                 />
               </div>
             </div>
@@ -874,6 +921,7 @@ export default function ReviewPage() {
                   onUpdateTask={handleUpdateTask}
                   onToggleCompletion={handleToggleTaskCompletion}
                   onAddTask={handleAddTask}
+                  allTags={allTags}
                 />
               )}
             </div>
