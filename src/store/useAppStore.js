@@ -85,6 +85,29 @@ const useAppStore = create((set, get) => ({
     if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
     return task
   },
+  addTaskForDate: async (title, date, explanation = '') => {
+    const now = new Date().toISOString()
+    const maxOrder = get().tasks.reduce((m, t) => Math.max(m, t.order ?? 0), -1)
+    const task = {
+      id: uuid(),
+      title,
+      explanation,
+      feedback: '',
+      status: 'active',
+      createdDate: date,
+      doneDate: null,
+      dismissedDate: null,
+      scheduledDate: null,
+      order: maxOrder + 1,
+      createdAt: now,
+      updatedAt: now,
+    }
+    await putTask(task)
+    set(s => ({ tasks: [...s.tasks, task] }))
+    get().bumpReviewVersion()
+    if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
+    return task
+  },
   updateTask: async (id, updates) => {
     const tasks = get().tasks
     const task = tasks.find(t => t.id === id)

@@ -252,13 +252,33 @@ function ReviewJournalPane({ day, title = 'Journal', openCommentKey, onOpenComme
   )
 }
 
-function ReviewTaskCard({ task, commentsOpen, onOpenComment, onCloseComment, onToggleReview, onAddComment, editable = false, onUpdateTask, onToggleCompletion }) {
-  const [isEditing, setIsEditing] = useState(false)
+function ReviewTaskCard({ 
+  task, 
+  commentsOpen, 
+  onOpenComment, 
+  onCloseComment, 
+  onToggleReview, 
+  onAddComment, 
+  editable = false, 
+  onUpdateTask, 
+  onToggleCompletion,
+  defaultExpanded = false,
+  defaultEditingTitle = false
+}) {
+  const [isEditing, setIsEditing] = useState(defaultExpanded || defaultEditingTitle)
   const [editTitle, setEditTitle] = useState(task.title || '')
   const [editExplanation, setEditExplanation] = useState(task.explanation || '')
   const [editFeedback, setEditFeedback] = useState(task.feedback || '')
   const [editTags, setEditTags] = useState(task.tags || '')
   const cardRef = useRef(null)
+
+  useEffect(() => {
+    if (defaultEditingTitle || defaultExpanded) {
+      setIsEditing(true)
+    } else {
+      setIsEditing(false)
+    }
+  }, [defaultEditingTitle, defaultExpanded, task.id])
 
   useEffect(() => {
     setEditTitle(task.title || '')
@@ -346,6 +366,12 @@ function ReviewTaskCard({ task, commentsOpen, onOpenComment, onCloseComment, onT
               <input
                 value={editTitle}
                 onChange={e => setEditTitle(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    handleCommit()
+                  }
+                }}
                 placeholder="Title..."
                 style={{ ...commentInputStyle, minHeight: 'auto', fontWeight: 500 }}
                 autoFocus
@@ -434,7 +460,20 @@ function ReviewTaskCard({ task, commentsOpen, onOpenComment, onCloseComment, onT
   )
 }
 
-function TasksReviewPane({ day, openCommentKey, onOpenComment, onCloseComment, onToggleTask, onAddTaskComment, editable = false, onUpdateTask, onToggleCompletion }) {
+function TasksReviewPane({ day, openCommentKey, onOpenComment, onCloseComment, onToggleTask, onAddTaskComment, editable = false, onUpdateTask, onToggleCompletion, onAddTask }) {
+  const [justAddedId, setJustAddedId] = useState(null)
+
+  useEffect(() => {
+    setJustAddedId(null)
+  }, [day.date])
+
+  const handleAdd = async () => {
+    const task = await onAddTask('')
+    if (task) {
+      setJustAddedId(task.id)
+    }
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div style={paneHeaderStyle}>
@@ -442,6 +481,22 @@ function TasksReviewPane({ day, openCommentKey, onOpenComment, onCloseComment, o
           <span style={paneLabelStyle}>Tasks</span>
           <span style={headerCountStyle}>{day.tasks.length}</span>
         </div>
+        {editable && (
+          <button
+            onClick={handleAdd}
+            style={{
+              fontSize: '12px', fontWeight: 500,
+              color: 'var(--accent)',
+              background: 'var(--accent-light)',
+              border: 'none', padding: '5px 14px',
+              borderRadius: '8px', cursor: 'pointer',
+              fontFamily: 'var(--font-body)',
+              transition: 'background 0.15s',
+            }}
+          >
+            + Add
+          </button>
+        )}
       </div>
 
       <div className="review-scroll" style={{ ...scrollPaneStyle, padding: '18px 16px 22px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -460,6 +515,8 @@ function TasksReviewPane({ day, openCommentKey, onOpenComment, onCloseComment, o
               editable={editable}
               onUpdateTask={updates => onUpdateTask(task.id, updates)}
               onToggleCompletion={() => onToggleCompletion(task.id)}
+              defaultExpanded={task.id === justAddedId}
+              defaultEditingTitle={task.id === justAddedId}
             />
           ))
         )}
@@ -477,6 +534,7 @@ export default function ReviewPage() {
   const setJournalEntryReviewed = useAppStore(s => s.setJournalEntryReviewed)
   const addJournalBlockComment = useAppStore(s => s.addJournalBlockComment)
   const updateTask = useAppStore(s => s.updateTask)
+  const addTaskForDate = useAppStore(s => s.addTaskForDate)
   const updateJournalEntry = useAppStore(s => s.updateJournalEntry)
   const syncAllJournals = useAppStore(s => s.syncAllJournals)
   const [journalDocs, setJournalDocs] = useState([])
@@ -585,6 +643,11 @@ export default function ReviewPage() {
     if (snapshot.reviewed) {
       await setTaskReviewedForDate(taskId, selectedDay.date, false)
     }
+  }
+
+  const handleAddTask = async (title) => {
+    if (!selectedDay) return
+    return await addTaskForDate(title, selectedDay.date)
   }
 
   return (
@@ -782,6 +845,7 @@ export default function ReviewPage() {
                   editable={mode === 'edit'}
                   onUpdateTask={handleUpdateTask}
                   onToggleCompletion={handleToggleTaskCompletion}
+                  onAddTask={handleAddTask}
                 />
               </div>
             </div>
@@ -809,6 +873,7 @@ export default function ReviewPage() {
                   editable={mode === 'edit'}
                   onUpdateTask={handleUpdateTask}
                   onToggleCompletion={handleToggleTaskCompletion}
+                  onAddTask={handleAddTask}
                 />
               )}
             </div>
@@ -1136,6 +1201,20 @@ const commentInputStyle = {
   fontFamily: 'var(--font-body)',
   outline: 'none',
   textAlign: 'start',
+}
+
+const addTaskInputStyle = {
+  width: '100%',
+  borderRadius: '10px',
+  border: '1px dashed var(--border-mid)',
+  background: 'transparent',
+  color: 'var(--text-primary)',
+  padding: '10px 14px',
+  fontSize: '13px',
+  fontFamily: 'var(--font-body)',
+  outline: 'none',
+  textAlign: 'start',
+  transition: 'all 0.2s ease',
 }
 
 const scrollPaneStyle = {
