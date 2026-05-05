@@ -79,6 +79,7 @@ function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags }) {
       const blocks = docToBlocks(editor.state.doc, serializer)
       clearTimeout(saveTimeout.current)
       saveTimeout.current = setTimeout(() => {
+        saveTimeout.current = null
         const tags = extractTags(editor.getText())
         onUpdate(note.id, { body, blocks, tags })
       }, 800)

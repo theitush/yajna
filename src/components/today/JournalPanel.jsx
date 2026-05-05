@@ -90,6 +90,7 @@ export default function JournalPanel({ onInsertText }) {
       const blocks = docToBlocks(editor.state.doc, serializer)
       clearTimeout(saveTimeout.current)
       saveTimeout.current = setTimeout(() => {
+        saveTimeout.current = null
         updateJournalEntry(todayStr, { html, blocks })
       }, 800)
     },
