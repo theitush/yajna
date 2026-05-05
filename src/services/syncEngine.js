@@ -39,6 +39,14 @@ let _storeGetter = null
 // fetched predates the user's local change and would clobber it.
 let writeGeneration = 0
 let pushesInFlight = 0
+// When true, the next pollRemote skips the modifiedTime hash check and
+// fetches directly. Set on engine start and on tab visibility/focus, since
+// in those cases we almost always need fresh data and the hash round-trip
+// is pure latency.
+let forceNextPoll = true
+// week (e.g. "2026-W18") → Drive fileId. Avoids a Drive list call on every
+// poll just to resolve the current week's journal file.
+const journalFileIdCache = new Map()
 
 export function notifyLocalWrite() {
   writeGeneration++
@@ -74,13 +82,26 @@ export function startSyncEngine(storeSetter, intervalMs, storeGetter) {
 
   window.addEventListener('online', handleOnline)
   window.addEventListener('offline', handleOffline)
+  document.addEventListener('visibilitychange', handleVisibility)
+  window.addEventListener('focus', handleVisibility)
 
   if (!navigator.onLine) {
     setStatus({ state: 'offline' })
   } else {
     setStatus({ state: 'synced' })
+    forceNextPoll = true
     startPolling(storeSetter)
   }
+}
+
+function handleVisibility() {
+  if (!running) return
+  if (document.visibilityState === 'hidden') return
+  if (!navigator.onLine) return
+  // Force a fetch right now without waiting for the next interval tick or
+  // paying for the modifiedTime hash check first.
+  forceNextPoll = true
+  pollRemote(_storeSetter)
 }
 
 /**
@@ -99,6 +120,8 @@ export function stopSyncEngine() {
   lastRemoteHash = null
   window.removeEventListener('online', handleOnline)
   window.removeEventListener('offline', handleOffline)
+  document.removeEventListener('visibilitychange', handleVisibility)
+  window.removeEventListener('focus', handleVisibility)
   setStatus({ state: 'offline' })
 }
 
@@ -210,8 +233,20 @@ async function pollRemote(storeSetter) {
       return
     }
 
-    const { hash, journalFileId } = await getRemoteHash(ids)
-    if (hash === lastRemoteHash) return
+    let hash = null
+    let journalFileId = null
+    const forced = forceNextPoll
+    if (forced) {
+      forceNextPoll = false
+      // On forced polls (engine start, tab focus) we still need the journal
+      // fileId, but skip the modifiedTime hash round-trip.
+      journalFileId = await getJournalFileIdForCurrentWeek(ids)
+    } else {
+      const res = await getRemoteHash(ids)
+      hash = res.hash
+      journalFileId = res.journalFileId
+      if (hash === lastRemoteHash) return
+    }
 
     setStatus({ state: 'syncing' })
     const [tasks, notes, config, audioIndex, reviews] = await Promise.all([
@@ -383,7 +418,15 @@ async function pollRemote(storeSetter) {
       storeSetter(update)
     }
 
-    lastRemoteHash = hash
+    if (forced) {
+      try {
+        lastRemoteHash = (await getRemoteHash(ids)).hash
+      } catch {
+        // Hash refresh is best-effort; next poll will retry.
+      }
+    } else {
+      lastRemoteHash = hash
+    }
     setStatus({ state: 'synced' })
   } catch (e) {
     console.warn('Poll failed:', e.message || e)
@@ -395,26 +438,30 @@ async function pollRemote(storeSetter) {
   }
 }
 
+async function getJournalFileIdForCurrentWeek(ids) {
+  if (!ids?.journalsFolderId || !_storeGetter) return null
+  const week = _storeGetter()?.currentJournal?.week
+  if (!week) return null
+  if (journalFileIdCache.has(week)) return journalFileIdCache.get(week)
+  try {
+    const fid = await findFile(ids.journalsFolderId, `${week}.json`)
+    if (fid) journalFileIdCache.set(week, fid)
+    return fid
+  } catch (e) {
+    if (isAuthError(e)) throw e
+    return null
+  }
+}
+
 async function getRemoteHash(ids) {
   const token = window.gapi?.client?.getToken()?.access_token
   if (!token) return { hash: null, journalFileId: null }
 
   const fileIds = [ids.tasksFileId, ids.notesFileId, ids.configFileId]
   if (ids.audioIndexFileId) fileIds.push(ids.audioIndexFileId)
-  let journalFileId = null
 
-  // Find the current journal file and include it in the hash
-  if (ids.journalsFolderId && _storeGetter) {
-    const currentJournal = _storeGetter()?.currentJournal
-    if (currentJournal?.week) {
-      try {
-        journalFileId = await findFile(ids.journalsFolderId, `${currentJournal.week}.json`)
-        if (journalFileId) fileIds.push(journalFileId)
-      } catch (e) {
-        if (isAuthError(e)) throw e
-      }
-    }
-  }
+  const journalFileId = await getJournalFileIdForCurrentWeek(ids)
+  if (journalFileId) fileIds.push(journalFileId)
 
   const times = await Promise.all(
     fileIds.map(async (fid) => {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
@@ -48,7 +48,7 @@ function extractTags(text) {
 }
 
 function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags }) {
-  const saveTimeout = { current: null }
+  const saveTimeout = useRef(null)
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleValue, setTitleValue] = useState(note?.title || '')
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -87,15 +87,21 @@ function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags }) {
 
   useEffect(() => {
     if (!editor || !note) return
-    const current = editor.getHTML()
-    const noteHtml = note.body ?? blocksToHtml(note.blocks) ?? ''
-    if (current !== noteHtml) {
-      editor.commands.setContent(noteHtml, false)
-    }
     setTitleValue(note.title || '')
     setEditingTitle(false)
     setConfirmDelete(false)
   }, [note?.id])
+
+  const remoteHtml = note ? (note.body ?? blocksToHtml(note.blocks) ?? '') : ''
+  useEffect(() => {
+    if (!editor || !note) return
+    if (saveTimeout.current) return
+    const current = editor.getHTML()
+    if (current !== remoteHtml) {
+      editor.commands.setContent(remoteHtml, { emitUpdate: false })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, note?.id, remoteHtml])
 
   useEffect(() => {
     if (onEditorReady) onEditorReady(editor || null)
