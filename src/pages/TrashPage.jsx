@@ -181,14 +181,44 @@ function NoteTrashCard({ note, onPurge, onRestore }) {
   )
 }
 
-function AudioTrashCard({ audio, onPurge, onRestore }) {
+function AudioTrashCard({ audio, onPurge, onRestore, getAudioReferenceCount }) {
   const [confirm, setConfirm] = useState(false)
   const [restoreError, setRestoreError] = useState(null)
+  const [purgeError, setPurgeError] = useState(null)
+  const [refState, setRefState] = useState({ loading: false, total: null, notes: 0, journals: 0 })
   const handleRestore = async () => {
     setRestoreError(null)
     const result = await onRestore(audio.id)
     if (result && result.ok === false) setRestoreError(result.reason || 'Could not restore.')
   }
+  const handlePurge = async () => {
+    if (refState.loading) return
+    setPurgeError(null)
+    const result = await onPurge(audio.id)
+    if (result && result.ok === false) setPurgeError(result.reason || 'Could not delete.')
+  }
+
+  useEffect(() => {
+    if (!confirm) {
+      setPurgeError(null)
+      setRefState({ loading: false, total: null, notes: 0, journals: 0 })
+      return
+    }
+    let cancelled = false
+    setRefState({ loading: true, total: null, notes: 0, journals: 0 })
+    ;(async () => {
+      try {
+        const refs = await getAudioReferenceCount(audio.id)
+        if (cancelled) return
+        setRefState({ loading: false, total: refs?.total ?? 0, notes: refs?.notes ?? 0, journals: refs?.journals ?? 0 })
+      } catch {
+        if (cancelled) return
+        setRefState({ loading: false, total: null, notes: 0, journals: 0 })
+      }
+    })()
+    return () => { cancelled = true }
+  }, [confirm, audio.id, getAudioReferenceCount])
+
   const html = `<div data-audio-id="${audio.id}" data-duration="${audio.duration || 0}"></div>`
   const editor = useEditor({
     extensions: [
@@ -223,10 +253,33 @@ function AudioTrashCard({ audio, onPurge, onRestore }) {
       {restoreError && (
         <p style={{ fontSize: '12px', color: '#FCA5A5', margin: 0 }}>{restoreError}</p>
       )}
+      {purgeError && (
+        <p style={{ fontSize: '12px', color: '#FCA5A5', margin: 0 }}>{purgeError}</p>
+      )}
       <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
         {confirm ? (
           <>
-            <button style={dangerBtn} onClick={() => onPurge(audio.id)}>Delete forever</button>
+            {refState.total === 0 && (
+              <div style={{ flex: 1, fontSize: '12px', color: 'var(--text-tertiary)', paddingRight: '8px', alignSelf: 'center' }}>
+                This recording doesn’t have any more references in notes/journals, so we’ll be removing its audio file.
+              </div>
+            )}
+            {refState.loading && (
+              <div style={{ flex: 1, fontSize: '12px', color: 'var(--text-tertiary)', paddingRight: '8px', alignSelf: 'center' }}>
+                Checking references…
+              </div>
+            )}
+            <button
+              style={{
+                ...dangerBtn,
+                opacity: refState.loading ? 0.6 : 1,
+                cursor: refState.loading ? 'not-allowed' : 'pointer',
+              }}
+              onClick={handlePurge}
+              disabled={refState.loading}
+            >
+              Delete forever
+            </button>
             <button style={subtleBtn} onClick={() => setConfirm(false)}>Cancel</button>
           </>
         ) : (
@@ -251,6 +304,7 @@ export default function TrashPage() {
   const restoreTrashedTask = useAppStore(s => s.restoreTrashedTask)
   const restoreTrashedNote = useAppStore(s => s.restoreTrashedNote)
   const restoreTrashedAudio = useAppStore(s => s.restoreTrashedAudio)
+  const getAudioReferenceCount = useAppStore(s => s.getAudioReferenceCount)
 
   useEffect(() => { loadTrash() }, [loadTrash])
 
@@ -303,7 +357,15 @@ export default function TrashPage() {
           <section>
             <h2 style={sectionHeaderStyle}>Audio</h2>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {audio.map(a => <AudioTrashCard key={a.id} audio={a} onPurge={purgeTrashedAudio} onRestore={restoreTrashedAudio} />)}
+              {audio.map(a => (
+                <AudioTrashCard
+                  key={a.id}
+                  audio={a}
+                  onPurge={purgeTrashedAudio}
+                  onRestore={restoreTrashedAudio}
+                  getAudioReferenceCount={getAudioReferenceCount}
+                />
+              ))}
             </div>
           </section>
         )}

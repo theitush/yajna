@@ -15,6 +15,18 @@ import { pushAudio, pushAudioMetadata, pushPendingAudio, ensureAudioLocal, softD
 import { putAudio, getAudio, getReviews, putReviews } from '../services/db'
 import { stampBlocks, stampBlocksFromDoc, blocksToHtml } from '../lib/blocks'
 
+function collectAudioIdsFromHtml(html) {
+  const ids = []
+  if (!html) return ids
+  const container = document.createElement('div')
+  container.innerHTML = html
+  for (const el of container.querySelectorAll('[data-audio-id]')) {
+    const id = el.getAttribute('data-audio-id')
+    if (id) ids.push(id)
+  }
+  return ids
+}
+
 const useAppStore = create((set, get) => ({
   // Auth / mode
   isAuthenticated: false,
@@ -626,10 +638,44 @@ const useAppStore = create((set, get) => ({
     set({ trashedAudio: all.filter(a => a.deleted) })
     return { ok: true }
   },
+  getAudioReferenceCount: async (audioId) => {
+    if (!audioId) return { total: 0, notes: 0, journals: 0 }
+    const [notesRaw, journals] = await Promise.all([getAllNotesRaw(), getAllJournals()])
+    let notesCount = 0
+    let journalsCount = 0
+
+    for (const n of notesRaw || []) {
+      if (!n || n.purged) continue
+      const ids = collectAudioIdsFromBlocks(n.blocks)
+      for (const id of ids) if (id === audioId) notesCount++
+    }
+
+    for (const doc of journals || []) {
+      const entries = doc?.entries || {}
+      for (const entry of Object.values(entries)) {
+        if (!entry) continue
+        const ids = Array.isArray(entry.blocks)
+          ? collectAudioIdsFromBlocks(entry.blocks)
+          : collectAudioIdsFromHtml(entry.content ?? blocksToHtml(entry.blocks))
+        for (const id of ids) if (id === audioId) journalsCount++
+      }
+    }
+
+    return { total: notesCount + journalsCount, notes: notesCount, journals: journalsCount }
+  },
   purgeTrashedAudio: async (id) => {
+    const refs = await get().getAudioReferenceCount(id)
+    if (refs.total > 0) {
+      await restoreAudio(id)
+      const all = await getAllAudio()
+      set({ trashedAudio: all.filter(a => a.deleted) })
+      return { ok: true, keptAudioFile: true }
+    }
+
     await hardDeleteAudio(id)
     const all = await getAllAudio()
     set({ trashedAudio: all.filter(a => a.deleted) })
+    return { ok: true, removedAudioFile: true }
   },
   purgeTrashedTask: async (id) => {
     // Keep the tombstone so other devices see the delete, but mark it purged
