@@ -212,9 +212,25 @@ export async function downloadFileBlob(fileId) {
  * Initialize the full folder structure and return all file ids
  */
 export async function initDriveStructure() {
-  const rootId = await getOrCreateAppFolder()
-  const journalsFolderId = await getOrCreateSubfolder(rootId, 'journals')
-  const audioFolderId = await getOrCreateSubfolder(rootId, 'audio')
+  const t0 = performance.now()
+  const lap = (label, from) => { console.log(`[drive-init] ${label}: ${(performance.now() - from).toFixed(0)}ms`); return performance.now() }
+
+  // If we already have a fully-populated ids cache, skip all the lookups —
+  // initDriveStructure on a warm start should be a no-op.
+  const cached = await getMeta(FILES_KEY)
+  if (cached && cached.rootId && cached.journalsFolderId && cached.audioFolderId &&
+      cached.tasksFileId && cached.notesFileId && cached.configFileId &&
+      cached.audioIndexFileId && cached.reviewsFileId) {
+    lap('cache hit', t0)
+    return cached
+  }
+
+  let t = performance.now()
+  const rootId = await getOrCreateAppFolder(); t = lap('getOrCreateAppFolder', t)
+  const [journalsFolderId, audioFolderId] = await Promise.all([
+    getOrCreateSubfolder(rootId, 'journals'),
+    getOrCreateSubfolder(rootId, 'audio'),
+  ]); t = lap('subfolders', t)
 
   const ensureFile = async (name, defaultData) => {
     let fileId = await findFile(rootId, name)
@@ -230,13 +246,14 @@ export async function initDriveStructure() {
     ensureFile('config.json', {}),
     ensureFile('audio.json', []),
     ensureFile('reviews.json', {}),
-  ])
+  ]); t = lap('ensureFiles', t)
 
   const ids = {
     rootId, journalsFolderId, audioFolderId,
     tasksFileId, notesFileId, configFileId, audioIndexFileId, reviewsFileId
   }
   await putMeta(FILES_KEY, ids)
+  lap('TOTAL initDriveStructure', t0)
   return ids
 }
 

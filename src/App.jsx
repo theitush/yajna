@@ -107,17 +107,21 @@ export default function App() {
           setBlockingInitialSync(true)
           setSyncStatus({ state: 'syncing' })
           ;(async () => {
+            const tBoot = performance.now()
+            const lap = (label, from) => { console.log(`[boot] ${label}: ${(performance.now() - from).toFixed(0)}ms`); return performance.now() }
             try {
-              await loadGAPI()
-              await initGAPI()
-              const token = await getStoredToken()
+              let t = performance.now()
+              await loadGAPI(); t = lap('loadGAPI', t)
+              await initGAPI(); t = lap('initGAPI', t)
+              const token = await getStoredToken(); t = lap('getStoredToken', t)
               if (token) {
                 setAccessToken(token)
                 scheduleTokenRefresh(await getTokenRemainingSeconds(), handleTokenExpired)
-                fetchUserEmail()
-                await initDriveStructure()
-                await runInitialSync()
-                await loadJournal(weekKey(today()))
+                fetchUserEmail(); t = lap('fetchUserEmail (kicked off)', t)
+                await initDriveStructure(); t = lap('initDriveStructure', t)
+                await runInitialSync(); t = lap('runInitialSync', t)
+                await loadJournal(weekKey(today())); t = lap('loadJournal', t)
+                lap('TOTAL boot gate', tBoot)
                 return
               }
               // Token expired — try silent refresh
