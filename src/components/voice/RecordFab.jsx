@@ -31,10 +31,26 @@ export default function RecordFab({ editor }) {
     }
   }, [])
 
+  const starting = useRef(false)
+
   const start = async () => {
+    if (starting.current) return
+    starting.current = true
     setError(null)
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      // Defensive: release any stream left behind from a prior session
+      // (Firefox Android sometimes keeps tracks live across recordings,
+      // which makes the next getUserMedia hang.)
+      if (streamRef.current) {
+        try { streamRef.current.getTracks().forEach(t => t.stop()) } catch (e) { void e }
+        streamRef.current = null
+      }
+
+      const gumPromise = navigator.mediaDevices.getUserMedia({ audio: true })
+      const stream = await Promise.race([
+        gumPromise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('gum-timeout')), 5000)),
+      ])
       streamRef.current = stream
       chunks.current = []
       const rec = new MediaRecorder(stream)
@@ -52,8 +68,10 @@ export default function RecordFab({ editor }) {
       }, 250)
     } catch (e) {
       console.error(e)
-      setError('Mic denied')
+      setError(e?.message === 'gum-timeout' ? 'Mic unavailable — retry' : 'Mic denied')
       setTimeout(() => setError(null), 2500)
+    } finally {
+      starting.current = false
     }
   }
 
@@ -93,8 +111,16 @@ export default function RecordFab({ editor }) {
     }
   }
 
-  const onClick = () => {
+  const handleActivate = (e) => {
+    // Prevent the tap from being consumed by keyboard-dismiss on mobile Firefox
+    e.preventDefault()
     if (saving) return
+    // If a soft keyboard is open, blur the active editor so the viewport
+    // settles before getUserMedia runs.
+    const active = document.activeElement
+    if (active && typeof active.blur === 'function' && active !== document.body) {
+      active.blur()
+    }
     if (recording) stop()
     else start()
   }
@@ -134,7 +160,8 @@ export default function RecordFab({ editor }) {
         </span>
       )}
       <button
-        onClick={onClick}
+        onPointerDown={handleActivate}
+        onClick={(e) => e.preventDefault()}
         disabled={saving}
         aria-label={recording ? 'Stop recording' : 'Start recording'}
         title={recording ? 'Stop recording' : 'Record audio'}
@@ -149,6 +176,8 @@ export default function RecordFab({ editor }) {
           boxShadow: '0 6px 20px rgba(0,0,0,0.3)',
           transition: 'transform 0.12s, background 0.15s',
           transform: recording ? 'scale(1.05)' : 'scale(1)',
+          touchAction: 'manipulation',
+          WebkitTapHighlightColor: 'transparent',
         }}
       >
         {saving ? (
