@@ -49,19 +49,19 @@ const HashtagExtension = Extension.create({
   },
 })
 
-export default function JournalPanel({ onInsertText }) {
+export default function JournalPanel({ onInsertText, date }) {
   const currentJournal = useAppStore(s => s.currentJournal)
   const updateJournalEntry = useAppStore(s => s.updateJournalEntry)
   const loadJournal = useAppStore(s => s.loadJournal)
   const getTags = useAppStore.getState().getAllTags
   const saveTimeout = useRef(null)
-  const todayStr = today()
+  const targetDate = date || today()
 
   useEffect(() => {
-    loadJournal(weekKey(todayStr))
-  }, [])
+    loadJournal(weekKey(targetDate))
+  }, [targetDate])
 
-  const todayEntry = currentJournal?.entries?.[todayStr]
+  const todayEntry = currentJournal?.entries?.[targetDate]
   const content = (todayEntry?.content ?? blocksToHtml(todayEntry?.blocks)) || ''
 
   const editor = useEditor({
@@ -77,8 +77,8 @@ export default function JournalPanel({ onInsertText }) {
       AudioNode.configure({
         getSource: () => ({
           sourceType: 'journal',
-          sourceId: todayStr,
-          sourceTitle: formatDate(todayStr),
+          sourceId: targetDate,
+          sourceTitle: formatDate(targetDate),
         }),
       }),
       BlockIdExtension,
@@ -91,12 +91,12 @@ export default function JournalPanel({ onInsertText }) {
       clearTimeout(saveTimeout.current)
       saveTimeout.current = setTimeout(() => {
         saveTimeout.current = null
-        updateJournalEntry(todayStr, { html, blocks })
+        updateJournalEntry(targetDate, { html, blocks })
       }, 800)
     },
   })
 
-  const remoteEntry = currentJournal?.entries?.[todayStr]
+  const remoteEntry = currentJournal?.entries?.[targetDate]
   const remoteContent = remoteEntry?.content ?? blocksToHtml(remoteEntry?.blocks)
   useEffect(() => {
     if (!editor || !remoteContent) return
@@ -127,7 +127,7 @@ export default function JournalPanel({ onInsertText }) {
         borderBottom: '1px solid var(--border-light)',
       }}>
         <span style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-primary)' }}>
-          {formatDate(todayStr)}
+          {formatDate(targetDate)}
         </span>
       </div>
 

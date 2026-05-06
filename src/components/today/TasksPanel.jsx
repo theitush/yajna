@@ -1,12 +1,18 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import useAppStore from '../../store/useAppStore'
 import TaskCard from './TaskCard'
+import { today as todayFn } from '../../lib/dates'
+import { getTaskSnapshotForDate } from '../../lib/review'
 
-export default function TasksPanel() {
+export default function TasksPanel({ date }) {
   const tasks = useAppStore(s => s.tasks)
   const addTask = useAppStore(s => s.addTask)
+  const addTaskForDate = useAppStore(s => s.addTaskForDate)
   const reorderTasks = useAppStore(s => s.reorderTasks)
   const [justAddedId, setJustAddedId] = useState(null)
+  const todayStr = todayFn()
+  const targetDate = date || todayStr
+  const isToday = targetDate === todayStr
 
   const [draggingId, setDraggingId] = useState(null)
   const [cloneStyle, setCloneStyle] = useState(null)
@@ -27,14 +33,19 @@ export default function TasksPanel() {
     return { today: t, yesterday: y }
   })()
 
-  const todayTasks = tasks
-    .filter(task => {
-      if (task.status === 'active') return true
-      if (task.status === 'done' && (task.doneDate === today || task.doneDate === yesterday)) return true
-      if (task.status === 'scheduled' && task.scheduledDate && task.scheduledDate <= today) return true
-      return false
-    })
-    .sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity))
+  const todayTasks = isToday
+    ? tasks
+        .filter(task => {
+          if (task.status === 'active') return true
+          if (task.status === 'done' && (task.doneDate === today || task.doneDate === yesterday)) return true
+          if (task.status === 'scheduled' && task.scheduledDate && task.scheduledDate <= today) return true
+          return false
+        })
+        .sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity))
+    : tasks
+        .map(t => getTaskSnapshotForDate(t, targetDate) ? t : null)
+        .filter(Boolean)
+        .sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity))
 
   todayTasksRef.current = todayTasks
 
@@ -169,7 +180,7 @@ export default function TasksPanel() {
   }, [commitDrop])
 
   const handleAdd = async () => {
-    const task = await addTask('')
+    const task = isToday ? await addTask('') : await addTaskForDate('', targetDate)
     setJustAddedId(task.id)
   }
 
@@ -201,7 +212,7 @@ export default function TasksPanel() {
         borderBottom: '1px solid var(--border-light)',
       }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
-          <span style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)' }}>Today's todos</span>
+          <span style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)' }}>{isToday ? "Today's todos" : 'Tasks'}</span>
           {todayTasks.length > 0 && (
             <span style={{
               fontSize: '12px', color: 'var(--text-tertiary)',
@@ -231,8 +242,8 @@ export default function TasksPanel() {
       <div style={{ flex: 1, overflowY: 'auto', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
         {todayTasks.length === 0 && (
           <div style={{ textAlign: 'center', padding: '48px 0', color: 'var(--text-tertiary)' }}>
-            <p style={{ fontSize: '13px' }}>No tasks for today</p>
-            <p style={{ fontSize: '12px', marginTop: '4px' }}>Add a task or schedule something for today</p>
+            <p style={{ fontSize: '13px' }}>{isToday ? 'No tasks for today' : 'No tasks for this day'}</p>
+            <p style={{ fontSize: '12px', marginTop: '4px' }}>{isToday ? 'Add a task or schedule something for today' : 'Add one to get started'}</p>
           </div>
         )}
 
