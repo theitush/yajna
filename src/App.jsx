@@ -28,6 +28,7 @@ export default function App() {
   const mode = useAppStore(s => s.mode)
   const [loginLoading, setLoginLoading] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [blockingInitialSync, setBlockingInitialSync] = useState(false)
 
   const effectiveSyncStatus = mode === MODE_OFFLINE ? { state: 'offline' } : syncStatus
   const syncDotColor = {
@@ -58,6 +59,7 @@ export default function App() {
           setAuthenticated(true)
 
           // Finish Drive setup in background
+          setBlockingInitialSync(true)
           setSyncStatus({ state: 'syncing' })
           ;(async () => {
             try {
@@ -76,6 +78,8 @@ export default function App() {
               } else {
                 setSyncStatus({ state: 'offline' })
               }
+            } finally {
+              setBlockingInitialSync(false)
             }
           })()
           return
@@ -100,6 +104,7 @@ export default function App() {
           setAuthenticated(true)
 
           // Connect to Drive in the background — app is already usable
+          setBlockingInitialSync(true)
           setSyncStatus({ state: 'syncing' })
           ;(async () => {
             try {
@@ -145,6 +150,8 @@ export default function App() {
               } else {
                 setSyncStatus({ state: 'offline' })
               }
+            } finally {
+              setBlockingInitialSync(false)
             }
           })()
           return
@@ -200,6 +207,12 @@ export default function App() {
     document.addEventListener('visibilitychange', handleVisibilityChange)
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
   }, [])
+
+  useEffect(() => {
+    if (!blockingInitialSync) return
+    const el = document.activeElement
+    if (el && typeof el.blur === 'function') el.blur()
+  }, [blockingInitialSync])
 
   const handleLogin = async () => {
     setLoginLoading(true)
@@ -303,6 +316,26 @@ export default function App() {
             </Routes>
           </main>
         </div>
+        {blockingInitialSync && (
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              zIndex: 10000,
+              background: 'rgba(0,0,0,0.35)',
+              backdropFilter: 'blur(2px)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+              <div style={{ width: 22, height: 22, border: '2px solid rgba(255,255,255,0.35)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+              <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.9)' }}>Syncing\u2026</div>
+            </div>
+            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+          </div>
+        )}
       </div>
     </HashRouter>
   )
