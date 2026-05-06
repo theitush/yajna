@@ -3,6 +3,7 @@ import { getMeta, putMeta } from './db'
 
 const FOLDER_ID_KEY = 'drive_folder_id'
 const FILES_KEY = 'drive_files'
+const REVISIONS_KEY = 'drive_revisions'
 const API_TIMEOUT_MS = 15_000
 
 /** Wrap a promise with a timeout so Drive API calls can't hang forever. */
@@ -241,4 +242,31 @@ export async function initDriveStructure() {
 
 export async function getDriveFileIds() {
   return getMeta(FILES_KEY)
+}
+
+/**
+ * Fetch headRevisionId for a set of file ids in parallel.
+ * Returns { [fileId]: headRevisionId | null }.
+ */
+export async function getFileRevisions(fileIds) {
+  const entries = await Promise.all(fileIds.filter(Boolean).map(async (id) => {
+    try {
+      const res = await withTimeout(window.gapi.client.drive.files.get({
+        fileId: id,
+        fields: 'headRevisionId',
+      }))
+      return [id, res.result?.headRevisionId || null]
+    } catch {
+      return [id, null]
+    }
+  }))
+  return Object.fromEntries(entries)
+}
+
+export async function getStoredRevisions() {
+  return (await getMeta(REVISIONS_KEY)) || {}
+}
+
+export async function setStoredRevisions(revs) {
+  await putMeta(REVISIONS_KEY, revs)
 }

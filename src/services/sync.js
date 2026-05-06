@@ -11,6 +11,7 @@ import {
 import {
   getDriveFileIds, readJsonFile, writeJsonFile,
   findFile, writeJsonFile as driveWrite,
+  getFileRevisions, getStoredRevisions, setStoredRevisions,
 } from './drive'
 import { mergeBlocks, htmlToBlocks, purgeOldBlockTombstones } from '../lib/blocks'
 
@@ -108,16 +109,38 @@ function toMs(iso) {
  * Merge Drive data with local IndexedDB data, write result back to both.
  */
 export async function mergeWithDrive() {
+  const t0 = performance.now()
+  const mark = (label, from) => console.log(`[sync] ${label}: ${(performance.now() - from).toFixed(0)}ms`)
+
   const ids = await getDriveFileIds()
   if (!ids) return
+  mark('getDriveFileIds', t0)
 
-  const [remoteTasks, remoteNotes, remoteConfig, remoteReviews] = await Promise.all([
-    readJsonFile(ids.tasksFileId),
-    readJsonFile(ids.notesFileId),
-    readJsonFile(ids.configFileId),
-    readJsonFile(ids.reviewsFileId),
+  // Phase: fetch current head revisions for all 4 files in parallel, compare
+  // with what we last saw. Files whose revision is unchanged are skipped on
+  // both read and write — local IDB is already in sync with Drive for them.
+  const tRev = performance.now()
+  const fileIds = [ids.tasksFileId, ids.notesFileId, ids.configFileId, ids.reviewsFileId]
+  const [currentRevs, storedRevs] = await Promise.all([
+    getFileRevisions(fileIds),
+    getStoredRevisions(),
   ])
+  mark('revision check', tRev)
+  const unchanged = (id) => currentRevs[id] && storedRevs[id] === currentRevs[id]
 
+  // Phase: read only the files whose revision changed. Unchanged remotes are
+  // represented as null and skipped during merge (local is authoritative).
+  const tRead = performance.now()
+  const [remoteTasks, remoteNotes, remoteConfig, remoteReviews] = await Promise.all([
+    unchanged(ids.tasksFileId) ? null : readJsonFile(ids.tasksFileId),
+    unchanged(ids.notesFileId) ? null : readJsonFile(ids.notesFileId),
+    unchanged(ids.configFileId) ? null : readJsonFile(ids.configFileId),
+    unchanged(ids.reviewsFileId) ? null : readJsonFile(ids.reviewsFileId),
+  ])
+  const skipped = fileIds.filter(unchanged).length
+  mark(`drive reads (${4 - skipped}/4 fetched, ${skipped} skipped)`, tRead)
+
+  const tLocal = performance.now()
   // Use raw reads so tombstones participate in the merge.
   const [localTasks, localNotes, localConfig, localReviews] = await Promise.all([
     getAllTasksRaw(),
@@ -125,32 +148,73 @@ export async function mergeWithDrive() {
     getConfig(),
     getReviews(),
   ])
+  mark('local reads', tLocal)
 
-  const mergedTasks = mergeById(localTasks, Array.isArray(remoteTasks) ? remoteTasks : [])
-  const mergedNotes = mergeById(localNotes, Array.isArray(remoteNotes) ? remoteNotes : [], { mergeBody: true })
-  const mergedConfig = { ...(localConfig || {}), ...(remoteConfig || {}) }
-  const mergedReviews = { ...(localReviews || {}), ...(remoteReviews || {}) }
+  const tMerge = performance.now()
+  const mergedTasks = remoteTasks == null
+    ? localTasks
+    : mergeById(localTasks, Array.isArray(remoteTasks) ? remoteTasks : [])
+  const mergedNotes = remoteNotes == null
+    ? localNotes
+    : mergeById(localNotes, Array.isArray(remoteNotes) ? remoteNotes : [], { mergeBody: true })
+  const mergedConfig = remoteConfig == null
+    ? (localConfig || {})
+    : { ...(localConfig || {}), ...(remoteConfig || {}) }
+  const mergedReviews = remoteReviews == null
+    ? (localReviews || {})
+    : { ...(localReviews || {}), ...(remoteReviews || {}) }
+  mark('merge', tMerge)
 
-  // Write merged data (including tombstones) back to local and Drive
-  await Promise.all([
-    putTasks(mergedTasks),
-    putNotes(mergedNotes),
-    putConfig(mergedConfig),
-    putReviews(mergedReviews),
-  ])
-  await Promise.all([
-    writeJsonFile(ids.rootId, 'tasks.json', mergedTasks, ids.tasksFileId),
-    writeJsonFile(ids.rootId, 'notes.json', mergedNotes, ids.notesFileId),
-    writeJsonFile(ids.rootId, 'config.json', mergedConfig, ids.configFileId),
-    writeJsonFile(ids.rootId, 'reviews.json', mergedReviews, ids.reviewsFileId),
-  ])
+  // Decide which files actually need a writeback. If the merged result equals
+  // what's on Drive, skip the upload entirely. Reference equality covers the
+  // skipped-read case (merged === local && remote unchanged → Drive matches).
+  const tDiff = performance.now()
+  const tasksChanged = remoteTasks != null && !shallowEqualById(mergedTasks, remoteTasks)
+  const notesChanged = remoteNotes != null && !shallowEqualById(mergedNotes, remoteNotes)
+  const configChanged = remoteConfig != null && !shallowEqualObj(mergedConfig, remoteConfig)
+  const reviewsChanged = remoteReviews != null && !shallowEqualObj(mergedReviews, remoteReviews)
+  mark('diff', tDiff)
 
-  // Purge tombstones older than 30 days so storage doesn't grow unbounded.
-  // By this point all devices have had plenty of time to see the delete.
+  // Local writeback only for buckets we actually re-merged.
+  const tLocalWrite = performance.now()
+  const localWrites = []
+  if (remoteTasks != null) localWrites.push(putTasks(mergedTasks))
+  if (remoteNotes != null) localWrites.push(putNotes(mergedNotes))
+  if (remoteConfig != null) localWrites.push(putConfig(mergedConfig))
+  if (remoteReviews != null) localWrites.push(putReviews(mergedReviews))
+  await Promise.all(localWrites)
+  mark('local writes', tLocalWrite)
+
+  // Drive writeback only for buckets that actually differ from remote.
+  const tDriveWrite = performance.now()
+  const driveWrites = []
+  if (tasksChanged) driveWrites.push(writeJsonFile(ids.rootId, 'tasks.json', mergedTasks, ids.tasksFileId))
+  if (notesChanged) driveWrites.push(writeJsonFile(ids.rootId, 'notes.json', mergedNotes, ids.notesFileId))
+  if (configChanged) driveWrites.push(writeJsonFile(ids.rootId, 'config.json', mergedConfig, ids.configFileId))
+  if (reviewsChanged) driveWrites.push(writeJsonFile(ids.rootId, 'reviews.json', mergedReviews, ids.reviewsFileId))
+  await Promise.all(driveWrites)
+  mark(`drive writes (${driveWrites.length}/4)`, tDriveWrite)
+
+  // After uploads, fetch fresh revs for the files we wrote so the next startup
+  // can short-circuit. For unchanged files we keep the current rev we already saw.
+  const newRevs = { ...storedRevs, ...currentRevs }
+  if (driveWrites.length > 0) {
+    const writtenIds = []
+    if (tasksChanged) writtenIds.push(ids.tasksFileId)
+    if (notesChanged) writtenIds.push(ids.notesFileId)
+    if (configChanged) writtenIds.push(ids.configFileId)
+    if (reviewsChanged) writtenIds.push(ids.reviewsFileId)
+    const fresh = await getFileRevisions(writtenIds)
+    Object.assign(newRevs, fresh)
+  }
+
+  // Background maintenance — don't block the spinner on these.
+  setStoredRevisions(newRevs).catch(() => {})
+  putMeta(LAST_SYNC_KEY, Date.now()).catch(() => {})
   const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
-  await purgeTombstones(cutoff).catch(() => {})
+  purgeTombstones(cutoff).catch(() => {})
 
-  await putMeta(LAST_SYNC_KEY, Date.now())
+  mark('TOTAL mergeWithDrive', t0)
   // Return the UI-facing view (no tombstones) so callers hydrate the store cleanly.
   return {
     mergedTasks: mergedTasks.filter(t => !t.deleted),
@@ -158,6 +222,31 @@ export async function mergeWithDrive() {
     mergedConfig,
     mergedReviews,
   }
+}
+
+/**
+ * Cheap equality for id-keyed arrays: same length, same id+updatedAt set.
+ * Good enough to detect "merge produced nothing new vs. remote" without a
+ * full deep compare of every block.
+ */
+function shallowEqualById(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b)) return false
+  if (a.length !== b.length) return false
+  const map = new Map()
+  for (const it of b) map.set(it.id, it.updatedAt || it.createdAt || '')
+  for (const it of a) {
+    if (map.get(it.id) !== (it.updatedAt || it.createdAt || '')) return false
+  }
+  return true
+}
+
+function shallowEqualObj(a, b) {
+  if (a === b) return true
+  if (!a || !b) return false
+  const ak = Object.keys(a), bk = Object.keys(b)
+  if (ak.length !== bk.length) return false
+  for (const k of ak) if (a[k] !== b[k]) return false
+  return true
 }
 
 /**
