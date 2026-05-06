@@ -100,7 +100,13 @@ export default function RecordFab({ editor }) {
     try {
       const id = await saveAudioBlob(blob, duration)
       if (editor) {
-        editor.chain().focus().insertAudio({ audioId: id, duration }).run()
+        // If a node (e.g. another audio) is selected, collapse to its end so
+        // we insert AFTER it instead of replacing it.
+        const sel = editor.state.selection
+        if (sel && typeof sel.to === 'number' && sel.from !== sel.to) {
+          editor.commands.setTextSelection(sel.to)
+        }
+        editor.chain().focus().insertAudio({ audioId: id, duration, createdAt: new Date().toISOString() }).run()
       }
     } catch (e) {
       console.error(e)

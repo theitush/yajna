@@ -1,4 +1,5 @@
 import { Node, mergeAttributes } from '@tiptap/core'
+import { NodeSelection } from '@tiptap/pm/state'
 import { ReactNodeViewRenderer, NodeViewWrapper } from '@tiptap/react'
 import { useEffect, useRef, useState } from 'react'
 import useAppStore from '../../store/useAppStore'
@@ -17,11 +18,28 @@ const AUDIO_TINTS = [
   { bg: 'rgba(245,158,11,0.10)',  border: 'rgba(245,158,11,0.30)'  }, // amber
   { bg: 'rgba(14,165,233,0.10)',  border: 'rgba(14,165,233,0.30)'  }, // sky
 ]
-function tintFor(id) {
-  if (!id) return AUDIO_TINTS[0]
-  let h = 0
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
-  return AUDIO_TINTS[h % AUDIO_TINTS.length]
+// Rank audio nodes in the doc chronologically by createdAt (legacy clips
+// without createdAt fall back to doc order, sorted last). Returns the
+// 0-based rank of the audio with the given audioId.
+function rankInDoc(doc, targetId) {
+  const items = []
+  let docIdx = 0
+  doc.descendants((n) => {
+    if (n.type.name === 'audio' && n.attrs.audioId) {
+      items.push({ id: n.attrs.audioId, createdAt: n.attrs.createdAt, docIdx: docIdx++ })
+    }
+  })
+  items.sort((a, b) => {
+    const aT = a.createdAt ? Date.parse(a.createdAt) : NaN
+    const bT = b.createdAt ? Date.parse(b.createdAt) : NaN
+    const aValid = !Number.isNaN(aT)
+    const bValid = !Number.isNaN(bT)
+    if (aValid && bValid) return aT - bT
+    if (aValid) return -1
+    if (bValid) return 1
+    return a.docIdx - b.docIdx
+  })
+  return items.findIndex(it => it.id === targetId)
 }
 
 function formatTime(s) {
@@ -147,10 +165,24 @@ function AudioNodeView({ node, editor, getPos, extension }) {
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      if (transcript || !audioId) return
+      if (!audioId) return
       try {
         const rec = await getAudioRecord(audioId)
         if (cancelled || !rec) return
+        // Backfill createdAt onto the node attr for legacy clips so chronological
+        // tinting works without re-reading IDB on every render.
+        if (rec.createdAt && !node.attrs.createdAt && editor && typeof getPos === 'function') {
+          const pos = getPos()
+          if (pos != null && !readOnly) {
+            try {
+              editor.chain().command(({ tr }) => {
+                tr.setNodeMarkup(pos, undefined, { ...node.attrs, createdAt: rec.createdAt })
+                return true
+              }).run()
+            } catch { /* ignore */ }
+          }
+        }
+        if (transcript) return
         if (rec.duration && !duration) setDuration(rec.duration)
         if (rec.transcript) {
           setTranscript(rec.transcript)
@@ -243,16 +275,24 @@ function AudioNodeView({ node, editor, getPos, extension }) {
     const siblingNode = parent.child(targetIndex)
     const siblingSize = siblingNode.nodeSize
     const audioSlice = doc.slice(pos, pos + nodeSize)
+    let newAudioPos
     if (direction === 'up') {
       // Delete audio first (it's after sibling), then insert before sibling.
       tr.delete(pos, pos + nodeSize)
       tr.insert(siblingPos, audioSlice.content)
+      newAudioPos = siblingPos
     } else {
       // Sibling is after audio. Insert copy after sibling, then delete original.
       const insertAt = siblingPos + siblingSize
       tr.insert(insertAt, audioSlice.content)
       tr.delete(pos, pos + nodeSize)
+      // Original audio (size nodeSize) was deleted from before insertAt,
+      // so the new audio sits at insertAt - nodeSize == siblingPos.
+      newAudioPos = siblingPos
     }
+    try {
+      tr.setSelection(NodeSelection.create(tr.doc, newAudioPos))
+    } catch { /* ignore — fall back to whatever selection PM picks */ }
     editor.view.dispatch(tr)
   }
 
@@ -283,7 +323,8 @@ function AudioNodeView({ node, editor, getPos, extension }) {
   }
 
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0
-  const tint = tintFor(audioId)
+  const rank = editor ? rankInDoc(editor.state.doc, audioId) : -1
+  const tint = AUDIO_TINTS[((rank >= 0 ? rank : 0) % AUDIO_TINTS.length + AUDIO_TINTS.length) % AUDIO_TINTS.length]
 
   const seekTo = async (time) => {
     const t = Math.max(0, Math.min(duration || 0, time))
@@ -336,13 +377,13 @@ function AudioNodeView({ node, editor, getPos, extension }) {
       contentEditable={false}
       style={{
         margin: '8px 0',
-        background: selected ? 'var(--accent-light)' : tint.bg,
+        background: tint.bg,
         border: `1px solid ${selected ? 'var(--accent)' : tint.border}`,
         borderRadius: '10px',
         maxWidth: '360px',
         overflow: 'hidden',
         boxShadow: selected ? '0 0 0 2px var(--accent-light)' : 'none',
-        transition: 'background 0.12s, border-color 0.12s, box-shadow 0.12s',
+        transition: 'border-color 0.12s, box-shadow 0.12s',
       }}
     >
      <div style={{
@@ -749,6 +790,7 @@ export const AudioNode = Node.create({
     return {
       audioId: { default: null },
       duration: { default: 0 },
+      createdAt: { default: null },
     }
   },
 
@@ -759,16 +801,19 @@ export const AudioNode = Node.create({
         getAttrs: (el) => ({
           audioId: el.getAttribute('data-audio-id'),
           duration: parseFloat(el.getAttribute('data-duration')) || 0,
+          createdAt: el.getAttribute('data-created-at') || null,
         }),
       },
     ]
   },
 
   renderHTML({ HTMLAttributes, node }) {
-    return ['div', mergeAttributes(HTMLAttributes, {
+    const attrs = {
       'data-audio-id': node.attrs.audioId,
       'data-duration': String(node.attrs.duration || 0),
-    })]
+    }
+    if (node.attrs.createdAt) attrs['data-created-at'] = node.attrs.createdAt
+    return ['div', mergeAttributes(HTMLAttributes, attrs)]
   },
 
   addNodeView() {
