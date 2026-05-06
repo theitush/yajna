@@ -9,27 +9,30 @@ const isTouchDevice = typeof window !== 'undefined'
   && typeof window.matchMedia === 'function'
   && window.matchMedia('(hover: none) and (pointer: coarse)').matches
 
+// Shared palette: raw RGB triplets reused across audio tints + UI accents
+// (mode toggle, status pills, etc). Add new colors here so callers can
+// compose them at any alpha.
+export const PALETTE = {
+  indigo:  '99,102,241',
+  emerald: '16,185,129',
+  pink:    '236,72,153',
+  amber:   '245,158,11',
+  sky:     '14,165,233',
+}
+
 // 5 subtle tints so adjacent audio cards are visually distinguishable
 // even when collapsed. Stable per audioId so the color doesn't change.
 const AUDIO_TINTS = [
-  { bg: 'rgba(99,102,241,0.10)',  border: 'rgba(99,102,241,0.30)'  }, // indigo
-  { bg: 'rgba(16,185,129,0.10)',  border: 'rgba(16,185,129,0.30)'  }, // emerald
-  { bg: 'rgba(236,72,153,0.10)',  border: 'rgba(236,72,153,0.30)'  }, // pink
-  { bg: 'rgba(245,158,11,0.10)',  border: 'rgba(245,158,11,0.30)'  }, // amber
-  { bg: 'rgba(14,165,233,0.10)',  border: 'rgba(14,165,233,0.30)'  }, // sky
+  { bg: `rgba(${PALETTE.indigo},0.10)`,  border: `rgba(${PALETTE.indigo},0.30)`  },
+  { bg: `rgba(${PALETTE.emerald},0.10)`, border: `rgba(${PALETTE.emerald},0.30)` },
+  { bg: `rgba(${PALETTE.pink},0.10)`,    border: `rgba(${PALETTE.pink},0.30)`    },
+  { bg: `rgba(${PALETTE.amber},0.10)`,   border: `rgba(${PALETTE.amber},0.30)`   },
+  { bg: `rgba(${PALETTE.sky},0.10)`,     border: `rgba(${PALETTE.sky},0.30)`     },
 ]
-// Rank audio nodes in the doc chronologically by createdAt (legacy clips
-// without createdAt fall back to doc order, sorted last). Returns the
-// 0-based rank of the audio with the given audioId.
-function rankInDoc(doc, targetId) {
-  const items = []
-  let docIdx = 0
-  doc.descendants((n) => {
-    if (n.type.name === 'audio' && n.attrs.audioId) {
-      items.push({ id: n.attrs.audioId, createdAt: n.attrs.createdAt, docIdx: docIdx++ })
-    }
-  })
-  items.sort((a, b) => {
+// Build a Map<audioId, rank> from a list of { id, createdAt, docIdx } items,
+// sorted chronologically (legacy clips without createdAt fall back to doc order).
+export function rankAudioItems(items) {
+  const sorted = [...items].sort((a, b) => {
     const aT = a.createdAt ? Date.parse(a.createdAt) : NaN
     const bT = b.createdAt ? Date.parse(b.createdAt) : NaN
     const aValid = !Number.isNaN(aT)
@@ -39,7 +42,20 @@ function rankInDoc(doc, targetId) {
     if (bValid) return 1
     return a.docIdx - b.docIdx
   })
-  return items.findIndex(it => it.id === targetId)
+  const map = new Map()
+  sorted.forEach((it, i) => { if (it.id) map.set(it.id, i) })
+  return map
+}
+
+function rankInDoc(doc, targetId) {
+  const items = []
+  let docIdx = 0
+  doc.descendants((n) => {
+    if (n.type.name === 'audio' && n.attrs.audioId) {
+      items.push({ id: n.attrs.audioId, createdAt: n.attrs.createdAt, docIdx: docIdx++ })
+    }
+  })
+  return rankAudioItems(items).get(targetId) ?? -1
 }
 
 function formatTime(s) {
@@ -323,7 +339,15 @@ function AudioNodeView({ node, editor, getPos, extension }) {
   }
 
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0
-  const rank = editor ? rankInDoc(editor.state.doc, audioId) : -1
+  const getRank = extension?.options?.getRank
+  let rank = -1
+  if (typeof getRank === 'function') {
+    try {
+      const r = getRank(audioId, node.attrs.createdAt)
+      if (typeof r === 'number') rank = r
+    } catch { /* ignore */ }
+  }
+  if (rank < 0 && editor) rank = rankInDoc(editor.state.doc, audioId)
   const tint = AUDIO_TINTS[((rank >= 0 ? rank : 0) % AUDIO_TINTS.length + AUDIO_TINTS.length) % AUDIO_TINTS.length]
 
   const seekTo = async (time) => {
@@ -782,6 +806,11 @@ export const AudioNode = Node.create({
       // getSource: () => ({ sourceType, sourceId, sourceTitle })
       // Called when the user soft-deletes the audio so Trash can show where it came from.
       getSource: null,
+      // getRank: (audioId, createdAt) => number | null
+      // Optional override that takes precedence over in-doc ranking. Useful when
+      // rendering one block per editor (e.g. ReviewPage) and you want chronological
+      // tints to be consistent across the whole day's journal.
+      getRank: null,
       readOnly: false,
     }
   },

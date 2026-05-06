@@ -6,7 +6,7 @@ import useAppStore from '../store/useAppStore'
 import { formatDate, today } from '../lib/dates'
 import { buildReviewDays } from '../lib/review'
 import { RTLExtension } from '../components/editor/RTLExtension'
-import { AudioNode } from '../components/editor/AudioNode'
+import { AudioNode, PALETTE, rankAudioItems } from '../components/editor/AudioNode'
 import { BlockIdExtension } from '../components/editor/BlockIdExtension'
 import { HeadingNoShortcut } from '../components/editor/HeadingNoShortcut'
 import JournalPanel from '../components/today/JournalPanel'
@@ -86,7 +86,7 @@ function CommentEditButton({ hasComment, onClick }) {
   )
 }
 
-function JournalBlock({ block, comments, commentsOpen, onOpenComment, onCloseComment, onAddComment }) {
+function JournalBlock({ block, comments, commentsOpen, onOpenComment, onCloseComment, onAddComment, audioRanks }) {
   const [hovered, setHovered] = useState(false)
   const singleComment = comments?.[0] || null
   const isRtl = block.html?.includes('dir="rtl"')
@@ -97,7 +97,10 @@ function JournalBlock({ block, comments, commentsOpen, onOpenComment, onCloseCom
       StarterKit.configure({ heading: false, bulletList: false, orderedList: false, listItem: false, taskList: false, taskItem: false }),
       HeadingNoShortcut,
       RTLExtension,
-      AudioNode.configure({ readOnly: true }),
+      AudioNode.configure({
+        readOnly: true,
+        getRank: (audioId) => audioRanks?.get(audioId) ?? null,
+      }),
       BlockIdExtension,
     ],
     content: block.html || '',
@@ -178,6 +181,27 @@ function JournalBlock({ block, comments, commentsOpen, onOpenComment, onCloseCom
 function ReviewJournalPane({ day, title = 'Journal', openCommentKey, onOpenComment, onCloseComment, onToggleReview, onAddBlockComment }) {
   const blocks = (day.journalEntry?.blocks || []).filter(block => !block.deleted)
 
+  // Each JournalBlock renders into its own editor, so rankInDoc would only
+  // see one audio at a time. Collect every audio across the day's blocks here
+  // and feed them to the shared ranker so tints stay consistent with journal/edit.
+  const audioRanks = (() => {
+    const items = []
+    let docIdx = 0
+    const tagRe = /<div\b[^>]*data-audio-id="[^"]+[^>]*>/g
+    const idRe = /data-audio-id="([^"]+)"/
+    const createdRe = /data-created-at="([^"]*)"/
+    blocks.forEach(b => {
+      const html = b.html || ''
+      let m
+      while ((m = tagRe.exec(html)) !== null) {
+        const id = idRe.exec(m[0])?.[1]
+        const createdAt = createdRe.exec(m[0])?.[1] || null
+        if (id) items.push({ id, createdAt, docIdx: docIdx++ })
+      }
+    })
+    return rankAudioItems(items)
+  })()
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div style={paneHeaderStyle}>
@@ -205,6 +229,7 @@ function ReviewJournalPane({ day, title = 'Journal', openCommentKey, onOpenComme
             <JournalBlock
               key={block.id}
               block={block}
+              audioRanks={audioRanks}
               comments={day.journalEntry?.blockComments?.[block.id] || []}
               commentsOpen={openCommentKey === `journal:${day.date}:${block.id}`}
               onOpenComment={() => onOpenComment(`journal:${day.date}:${block.id}`)}
@@ -519,7 +544,7 @@ export default function ReviewPage() {
             <div className="hidden md:flex" style={{ flex: 1, minHeight: 0 }}>
               <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border-light)' }}>
                 {mode === 'edit' ? (
-                  <JournalPanel key={`edit-journal-${selectedDay.date}`} date={selectedDay.date} />
+                  <JournalPanel key={`edit-journal-${selectedDay.date}`} date={selectedDay.date} headerLabel="Journal" />
                 ) : (
                   <ReviewJournalPane
                     day={selectedDay}
@@ -550,7 +575,7 @@ export default function ReviewPage() {
             <div className="md:hidden" style={{ flex: 1, overflow: 'hidden' }}>
               {mobilePanel === 'journal' ? (
                 mode === 'edit' ? (
-                  <JournalPanel key={`edit-journal-m-${selectedDay.date}`} date={selectedDay.date} />
+                  <JournalPanel key={`edit-journal-m-${selectedDay.date}`} date={selectedDay.date} headerLabel="Journal" />
                 ) : (
                   <ReviewJournalPane
                     day={selectedDay}
@@ -800,7 +825,12 @@ const commentEditButtonStyle = {
 }
 
 function ModeToggle({ mode, onChange }) {
-  const segmentStyle = (active) => ({
+  // Soft green for the safe view; soft amber for edit (a gentle "you're touching past days" warning).
+  const TONES = {
+    review: { bg: `rgba(${PALETTE.emerald},0.85)`, shadow: `0 1px 6px rgba(${PALETTE.emerald},0.35)` },
+    edit:    { bg: `rgba(${PALETTE.amber},0.9)`,   shadow: `0 1px 6px rgba(${PALETTE.amber},0.4)`   },
+  }
+  const segmentStyle = (active, tone) => ({
     display: 'inline-flex',
     alignItems: 'center',
     gap: '6px',
@@ -811,10 +841,10 @@ function ModeToggle({ mode, onChange }) {
     border: 'none',
     borderRadius: '999px',
     cursor: 'pointer',
-    background: active ? 'var(--accent)' : 'transparent',
+    background: active ? tone.bg : 'transparent',
     color: active ? 'white' : 'var(--text-secondary)',
-    boxShadow: active ? '0 1px 6px rgba(107,163,214,0.35)' : 'none',
-    transition: 'background 0.15s, color 0.15s',
+    boxShadow: active ? tone.shadow : 'none',
+    transition: 'background 0.15s, color 0.15s, box-shadow 0.15s',
   })
   return (
     <div
@@ -828,10 +858,10 @@ function ModeToggle({ mode, onChange }) {
         border: '1px solid var(--border-light)',
       }}
     >
-      <button onClick={() => onChange('review')} style={segmentStyle(mode === 'review')}>
+      <button onClick={() => onChange('review')} style={segmentStyle(mode === 'review', TONES.review)}>
         <EyeIcon />Review
       </button>
-      <button onClick={() => onChange('edit')} style={segmentStyle(mode === 'edit')}>
+      <button onClick={() => onChange('edit')} style={segmentStyle(mode === 'edit', TONES.edit)}>
         <PencilIcon />Edit
       </button>
     </div>

@@ -49,7 +49,7 @@ const HashtagExtension = Extension.create({
   },
 })
 
-export default function JournalPanel({ onInsertText, date }) {
+export default function JournalPanel({ onInsertText, date, headerLabel }) {
   const currentJournal = useAppStore(s => s.currentJournal)
   const updateJournalEntry = useAppStore(s => s.updateJournalEntry)
   const loadJournal = useAppStore(s => s.loadJournal)
@@ -127,7 +127,7 @@ export default function JournalPanel({ onInsertText, date }) {
         borderBottom: '1px solid var(--border-light)',
       }}>
         <span style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-primary)' }}>
-          {formatDate(targetDate)}
+          {headerLabel ?? formatDate(targetDate)}
         </span>
       </div>
 
