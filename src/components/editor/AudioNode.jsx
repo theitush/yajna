@@ -265,6 +265,30 @@ function AudioNodeView({ node, editor, getPos, extension }) {
          padding: '8px 12px',
          userSelect: 'none',
        }}>
+      {!readOnly && (
+      <span
+        data-drag-handle
+        draggable="true"
+        contentEditable={false}
+        title="Drag to move"
+        style={{
+          flexShrink: 0,
+          cursor: 'grab',
+          color: 'var(--text-tertiary)',
+          display: 'flex',
+          alignItems: 'center',
+          padding: '2px',
+          marginLeft: '-4px',
+          touchAction: 'none',
+        }}
+      >
+        <svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor" aria-hidden="true">
+          <circle cx="3" cy="3" r="1.2"/><circle cx="9" cy="3" r="1.2"/>
+          <circle cx="3" cy="7" r="1.2"/><circle cx="9" cy="7" r="1.2"/>
+          <circle cx="3" cy="11" r="1.2"/><circle cx="9" cy="11" r="1.2"/>
+        </svg>
+      </span>
+      )}
       <button
         onClick={togglePlay}
         disabled={status === 'loading'}
@@ -579,8 +603,8 @@ export const AudioNode = Node.create({
   name: 'audio',
   group: 'block',
   atom: true,
-  draggable: false,
-  selectable: false,
+  draggable: true,
+  selectable: true,
 
   addOptions() {
     return {
