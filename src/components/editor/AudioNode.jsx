@@ -4,6 +4,26 @@ import { useEffect, useRef, useState } from 'react'
 import useAppStore from '../../store/useAppStore'
 import { transcribeWithGroq, DEFAULT_GROQ_MODEL } from '../../services/transcribe'
 
+const isTouchDevice = typeof window !== 'undefined'
+  && typeof window.matchMedia === 'function'
+  && window.matchMedia('(hover: none) and (pointer: coarse)').matches
+
+// 5 subtle tints so adjacent audio cards are visually distinguishable
+// even when collapsed. Stable per audioId so the color doesn't change.
+const AUDIO_TINTS = [
+  { bg: 'rgba(99,102,241,0.10)',  border: 'rgba(99,102,241,0.30)'  }, // indigo
+  { bg: 'rgba(16,185,129,0.10)',  border: 'rgba(16,185,129,0.30)'  }, // emerald
+  { bg: 'rgba(236,72,153,0.10)',  border: 'rgba(236,72,153,0.30)'  }, // pink
+  { bg: 'rgba(245,158,11,0.10)',  border: 'rgba(245,158,11,0.30)'  }, // amber
+  { bg: 'rgba(14,165,233,0.10)',  border: 'rgba(14,165,233,0.30)'  }, // sky
+]
+function tintFor(id) {
+  if (!id) return AUDIO_TINTS[0]
+  let h = 0
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
+  return AUDIO_TINTS[h % AUDIO_TINTS.length]
+}
+
 function formatTime(s) {
   if (!isFinite(s) || s < 0) s = 0
   const m = Math.floor(s / 60)
@@ -25,7 +45,7 @@ function AudioNodeView({ node, editor, getPos, extension }) {
   const [currentTime, setCurrentTime] = useState(0)
   const [status, setStatus] = useState('idle') // idle | loading | ready | error
   const [error, setError] = useState(null)
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(true)
   const [transcript, setTranscript] = useState('')
   const [segments, setSegments] = useState(null)
   const [transcriptModel, setTranscriptModel] = useState(null)
@@ -122,6 +142,27 @@ function AudioNodeView({ node, editor, getPos, extension }) {
     }
   }, [objectUrl])
 
+  // Hydrate transcript on mount so the (default-expanded) panel shows it
+  // immediately, without forcing the audio blob to be decoded.
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      if (transcript || !audioId) return
+      try {
+        const rec = await getAudioRecord(audioId)
+        if (cancelled || !rec) return
+        if (rec.duration && !duration) setDuration(rec.duration)
+        if (rec.transcript) {
+          setTranscript(rec.transcript)
+          setDraftTranscript(rec.transcript)
+          setTranscriptModel(rec.transcriptModel || null)
+          setSegments(Array.isArray(rec.transcriptSegments) ? rec.transcriptSegments : null)
+        }
+      } catch { /* ignore */ }
+    })()
+    return () => { cancelled = true }
+  }, [audioId])
+
   useEffect(() => {
     if (!editor) return
     const update = () => {
@@ -184,6 +225,51 @@ function AudioNodeView({ node, editor, getPos, extension }) {
     saveAudioTranscript(audioId, joined, transcriptModel, updated)
   }
 
+  const moveBy = (direction) => {
+    if (typeof getPos !== 'function' || !editor) return
+    const pos = getPos()
+    if (pos == null) return
+    const { state } = editor
+    const { doc, tr } = state
+    const $pos = doc.resolve(pos)
+    const parent = $pos.parent
+    const indexInParent = $pos.index()
+    const targetIndex = direction === 'up' ? indexInParent - 1 : indexInParent + 1
+    if (targetIndex < 0 || targetIndex >= parent.childCount) return
+    const nodeSize = node.nodeSize
+    const parentStart = $pos.start()
+    let siblingPos = parentStart
+    for (let i = 0; i < targetIndex; i++) siblingPos += parent.child(i).nodeSize
+    const siblingNode = parent.child(targetIndex)
+    const siblingSize = siblingNode.nodeSize
+    const audioSlice = doc.slice(pos, pos + nodeSize)
+    if (direction === 'up') {
+      // Delete audio first (it's after sibling), then insert before sibling.
+      tr.delete(pos, pos + nodeSize)
+      tr.insert(siblingPos, audioSlice.content)
+    } else {
+      // Sibling is after audio. Insert copy after sibling, then delete original.
+      const insertAt = siblingPos + siblingSize
+      tr.insert(insertAt, audioSlice.content)
+      tr.delete(pos, pos + nodeSize)
+    }
+    editor.view.dispatch(tr)
+  }
+
+  const canMoveUp = (() => {
+    if (typeof getPos !== 'function' || !editor) return false
+    const pos = getPos()
+    if (pos == null) return false
+    return editor.state.doc.resolve(pos).index() > 0
+  })()
+  const canMoveDown = (() => {
+    if (typeof getPos !== 'function' || !editor) return false
+    const pos = getPos()
+    if (pos == null) return false
+    const $pos = editor.state.doc.resolve(pos)
+    return $pos.index() < $pos.parent.childCount - 1
+  })()
+
   const handleDelete = async () => {
     if (typeof getPos !== 'function') return
     const pos = getPos()
@@ -197,6 +283,7 @@ function AudioNodeView({ node, editor, getPos, extension }) {
   }
 
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0
+  const tint = tintFor(audioId)
 
   const seekTo = async (time) => {
     const t = Math.max(0, Math.min(duration || 0, time))
@@ -249,8 +336,8 @@ function AudioNodeView({ node, editor, getPos, extension }) {
       contentEditable={false}
       style={{
         margin: '8px 0',
-        background: selected ? 'var(--accent-light)' : 'var(--bg-secondary)',
-        border: `1px solid ${selected ? 'var(--accent)' : 'var(--border-light)'}`,
+        background: selected ? 'var(--accent-light)' : tint.bg,
+        border: `1px solid ${selected ? 'var(--accent)' : tint.border}`,
         borderRadius: '10px',
         maxWidth: '360px',
         overflow: 'hidden',
@@ -265,7 +352,7 @@ function AudioNodeView({ node, editor, getPos, extension }) {
          padding: '8px 12px',
          userSelect: 'none',
        }}>
-      {!readOnly && (
+      {!readOnly && !isTouchDevice && (
       <span
         data-drag-handle
         draggable="true"
@@ -287,6 +374,49 @@ function AudioNodeView({ node, editor, getPos, extension }) {
           <circle cx="3" cy="7" r="1.2"/><circle cx="9" cy="7" r="1.2"/>
           <circle cx="3" cy="11" r="1.2"/><circle cx="9" cy="11" r="1.2"/>
         </svg>
+      </span>
+      )}
+      {!readOnly && isTouchDevice && (
+      <span
+        contentEditable={false}
+        style={{
+          flexShrink: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          marginLeft: '-4px',
+          gap: '2px',
+        }}
+      >
+        <button
+          onClick={() => moveBy('up')}
+          disabled={!canMoveUp}
+          title="Move up"
+          style={{
+            background: 'none', border: 'none', padding: '2px',
+            color: canMoveUp ? 'var(--text-tertiary)' : 'var(--border-light)',
+            cursor: canMoveUp ? 'pointer' : 'default',
+            display: 'flex', alignItems: 'center',
+          }}
+        >
+          <svg width="12" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3}>
+            <path d="M6 15l6-6 6 6"/>
+          </svg>
+        </button>
+        <button
+          onClick={() => moveBy('down')}
+          disabled={!canMoveDown}
+          title="Move down"
+          style={{
+            background: 'none', border: 'none', padding: '2px',
+            color: canMoveDown ? 'var(--text-tertiary)' : 'var(--border-light)',
+            cursor: canMoveDown ? 'pointer' : 'default',
+            display: 'flex', alignItems: 'center',
+          }}
+        >
+          <svg width="12" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3}>
+            <path d="M6 9l6 6 6-6"/>
+          </svg>
+        </button>
       </span>
       )}
       <button
