@@ -370,17 +370,88 @@ export async function initialSync() {
 
 /**
  * Merge a single journal week doc with Drive and push merged result.
+ * Uses headRevisionId to skip the read when remote is unchanged since last
+ * seen, and skips the upload when the merged doc equals what's on Drive.
  */
 export async function mergeAndPushJournal(weekDoc) {
+  const t0 = performance.now()
+  const mark = (label, from) => console.log(`[journal-sync] ${label}: ${(performance.now() - from).toFixed(0)}ms`)
+
   const ids = await getDriveFileIds()
   if (!ids) return weekDoc
   const filename = `${weekDoc.week}.json`
+
+  const tFind = performance.now()
   const existingId = await findFile(ids.journalsFolderId, filename)
+  mark('findFile', tFind)
+
+  if (!existingId) {
+    // No remote yet — just upload the local doc.
+    await driveWrite(ids.journalsFolderId, filename, weekDoc, null)
+    mark('TOTAL (new file)', t0)
+    return weekDoc
+  }
+
+  // Check headRevisionId before reading. If unchanged since last seen, skip
+  // the read entirely — local IDB already reflects what's on Drive.
+  const tRev = performance.now()
+  const [revs, storedRevs] = await Promise.all([
+    getFileRevisions([existingId]),
+    getStoredRevisions(),
+  ])
+  mark('rev check', tRev)
+  const currentRev = revs[existingId]
+  const lastSeen = storedRevs[existingId]
+  const remoteUnchanged = currentRev && lastSeen === currentRev
+
   let merged = weekDoc
-  if (existingId) {
-    const remote = await readJsonFile(existingId)
+  let remote = null
+  if (!remoteUnchanged) {
+    const tRead = performance.now()
+    remote = await readJsonFile(existingId)
+    mark('readJsonFile', tRead)
     if (remote) merged = mergeJournalDocs(weekDoc, remote)
   }
-  await driveWrite(ids.journalsFolderId, filename, merged, existingId)
+
+  // Skip upload if merged equals remote (covers no-op startup) or if remote
+  // unchanged AND local hasn't diverged (covered by remote==null && merged===weekDoc).
+  const needsWrite = remote
+    ? !journalDocsEqual(merged, remote)
+    : !remoteUnchanged // unchanged remote we didn't read → no need to write
+      ? true
+      : false
+
+  if (needsWrite) {
+    const tWrite = performance.now()
+    await driveWrite(ids.journalsFolderId, filename, merged, existingId)
+    mark('driveWrite', tWrite)
+    // Refresh stored rev so the next call can short-circuit.
+    const fresh = await getFileRevisions([existingId])
+    setStoredRevisions({ ...storedRevs, ...fresh }).catch(() => {})
+  } else if (currentRev && lastSeen !== currentRev) {
+    // We saw a new rev and read it but merge produced no change — still update
+    // our last-seen marker so next boot can skip the read.
+    setStoredRevisions({ ...storedRevs, [existingId]: currentRev }).catch(() => {})
+  }
+
+  mark('TOTAL mergeAndPushJournal', t0)
   return merged
+}
+
+/**
+ * Cheap equality for journal docs at the per-date entry level.
+ * Same dates and same updatedAt per entry → no meaningful diff.
+ */
+function journalDocsEqual(a, b) {
+  if (a === b) return true
+  if (!a || !b) return false
+  if (a.week !== b.week) return false
+  const ae = a.entries || {}, be = b.entries || {}
+  const ak = Object.keys(ae), bk = Object.keys(be)
+  if (ak.length !== bk.length) return false
+  for (const k of ak) {
+    if (!(k in be)) return false
+    if ((ae[k]?.updatedAt || '') !== (be[k]?.updatedAt || '')) return false
+  }
+  return true
 }
