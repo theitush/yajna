@@ -331,7 +331,7 @@ export default function App() {
           >
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
               <div style={{ width: 22, height: 22, border: '2px solid rgba(255,255,255,0.35)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-              <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.9)' }}>Syncing\u2026</div>
+              <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.9)' }}>Syncing...</div>
             </div>
             <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
           </div>
