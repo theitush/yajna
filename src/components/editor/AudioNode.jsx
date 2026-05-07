@@ -1,7 +1,7 @@
 import { Node, mergeAttributes } from '@tiptap/core'
 import { NodeSelection, Plugin, TextSelection } from '@tiptap/pm/state'
 import { ReactNodeViewRenderer, NodeViewWrapper } from '@tiptap/react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import useAppStore from '../../store/useAppStore'
 import { transcribeWithGroq, DEFAULT_GROQ_MODEL } from '../../services/transcribe'
 
@@ -95,6 +95,87 @@ function AudioNodeView({ node, editor, getPos, extension }) {
   // sometimes navigate away without firing blur on a contenteditable, which
   // previously dropped edits silently.
   const transcriptSaveTimer = useRef(null)
+  const transcriptEditorRef = useRef(null)
+  const pendingCaretRef = useRef(null)
+
+  const setCaretByTextOffset = (container, offset) => {
+    const sel = window.getSelection?.()
+    if (!sel) return
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT)
+    let node = walker.nextNode()
+    let remaining = Math.max(0, offset ?? 0)
+    while (node) {
+      const len = node.textContent?.length ?? 0
+      if (remaining <= len) {
+        const r = document.createRange()
+        r.setStart(node, Math.max(0, remaining))
+        r.collapse(true)
+        sel.removeAllRanges()
+        sel.addRange(r)
+        return
+      }
+      remaining -= len
+      node = walker.nextNode()
+    }
+    const r = document.createRange()
+    r.selectNodeContents(container)
+    r.collapse(false)
+    sel.removeAllRanges()
+    sel.addRange(r)
+  }
+
+  const captureCaret = (root) => {
+    const sel = window.getSelection?.()
+    if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return null
+    const range = sel.getRangeAt(0)
+    if (!root?.contains?.(range.startContainer)) return null
+    const startEl = range.startContainer?.nodeType === 1 ? range.startContainer : range.startContainer?.parentElement
+    const segEl = startEl?.closest?.('[data-segment-idx]')
+    if (segEl) {
+      const idx = Number(segEl.dataset.segmentIdx)
+      if (!Number.isInteger(idx)) return null
+      const r2 = document.createRange()
+      r2.selectNodeContents(segEl)
+      r2.setEnd(range.startContainer, range.startOffset)
+      return { kind: 'segment', idx, offset: r2.toString().length }
+    }
+    const r2 = document.createRange()
+    r2.selectNodeContents(root)
+    r2.setEnd(range.startContainer, range.startOffset)
+    return { kind: 'root', offset: r2.toString().length }
+  }
+
+  const restoreCaret = (root, caret) => {
+    if (!root || !caret) return
+    if (caret.kind === 'segment') {
+      const segEl = root.querySelector?.(`[data-segment-idx="${caret.idx}"]`)
+      if (segEl) setCaretByTextOffset(segEl, caret.offset)
+      return
+    }
+    setCaretByTextOffset(root, caret.offset)
+  }
+
+  const placeCaretFromPoint = (e) => {
+    const sel = window.getSelection?.()
+    if (!sel) return
+    const x = e.clientX
+    const y = e.clientY
+    let range = null
+    if (typeof document.caretPositionFromPoint === 'function') {
+      const pos = document.caretPositionFromPoint(x, y)
+      if (pos?.offsetNode) {
+        range = document.createRange()
+        range.setStart(pos.offsetNode, pos.offset)
+        range.collapse(true)
+      }
+    } else if (typeof document.caretRangeFromPoint === 'function') {
+      range = document.caretRangeFromPoint(x, y)
+    }
+    if (!range) return
+    sel.removeAllRanges()
+    sel.addRange(range)
+  }
+
   const scheduleTranscriptSave = (text, segs) => {
     if (transcriptSaveTimer.current) clearTimeout(transcriptSaveTimer.current)
     transcriptSaveTimer.current = setTimeout(() => {
@@ -102,6 +183,13 @@ function AudioNodeView({ node, editor, getPos, extension }) {
       saveAudioTranscript(audioId, text, transcriptModel, segs ?? null)
     }, 600)
   }
+  useLayoutEffect(() => {
+    const root = transcriptEditorRef.current
+    const caret = pendingCaretRef.current
+    if (!root || !caret) return
+    pendingCaretRef.current = null
+    restoreCaret(root, caret)
+  }, [segments, transcript])
   useEffect(() => () => {
     if (transcriptSaveTimer.current) {
       clearTimeout(transcriptSaveTimer.current)
@@ -738,6 +826,7 @@ function AudioNodeView({ node, editor, getPos, extension }) {
          )}
          {transcript && Array.isArray(segments) && segments.length > 0 && (
            <div
+             ref={transcriptEditorRef}
              contentEditable
              suppressContentEditableWarning
              spellCheck={false}
@@ -745,6 +834,8 @@ function AudioNodeView({ node, editor, getPos, extension }) {
                if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() }
              }}
              onMouseDown={e => {
+               e.stopPropagation()
+               placeCaretFromPoint(e)
                const segEl = e.target?.closest?.('[data-segment-idx]')
                if (!segEl) return
                const idx = Number(segEl.dataset.segmentIdx)
@@ -759,6 +850,7 @@ function AudioNodeView({ node, editor, getPos, extension }) {
                })
                const changed = updated.some((s, idx) => s.text !== segments[idx].text)
                if (!changed) return
+               pendingCaretRef.current = captureCaret(e.currentTarget)
                const joined = updated.map(s => s.text).join(' ')
                setSegments(updated)
                setDraftTranscript(joined)
@@ -798,7 +890,7 @@ function AudioNodeView({ node, editor, getPos, extension }) {
            >
              {segments.map((s, i) => (
                <span
-                 key={`${i}-${s.text}`}
+                 key={`${i}-${s.start ?? 0}-${s.end ?? 0}`}
                  data-segment-idx={i}
                  title={`${formatTime(s.start)} — click to seek`}
                  style={{
@@ -812,13 +904,19 @@ function AudioNodeView({ node, editor, getPos, extension }) {
          )}
          {transcript && (!Array.isArray(segments) || segments.length === 0) && (
            <div
+             ref={transcriptEditorRef}
              contentEditable
              suppressContentEditableWarning
              spellCheck={false}
              dangerouslySetInnerHTML={{ __html: transcript }}
+             onMouseDown={e => {
+               e.stopPropagation()
+               placeCaretFromPoint(e)
+             }}
              onInput={e => {
                const next = e.currentTarget.textContent || ''
                if (next === transcript) return
+               pendingCaretRef.current = captureCaret(e.currentTarget)
                setDraftTranscript(next)
                setTranscript(next)
                scheduleTranscriptSave(next, null)
