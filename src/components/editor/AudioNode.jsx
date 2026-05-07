@@ -679,7 +679,6 @@ function AudioNodeView({ node, editor, getPos, extension }) {
         background: tint.bg,
         border: `1px solid ${selected ? 'var(--accent)' : tint.border}`,
         borderRadius: '10px',
-        maxWidth: '360px',
         overflow: 'hidden',
         boxShadow: selected ? '0 0 0 2px var(--accent-light)' : 'none',
         transition: 'border-color 0.12s, box-shadow 0.12s',
@@ -861,6 +860,30 @@ function AudioNodeView({ node, editor, getPos, extension }) {
       </button>
       )}
 
+      {!readOnly && (
+      <button
+        onClick={() => {
+          if (transcribing) return
+          if (transcript) setConfirmRetranscribe(true)
+          else handleTranscribe()
+        }}
+        disabled={transcribing}
+        title={transcript ? 'Re-transcribe' : 'Transcribe'}
+        style={{
+          fontSize: '12px', fontWeight: 500,
+          color: 'var(--accent)', background: 'var(--accent-light)',
+          border: 'none', padding: '6px 12px', borderRadius: '6px',
+          cursor: transcribing ? 'wait' : 'pointer',
+          fontFamily: 'var(--font-body)',
+          opacity: transcribing ? 0.6 : 1,
+          flexShrink: 0,
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {transcribing ? 'Transcribing…' : transcript ? 'Re-transcribe' : 'Transcribe'}
+      </button>
+      )}
+
      </div>
 
      {confirmDelete && (
@@ -900,31 +923,6 @@ function AudioNodeView({ node, editor, getPos, extension }) {
          userSelect: 'text',
          WebkitUserSelect: 'text',
        }}>
-         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: transcript || transcriptError || confirmRetranscribe ? '10px' : 0 }}>
-           <button
-             onClick={() => {
-               if (transcribing) return
-               if (transcript) setConfirmRetranscribe(true)
-               else handleTranscribe()
-             }}
-             disabled={transcribing}
-             style={{
-               fontSize: '12px', fontWeight: 500,
-               color: 'var(--accent)', background: 'var(--accent-light)',
-               border: 'none', padding: '6px 12px', borderRadius: '6px',
-               cursor: transcribing ? 'wait' : 'pointer',
-               fontFamily: 'var(--font-body)',
-               opacity: transcribing ? 0.6 : 1,
-             }}
-           >
-             {transcribing ? 'Transcribing…' : transcript ? 'Re-transcribe' : 'Transcribe'}
-           </button>
-           {transcriptModel && (
-             <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-               {transcriptModel}
-             </span>
-           )}
-         </div>
          {confirmRetranscribe && (
            <div style={{
              display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', justifyContent: 'flex-end',
