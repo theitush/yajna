@@ -1,9 +1,194 @@
 import { Node, mergeAttributes } from '@tiptap/core'
 import { NodeSelection, Plugin, TextSelection } from '@tiptap/pm/state'
 import { ReactNodeViewRenderer, NodeViewWrapper } from '@tiptap/react'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import useAppStore from '../../store/useAppStore'
 import { transcribeWithGroq, DEFAULT_GROQ_MODEL } from '../../services/transcribe'
+
+// Uncontrolled contentEditable for the segmented transcript. We render the
+// segments to DOM exactly once per `signature` (the joined segment timings) —
+// after that, user keystrokes mutate the DOM directly and React does not
+// reconcile this subtree. The active-segment highlight is applied via a
+// direct-DOM effect so playback updates don't churn the editor (which used
+// to cause backspace/delete to "duplicate" the very char being deleted).
+function SegmentedTranscriptEditor({
+  segments,
+  signature,
+  activeSegmentIdx,
+  onSeek,
+  onCommit,
+}) {
+  const rootRef = useRef(null)
+  const saveTimer = useRef(null)
+  const segmentsRef = useRef(segments)
+  segmentsRef.current = segments
+
+  // Mount: render initial segments into the DOM once. Re-runs only when the
+  // external segment shape changes (re-transcribe, swap clip, etc).
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+    root.replaceChildren()
+    segments.forEach((s, i) => {
+      const span = document.createElement('span')
+      span.dataset.segmentIdx = String(i)
+      span.title = `${formatTime(s.start)} — click to seek`
+      span.style.borderRadius = '3px'
+      const trailing = i < segments.length - 1 ? ' ' : ''
+      span.textContent = `${s.text}${trailing}`
+      root.appendChild(span)
+    })
+    // No deps on `segments` content — only `signature` — so user edits don't
+    // remount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signature])
+
+  // Highlight active segment via direct DOM. Avoids React re-renders during
+  // playback that would otherwise reconcile the contentEditable subtree.
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+    const spans = root.querySelectorAll('[data-segment-idx]')
+    spans.forEach((el, i) => {
+      const active = i === activeSegmentIdx
+      el.style.background = active ? 'var(--accent-light)' : 'transparent'
+      el.style.color = active ? 'var(--accent)' : 'inherit'
+    })
+  }, [activeSegmentIdx, signature])
+
+  const readSegments = () => {
+    const root = rootRef.current
+    if (!root) return null
+    const base = segmentsRef.current
+    const next = base.map((s, idx) => {
+      const el = root.querySelector(`[data-segment-idx="${idx}"]`)
+      // Strip the trailing separator space we inserted at render time.
+      let text = el?.textContent ?? ''
+      if (idx < base.length - 1 && text.endsWith(' ')) text = text.slice(0, -1)
+      return text === s.text ? s : { ...s, text }
+    })
+    const changed = next.some((s, i) => s !== base[i])
+    return { next, changed }
+  }
+
+  const flush = () => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current)
+      saveTimer.current = null
+    }
+    const result = readSegments()
+    if (!result || !result.changed) return
+    onCommit(result.next, { immediate: true })
+  }
+
+  return (
+    <div
+      ref={rootRef}
+      contentEditable
+      suppressContentEditableWarning
+      spellCheck={false}
+      onKeyDown={e => {
+        if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() }
+      }}
+      onMouseDown={e => {
+        // Stop ProseMirror (the surrounding tiptap node-view) from receiving
+        // this mousedown — otherwise it would reset the selection and the
+        // caret would jump to the start of the editor.
+        e.stopPropagation()
+        const segEl = e.target?.closest?.('[data-segment-idx]')
+        if (!segEl) return
+        const idx = Number(segEl.dataset.segmentIdx)
+        const segs = segmentsRef.current
+        if (Number.isInteger(idx) && segs[idx]) onSeek(segs[idx].start)
+      }}
+      onInput={() => {
+        if (saveTimer.current) clearTimeout(saveTimer.current)
+        saveTimer.current = setTimeout(() => {
+          saveTimer.current = null
+          const result = readSegments()
+          if (!result || !result.changed) return
+          onCommit(result.next, { immediate: false })
+        }, 600)
+      }}
+      onBlur={flush}
+      style={{
+        userSelect: 'text', WebkitUserSelect: 'text',
+        fontSize: '13px', color: 'var(--text-primary)',
+        background: 'var(--bg-secondary)',
+        border: '1px solid var(--border-light)', borderRadius: '6px',
+        padding: '8px 10px', lineHeight: 1.6,
+        fontFamily: 'var(--font-body)',
+        maxHeight: 260, overflowY: 'auto',
+        outline: 'none',
+        cursor: 'text',
+      }}
+    />
+  )
+}
+
+// Uncontrolled contentEditable for plain (segment-less) transcripts.
+function PlainTranscriptEditor({ initialHtml, onCommit }) {
+  const rootRef = useRef(null)
+  const saveTimer = useRef(null)
+  // Track the last text we committed to the parent so we can ignore the
+  // resulting prop echo (parent sets transcript=text → initialHtml updates →
+  // would otherwise wipe the DOM and the user's caret).
+  const lastCommittedRef = useRef(null)
+
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+    if (initialHtml === lastCommittedRef.current) return
+    if ((root.textContent || '') === (initialHtml || '')) return
+    root.innerHTML = initialHtml || ''
+  }, [initialHtml])
+
+  const commit = (text, opts) => {
+    lastCommittedRef.current = text
+    onCommit(text, opts)
+  }
+
+  const flush = () => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current)
+      saveTimer.current = null
+    }
+    const text = rootRef.current?.textContent || ''
+    commit(text, { immediate: true })
+  }
+
+  return (
+    <div
+      ref={rootRef}
+      contentEditable
+      suppressContentEditableWarning
+      spellCheck={false}
+      onKeyDown={e => {
+        if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() }
+      }}
+      onMouseDown={e => { e.stopPropagation() }}
+      onInput={() => {
+        if (saveTimer.current) clearTimeout(saveTimer.current)
+        saveTimer.current = setTimeout(() => {
+          saveTimer.current = null
+          const text = rootRef.current?.textContent || ''
+          commit(text, { immediate: false })
+        }, 600)
+      }}
+      onBlur={flush}
+      style={{
+        fontSize: '13px', color: 'var(--text-primary)',
+        background: 'var(--bg-secondary)',
+        border: '1px solid var(--border-light)', borderRadius: '6px',
+        padding: '8px 10px', lineHeight: 1.6,
+        fontFamily: 'var(--font-body)',
+        maxHeight: 260, overflowY: 'auto',
+        whiteSpace: 'pre-wrap',
+        outline: 'none',
+      }}
+    />
+  )
+}
 
 const isTouchDevice = typeof window !== 'undefined'
   && typeof window.matchMedia === 'function'
@@ -95,86 +280,6 @@ function AudioNodeView({ node, editor, getPos, extension }) {
   // sometimes navigate away without firing blur on a contenteditable, which
   // previously dropped edits silently.
   const transcriptSaveTimer = useRef(null)
-  const transcriptEditorRef = useRef(null)
-  const pendingCaretRef = useRef(null)
-
-  const setCaretByTextOffset = (container, offset) => {
-    const sel = window.getSelection?.()
-    if (!sel) return
-    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT)
-    let node = walker.nextNode()
-    let remaining = Math.max(0, offset ?? 0)
-    while (node) {
-      const len = node.textContent?.length ?? 0
-      if (remaining <= len) {
-        const r = document.createRange()
-        r.setStart(node, Math.max(0, remaining))
-        r.collapse(true)
-        sel.removeAllRanges()
-        sel.addRange(r)
-        return
-      }
-      remaining -= len
-      node = walker.nextNode()
-    }
-    const r = document.createRange()
-    r.selectNodeContents(container)
-    r.collapse(false)
-    sel.removeAllRanges()
-    sel.addRange(r)
-  }
-
-  const captureCaret = (root) => {
-    const sel = window.getSelection?.()
-    if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return null
-    const range = sel.getRangeAt(0)
-    if (!root?.contains?.(range.startContainer)) return null
-    const startEl = range.startContainer?.nodeType === 1 ? range.startContainer : range.startContainer?.parentElement
-    const segEl = startEl?.closest?.('[data-segment-idx]')
-    if (segEl) {
-      const idx = Number(segEl.dataset.segmentIdx)
-      if (!Number.isInteger(idx)) return null
-      const r2 = document.createRange()
-      r2.selectNodeContents(segEl)
-      r2.setEnd(range.startContainer, range.startOffset)
-      return { kind: 'segment', idx, offset: r2.toString().length }
-    }
-    const r2 = document.createRange()
-    r2.selectNodeContents(root)
-    r2.setEnd(range.startContainer, range.startOffset)
-    return { kind: 'root', offset: r2.toString().length }
-  }
-
-  const restoreCaret = (root, caret) => {
-    if (!root || !caret) return
-    if (caret.kind === 'segment') {
-      const segEl = root.querySelector?.(`[data-segment-idx="${caret.idx}"]`)
-      if (segEl) setCaretByTextOffset(segEl, caret.offset)
-      return
-    }
-    setCaretByTextOffset(root, caret.offset)
-  }
-
-  const placeCaretFromPoint = (e) => {
-    const sel = window.getSelection?.()
-    if (!sel) return
-    const x = e.clientX
-    const y = e.clientY
-    let range = null
-    if (typeof document.caretPositionFromPoint === 'function') {
-      const pos = document.caretPositionFromPoint(x, y)
-      if (pos?.offsetNode) {
-        range = document.createRange()
-        range.setStart(pos.offsetNode, pos.offset)
-        range.collapse(true)
-      }
-    } else if (typeof document.caretRangeFromPoint === 'function') {
-      range = document.caretRangeFromPoint(x, y)
-    }
-    if (!range) return
-    sel.removeAllRanges()
-    sel.addRange(range)
-  }
 
   const scheduleTranscriptSave = (text, segs) => {
     if (transcriptSaveTimer.current) clearTimeout(transcriptSaveTimer.current)
@@ -183,13 +288,6 @@ function AudioNodeView({ node, editor, getPos, extension }) {
       saveAudioTranscript(audioId, text, transcriptModel, segs ?? null)
     }, 600)
   }
-  useLayoutEffect(() => {
-    const root = transcriptEditorRef.current
-    const caret = pendingCaretRef.current
-    if (!root || !caret) return
-    pendingCaretRef.current = null
-    restoreCaret(root, caret)
-  }, [segments, transcript])
   useEffect(() => () => {
     if (transcriptSaveTimer.current) {
       clearTimeout(transcriptSaveTimer.current)
@@ -394,18 +492,6 @@ function AudioNodeView({ node, editor, getPos, extension }) {
     } else {
       el.pause()
     }
-  }
-
-  const commitSegmentEdit = (idx, newText) => {
-    if (!Array.isArray(segments)) return
-    const trimmed = newText.replace(/\s+/g, ' ').trim()
-    if (trimmed === segments[idx].text) return
-    const updated = segments.map((s, i) => i === idx ? { ...s, text: trimmed } : s)
-    const joined = updated.map(s => s.text).join(' ')
-    setSegments(updated)
-    setDraftTranscript(joined)
-    setTranscript(joined)
-    saveAudioTranscript(audioId, joined, transcriptModel, updated)
   }
 
   const moveBy = (direction) => {
@@ -825,122 +911,44 @@ function AudioNodeView({ node, editor, getPos, extension }) {
            }}>{transcriptError}</p>
          )}
          {transcript && Array.isArray(segments) && segments.length > 0 && (
-           <div
-             ref={transcriptEditorRef}
-             contentEditable
-             suppressContentEditableWarning
-             spellCheck={false}
-             onKeyDown={e => {
-               if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() }
-             }}
-             onMouseDown={e => {
-               e.stopPropagation()
-               placeCaretFromPoint(e)
-               const segEl = e.target?.closest?.('[data-segment-idx]')
-               if (!segEl) return
-               const idx = Number(segEl.dataset.segmentIdx)
-               if (Number.isInteger(idx) && segments[idx]) seekTo(segments[idx].start)
-             }}
-             onInput={e => {
-               const root = e.currentTarget
-               const updated = segments.map((s, idx) => {
-                 const node = root.querySelector(`[data-segment-idx="${idx}"]`)
-                 const text = (node?.textContent || '').replace(/\s+/g, ' ').trim()
-                 return text && text !== s.text ? { ...s, text } : s
-               })
-               const changed = updated.some((s, idx) => s.text !== segments[idx].text)
-               if (!changed) return
-               pendingCaretRef.current = captureCaret(e.currentTarget)
+           <SegmentedTranscriptEditor
+             segments={segments}
+             signature={segments.map(s => `${s.start ?? 0}-${s.end ?? 0}`).join('|')}
+             activeSegmentIdx={activeSegmentIdx}
+             onSeek={seekTo}
+             onCommit={(updated, { immediate }) => {
                const joined = updated.map(s => s.text).join(' ')
                setSegments(updated)
                setDraftTranscript(joined)
                setTranscript(joined)
-               scheduleTranscriptSave(joined, updated)
-             }}
-             onBlur={e => {
-               const root = e.currentTarget
-               const updated = segments.map((s, idx) => {
-                 const node = root.querySelector(`[data-segment-idx="${idx}"]`)
-                 const text = (node?.textContent || '').replace(/\s+/g, ' ').trim()
-                 return text && text !== s.text ? { ...s, text } : s
-               })
-               const changed = updated.some((s, idx) => s.text !== segments[idx].text)
-               if (!changed) return
-               const joined = updated.map(s => s.text).join(' ')
-               setSegments(updated)
-               setDraftTranscript(joined)
-               setTranscript(joined)
-               if (transcriptSaveTimer.current) {
-                 clearTimeout(transcriptSaveTimer.current)
-                 transcriptSaveTimer.current = null
+               if (immediate) {
+                 if (transcriptSaveTimer.current) {
+                   clearTimeout(transcriptSaveTimer.current)
+                   transcriptSaveTimer.current = null
+                 }
+                 saveAudioTranscript(audioId, joined, transcriptModel, updated)
+               } else {
+                 scheduleTranscriptSave(joined, updated)
                }
-               saveAudioTranscript(audioId, joined, transcriptModel, updated)
              }}
-             style={{
-               userSelect: 'text', WebkitUserSelect: 'text',
-               fontSize: '13px', color: 'var(--text-primary)',
-               background: 'var(--bg-secondary)',
-               border: '1px solid var(--border-light)', borderRadius: '6px',
-               padding: '8px 10px', lineHeight: 1.6,
-               fontFamily: 'var(--font-body)',
-               maxHeight: 260, overflowY: 'auto',
-               outline: 'none',
-               cursor: 'text',
-             }}
-           >
-             {segments.map((s, i) => (
-               <span
-                 key={`${i}-${s.start ?? 0}-${s.end ?? 0}`}
-                 data-segment-idx={i}
-                 title={`${formatTime(s.start)} — click to seek`}
-                 style={{
-                   background: i === activeSegmentIdx ? 'var(--accent-light)' : 'transparent',
-                   color: i === activeSegmentIdx ? 'var(--accent)' : 'inherit',
-                   borderRadius: 3,
-                 }}
-               >{s.text}{i < segments.length - 1 ? ' ' : ''}</span>
-             ))}
-           </div>
+           />
          )}
          {transcript && (!Array.isArray(segments) || segments.length === 0) && (
-           <div
-             ref={transcriptEditorRef}
-             contentEditable
-             suppressContentEditableWarning
-             spellCheck={false}
-             dangerouslySetInnerHTML={{ __html: transcript }}
-             onMouseDown={e => {
-               e.stopPropagation()
-               placeCaretFromPoint(e)
-             }}
-             onInput={e => {
-               const next = e.currentTarget.textContent || ''
-               if (next === transcript) return
-               pendingCaretRef.current = captureCaret(e.currentTarget)
-               setDraftTranscript(next)
-               setTranscript(next)
-               scheduleTranscriptSave(next, null)
-             }}
-             onBlur={e => {
-               const next = e.currentTarget.textContent || ''
-               if (next === transcript) return
-               setDraftTranscript(next)
-               setTranscript(next)
-               if (transcriptSaveTimer.current) {
-                 clearTimeout(transcriptSaveTimer.current)
-                 transcriptSaveTimer.current = null
+           <PlainTranscriptEditor
+             initialHtml={transcript}
+             onCommit={(text, { immediate }) => {
+               if (text === transcript) return
+               setDraftTranscript(text)
+               setTranscript(text)
+               if (immediate) {
+                 if (transcriptSaveTimer.current) {
+                   clearTimeout(transcriptSaveTimer.current)
+                   transcriptSaveTimer.current = null
+                 }
+                 saveAudioTranscript(audioId, text, transcriptModel, null)
+               } else {
+                 scheduleTranscriptSave(text, null)
                }
-               saveAudioTranscript(audioId, next, transcriptModel, null)
-             }}
-             style={{
-               fontSize: '13px', color: 'var(--text-primary)',
-               background: 'var(--bg-secondary)',
-               border: '1px solid var(--border-light)', borderRadius: '6px',
-               padding: '8px 10px', lineHeight: 1.6,
-               fontFamily: 'var(--font-body)',
-               maxHeight: 260, overflowY: 'auto',
-               whiteSpace: 'pre-wrap',
-               outline: 'none',
              }}
            />
          )}
