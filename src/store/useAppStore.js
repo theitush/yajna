@@ -9,7 +9,7 @@ import {
   getAllTasksRaw, getAllNotesRaw, getAllAudio,
 } from '../services/db'
 import { extractHashtags } from '../lib/hashtags'
-import { pushTasks, pushNotes, pushJournal, pushConfig, pushReviews, initialSync, mergeAndPushJournal } from '../services/sync'
+import { pushTasks, pushNotes, pushJournal, pushConfig, pushReviews, initialSyncStreaming, mergeAndPushJournal } from '../services/sync'
 import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, getSyncStatus, retryNow, setPollInterval } from '../services/syncEngine'
 import { pushAudio, pushAudioMetadata, pushPendingAudio, ensureAudioLocal, softDeleteAudio, restoreAudio, hardDeleteAudio, collectAudioIdsFromBlocks } from '../services/audio'
 import { putAudio, getAudio, getReviews, putReviews } from '../services/db'
@@ -731,25 +731,80 @@ const useAppStore = create((set, get) => ({
     }
     set(updates)
   },
-  runInitialSync: async () => {
-    set({ syncing: true, syncStatus: { state: 'syncing' } })
-    try {
-      const result = await initialSync()
-      const [tasks, notes, config, reviews] = result
-        ? [result.mergedTasks, result.mergedNotes, result.mergedConfig, result.mergedReviews]
-        : await Promise.all([getTasks(), getNotes(), getConfig(), getReviews()])
-      set({ tasks, notes, config: config || {}, reviews: reviews || {}, lastSync: Date.now() })
+  /**
+   * Run the initial Drive merge. Hydrates the store per-bucket as each
+   * bucket lands, so callers awaiting `priorityBuckets` can render the
+   * active screen as soon as its data is ready, while the rest finishes
+   * in the background.
+   *
+   * @param {Object} [opts]
+   * @param {string[]} [opts.priorityBuckets] - one or more of
+   *   'tasks' | 'notes' | 'config' | 'reviews'. Awaited before this call's
+   *   returned promise resolves. Background buckets keep going either way.
+   * @returns {Promise<void>} resolves when priority buckets are hydrated.
+   *   Background work (other buckets, drive writeback, sync engine startup)
+   *   continues without blocking.
+   */
+  runInitialSync: async (opts = {}) => {
+    const priorityBuckets = Array.isArray(opts.priorityBuckets) && opts.priorityBuckets.length
+      ? opts.priorityBuckets
+      : ['tasks', 'notes', 'config', 'reviews']
 
-      // Start the sync engine for continuous polling + auto-reconnect
+    set({ syncing: true, syncStatus: { state: 'syncing' } })
+
+    let handle
+    try {
+      handle = initialSyncStreaming()
+    } catch (e) {
+      // Synchronous failure to even start the merge — fall back to local reads.
+      console.error('Sync failed to start', e)
+      const [tasks, notes, config, reviews] = await Promise.all([getTasks(), getNotes(), getConfig(), getReviews()])
+      set({ tasks, notes, config: config || {}, reviews: reviews || {}, lastSync: Date.now() })
+      set({ syncing: false, syncStatus: { state: 'offline' } })
+      return
+    }
+
+    // Per-bucket hydration: each bucket promise resolves with the merged
+    // data once its local IDB write is committed. Hydrate the store the
+    // moment that happens so the active screen can render.
+    handle.buckets.tasks.then(tasks => {
+      if (tasks != null) set({ tasks })
+    }).catch(() => {})
+    handle.buckets.notes.then(notes => {
+      if (notes != null) set({ notes })
+    }).catch(() => {})
+    handle.buckets.config.then(config => {
+      if (config != null) set({ config: config || {} })
+    }).catch(() => {})
+    handle.buckets.reviews.then(reviews => {
+      if (reviews != null) set({ reviews: reviews || {} })
+    }).catch(() => {})
+
+    // Tail work that depends on the full merge being done: lastSync stamp,
+    // sync engine startup, deferred audio uploads, tag pool refresh.
+    handle.done.then((result) => {
+      // Belt-and-suspenders: if any bucket promise resolved with null
+      // (no Drive ids etc.) the store may still be empty — fill from local.
+      ;(async () => {
+        const s = get()
+        const fills = []
+        if (!s.tasks?.length) fills.push(getTasks().then(v => set({ tasks: v })))
+        if (!s.notes?.length) fills.push(getNotes().then(v => set({ notes: v })))
+        if (!Object.keys(s.config || {}).length) fills.push(getConfig().then(v => set({ config: v || {} })))
+        if (!Object.keys(s.reviews || {}).length) fills.push(getReviews().then(v => set({ reviews: v || {} })))
+        await Promise.all(fills)
+      })().catch(() => {})
+
+      set({ lastSync: Date.now(), syncing: false })
+
       onSyncStatus((s) => {
         useAppStore.getState().setSyncStatus(s)
       })
       const intervalMs = (result?.mergedConfig?.syncInterval || 1) * 1000
       startSyncEngine((data) => set(data), intervalMs, () => get())
-      // Upload any local audio that wasn't synced yet (deferred so it doesn't block UI)
       pushPendingAudio().catch(e => console.warn('pushPendingAudio failed', e))
       get().loadJournalTagPool()
-    } catch (e) {
+    }).catch((e) => {
       console.error('Sync failed', e)
       const code = e?.status || e?.result?.error?.code
       if (code === 401 || code === 403) {
@@ -757,14 +812,16 @@ const useAppStore = create((set, get) => ({
       } else {
         set({ syncStatus: { state: 'offline' } })
       }
-      // Ensure the sync engine is at least initialized so retryNow() works
       onSyncStatus((s) => {
         useAppStore.getState().setSyncStatus(s)
       })
       startSyncEngine((data) => set(data), 1000, () => get())
-    } finally {
       set({ syncing: false })
-    }
+    })
+
+    // Wait only on the priority buckets before returning. Background buckets
+    // keep going via the .then() handlers above.
+    await Promise.all(priorityBuckets.map(b => handle.buckets[b]).filter(Boolean))
   },
 
   // Offline mode boot: just load from IDB

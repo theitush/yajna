@@ -107,13 +107,58 @@ function toMs(iso) {
 
 /**
  * Merge Drive data with local IndexedDB data, write result back to both.
+ *
+ * Returns per-bucket promises so callers can await only the buckets they
+ * need before showing UI, and let the rest finish in the background.
+ *
+ *   const handle = mergeWithDriveStreaming()
+ *   await handle.buckets.tasks   // resolves to merged tasks (UI-ready)
+ *   await handle.done            // all buckets merged + drive writeback done
+ *
+ * Each bucket promise resolves once that bucket's local IDB write is done
+ * (so the store can be hydrated). Drive writebacks happen as a tail step
+ * gated by `done`.
+ */
+export function mergeWithDriveStreaming() {
+  const buckets = { tasks: null, notes: null, config: null, reviews: null }
+  let resolveTasks, resolveNotes, resolveConfig, resolveReviews
+  buckets.tasks = new Promise(r => { resolveTasks = r })
+  buckets.notes = new Promise(r => { resolveNotes = r })
+  buckets.config = new Promise(r => { resolveConfig = r })
+  buckets.reviews = new Promise(r => { resolveReviews = r })
+  const resolvers = { tasks: resolveTasks, notes: resolveNotes, config: resolveConfig, reviews: resolveReviews }
+
+  const done = (async () => {
+    const out = await mergeWithDriveImpl(resolvers)
+    return out
+  })()
+
+  // Swallow rejections on bucket promises if the overall sync fails — the
+  // caller is awaiting `done` for error propagation.
+  for (const k of Object.keys(buckets)) buckets[k].catch(() => {})
+
+  return { buckets, done }
+}
+
+/**
+ * Convenience: run the full streaming merge and await everything. Behaves
+ * like the previous mergeWithDrive(): resolves only when all buckets and
+ * Drive writebacks are done.
  */
 export async function mergeWithDrive() {
+  return mergeWithDriveStreaming().done
+}
+
+async function mergeWithDriveImpl(resolvers) {
   const t0 = performance.now()
   const mark = (label, from) => console.log(`[sync] ${label}: ${(performance.now() - from).toFixed(0)}ms`)
 
   const ids = await getDriveFileIds()
-  if (!ids) return
+  if (!ids) {
+    // No Drive — resolve all buckets with null so callers don't hang.
+    for (const r of Object.values(resolvers)) r(null)
+    return
+  }
   mark('getDriveFileIds', t0)
 
   // Phase: fetch current head revisions for all 4 files in parallel, compare
@@ -128,94 +173,124 @@ export async function mergeWithDrive() {
   mark('revision check', tRev)
   const unchanged = (id) => currentRevs[id] && storedRevs[id] === currentRevs[id]
 
-  // Phase: read only the files whose revision changed. Unchanged remotes are
-  // represented as null and skipped during merge (local is authoritative).
-  const tRead = performance.now()
-  const [remoteTasks, remoteNotes, remoteConfig, remoteReviews] = await Promise.all([
-    unchanged(ids.tasksFileId) ? null : readJsonFile(ids.tasksFileId),
-    unchanged(ids.notesFileId) ? null : readJsonFile(ids.notesFileId),
-    unchanged(ids.configFileId) ? null : readJsonFile(ids.configFileId),
-    unchanged(ids.reviewsFileId) ? null : readJsonFile(ids.reviewsFileId),
-  ])
-  const skipped = fileIds.filter(unchanged).length
-  mark(`drive reads (${4 - skipped}/4 fetched, ${skipped} skipped)`, tRead)
+  // Per-bucket pipelines: each runs read → merge → local write independently
+  // and resolves its bucket promise as soon as the local write lands. Drive
+  // writeback is collected and awaited after all buckets are locally hydrated
+  // (fine to run in the background while the UI is already interactive).
 
-  const tLocal = performance.now()
-  // Use raw reads so tombstones participate in the merge.
-  const [localTasks, localNotes, localConfig, localReviews] = await Promise.all([
-    getAllTasksRaw(),
-    getAllNotesRaw(),
-    getConfig(),
-    getReviews(),
-  ])
-  mark('local reads', tLocal)
-
-  const tMerge = performance.now()
-  const mergedTasks = remoteTasks == null
-    ? localTasks
-    : mergeById(localTasks, Array.isArray(remoteTasks) ? remoteTasks : [])
-  const mergedNotes = remoteNotes == null
-    ? localNotes
-    : mergeById(localNotes, Array.isArray(remoteNotes) ? remoteNotes : [], { mergeBody: true })
-  const mergedConfig = remoteConfig == null
-    ? (localConfig || {})
-    : { ...(localConfig || {}), ...(remoteConfig || {}) }
-  const mergedReviews = remoteReviews == null
-    ? (localReviews || {})
-    : { ...(localReviews || {}), ...(remoteReviews || {}) }
-  mark('merge', tMerge)
-
-  // Decide which files actually need a writeback. If the merged result equals
-  // what's on Drive, skip the upload entirely. Reference equality covers the
-  // skipped-read case (merged === local && remote unchanged → Drive matches).
-  const tDiff = performance.now()
-  const tasksChanged = remoteTasks != null && !shallowEqualById(mergedTasks, remoteTasks)
-  const notesChanged = remoteNotes != null && !shallowEqualById(mergedNotes, remoteNotes)
-  const configChanged = remoteConfig != null && !shallowEqualObj(mergedConfig, remoteConfig)
-  const reviewsChanged = remoteReviews != null && !shallowEqualObj(mergedReviews, remoteReviews)
-  mark('diff', tDiff)
-
-  // Local writeback only for buckets we actually re-merged.
-  const tLocalWrite = performance.now()
-  const localWrites = []
-  if (remoteTasks != null) localWrites.push(putTasks(mergedTasks))
-  if (remoteNotes != null) localWrites.push(putNotes(mergedNotes))
-  if (remoteConfig != null) localWrites.push(putConfig(mergedConfig))
-  if (remoteReviews != null) localWrites.push(putReviews(mergedReviews))
-  await Promise.all(localWrites)
-  mark('local writes', tLocalWrite)
-
-  // Drive writeback only for buckets that actually differ from remote.
-  const tDriveWrite = performance.now()
   const driveWrites = []
-  if (tasksChanged) driveWrites.push(writeJsonFile(ids.rootId, 'tasks.json', mergedTasks, ids.tasksFileId))
-  if (notesChanged) driveWrites.push(writeJsonFile(ids.rootId, 'notes.json', mergedNotes, ids.notesFileId))
-  if (configChanged) driveWrites.push(writeJsonFile(ids.rootId, 'config.json', mergedConfig, ids.configFileId))
-  if (reviewsChanged) driveWrites.push(writeJsonFile(ids.rootId, 'reviews.json', mergedReviews, ids.reviewsFileId))
+  const writtenIds = []
+
+  async function mergeBucket({
+    bucketKey, fileId, fileName,
+    readLocal, mergeFn, writeLocal,
+  }) {
+    const tReadLocal = performance.now()
+    const localData = await readLocal()
+    mark(`local read (${bucketKey})`, tReadLocal)
+
+    const tReadRemote = performance.now()
+    const remoteData = unchanged(fileId) ? null : await readJsonFile(fileId)
+    mark(`drive read (${bucketKey}${unchanged(fileId) ? ' skipped' : ''})`, tReadRemote)
+
+    const merged = mergeFn(localData, remoteData)
+    const remoteSkipped = remoteData == null
+    const equal = remoteSkipped ? true : mergeFn.equal(merged, remoteData)
+
+    if (!remoteSkipped) await writeLocal(merged)
+
+    if (!equal) {
+      driveWrites.push(writeJsonFile(ids.rootId, fileName, merged, fileId))
+      writtenIds.push(fileId)
+    }
+    return merged
+  }
+
+  // Kick off all four pipelines in parallel. Each resolves its bucket promise
+  // independently so the UI can hydrate piecemeal.
+  const tasksP = mergeBucket({
+    bucketKey: 'tasks',
+    fileId: ids.tasksFileId,
+    fileName: 'tasks.json',
+    readLocal: getAllTasksRaw,
+    mergeFn: Object.assign(
+      (local, remote) => remote == null ? local : mergeById(local, Array.isArray(remote) ? remote : []),
+      { equal: shallowEqualById },
+    ),
+    writeLocal: putTasks,
+  }).then(merged => {
+    resolvers.tasks(merged.filter(t => !t.deleted))
+    return merged
+  }, err => { resolvers.tasks(null); throw err })
+
+  const notesP = mergeBucket({
+    bucketKey: 'notes',
+    fileId: ids.notesFileId,
+    fileName: 'notes.json',
+    readLocal: getAllNotesRaw,
+    mergeFn: Object.assign(
+      (local, remote) => remote == null ? local : mergeById(local, Array.isArray(remote) ? remote : [], { mergeBody: true }),
+      { equal: shallowEqualById },
+    ),
+    writeLocal: putNotes,
+  }).then(merged => {
+    resolvers.notes(merged.filter(n => !n.deleted))
+    return merged
+  }, err => { resolvers.notes(null); throw err })
+
+  const configP = mergeBucket({
+    bucketKey: 'config',
+    fileId: ids.configFileId,
+    fileName: 'config.json',
+    readLocal: getConfig,
+    mergeFn: Object.assign(
+      (local, remote) => remote == null ? (local || {}) : { ...(local || {}), ...(remote || {}) },
+      { equal: shallowEqualObj },
+    ),
+    writeLocal: putConfig,
+  }).then(merged => {
+    resolvers.config(merged)
+    return merged
+  }, err => { resolvers.config(null); throw err })
+
+  const reviewsP = mergeBucket({
+    bucketKey: 'reviews',
+    fileId: ids.reviewsFileId,
+    fileName: 'reviews.json',
+    readLocal: getReviews,
+    mergeFn: Object.assign(
+      (local, remote) => remote == null ? (local || {}) : { ...(local || {}), ...(remote || {}) },
+      { equal: shallowEqualObj },
+    ),
+    writeLocal: putReviews,
+  }).then(merged => {
+    resolvers.reviews(merged)
+    return merged
+  }, err => { resolvers.reviews(null); throw err })
+
+  const [mergedTasks, mergedNotes, mergedConfig, mergedReviews] = await Promise.all([tasksP, notesP, configP, reviewsP])
+
+  // Drive writebacks: now that all merges are settled, push any buckets that
+  // diverged from remote.
+  const tDriveWrite = performance.now()
   await Promise.all(driveWrites)
   mark(`drive writes (${driveWrites.length}/4)`, tDriveWrite)
 
   // After uploads, fetch fresh revs for the files we wrote so the next startup
   // can short-circuit. For unchanged files we keep the current rev we already saw.
   const newRevs = { ...storedRevs, ...currentRevs }
-  if (driveWrites.length > 0) {
-    const writtenIds = []
-    if (tasksChanged) writtenIds.push(ids.tasksFileId)
-    if (notesChanged) writtenIds.push(ids.notesFileId)
-    if (configChanged) writtenIds.push(ids.configFileId)
-    if (reviewsChanged) writtenIds.push(ids.reviewsFileId)
+  if (writtenIds.length > 0) {
     const fresh = await getFileRevisions(writtenIds)
     Object.assign(newRevs, fresh)
   }
 
-  // Background maintenance — don't block the spinner on these.
+  // Background maintenance — don't block on these.
   setStoredRevisions(newRevs).catch(() => {})
   putMeta(LAST_SYNC_KEY, Date.now()).catch(() => {})
   const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
   purgeTombstones(cutoff).catch(() => {})
 
   mark('TOTAL mergeWithDrive', t0)
-  // Return the UI-facing view (no tombstones) so callers hydrate the store cleanly.
   return {
     mergedTasks: mergedTasks.filter(t => !t.deleted),
     mergedNotes: mergedNotes.filter(n => !n.deleted),
@@ -366,6 +441,15 @@ export async function pullJournal(week) {
  */
 export async function initialSync() {
   return mergeWithDrive()
+}
+
+/**
+ * Streaming initial sync: returns per-bucket promises plus a `done` promise
+ * for the full merge + Drive writeback. Callers can await only the buckets
+ * they need to render the active screen, then continue in the background.
+ */
+export function initialSyncStreaming() {
+  return mergeWithDriveStreaming()
 }
 
 /**

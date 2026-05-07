@@ -30,6 +30,20 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [blockingInitialSync, setBlockingInitialSync] = useState(false)
 
+  // Map the active route to the buckets/journal it needs to render. Used
+  // at boot to decide what to wait for before releasing the spinner lock.
+  function priorityWorkForRoute(hash) {
+    // Strip leading "#" and query/fragment leftovers.
+    const path = (hash || '').replace(/^#/, '').split('?')[0] || '/'
+    if (path.startsWith('/review')) return { buckets: ['reviews'], journal: true }
+    if (path.startsWith('/notes')) return { buckets: ['notes'], journal: false }
+    if (path.startsWith('/tasks')) return { buckets: ['tasks'], journal: false }
+    if (path.startsWith('/trash')) return { buckets: ['tasks', 'notes'], journal: false }
+    if (path.startsWith('/settings')) return { buckets: ['config'], journal: false }
+    // Today (/, /journal): journal entry for the week + tasks panel data.
+    return { buckets: ['tasks'], journal: true }
+  }
+
   const effectiveSyncStatus = mode === MODE_OFFLINE ? { state: 'offline' } : syncStatus
   const syncDotColor = {
     synced: 'var(--green-500)',
@@ -69,8 +83,10 @@ export default function App() {
               scheduleTokenRefresh(redirectResult.expiresIn, handleTokenExpired)
               fetchUserEmail()
               await initDriveStructure()
-              await runInitialSync()
-              await loadJournal(weekKey(today()))
+              const work = priorityWorkForRoute(window.location.hash)
+              const priorityTasks = [runInitialSync({ priorityBuckets: work.buckets })]
+              if (work.journal) priorityTasks.push(loadJournal(weekKey(today())))
+              await Promise.all(priorityTasks)
             } catch (e) {
               console.error('Background Drive init after redirect failed:', e)
               if (isAuthError(e)) {
@@ -119,8 +135,10 @@ export default function App() {
                 scheduleTokenRefresh(await getTokenRemainingSeconds(), handleTokenExpired)
                 fetchUserEmail(); t = lap('fetchUserEmail (kicked off)', t)
                 await initDriveStructure(); t = lap('initDriveStructure', t)
-                await runInitialSync(); t = lap('runInitialSync', t)
-                await loadJournal(weekKey(today())); t = lap('loadJournal', t)
+                const work = priorityWorkForRoute(window.location.hash)
+                const priorityTasks = [runInitialSync({ priorityBuckets: work.buckets })]
+                if (work.journal) priorityTasks.push(loadJournal(weekKey(today())))
+                await Promise.all(priorityTasks); t = lap('priority sync', t)
                 lap('TOTAL boot gate', tBoot)
                 return
               }
@@ -133,8 +151,10 @@ export default function App() {
                   scheduleTokenRefresh(refreshed.expiresIn, handleTokenExpired)
                   fetchUserEmail()
                   await initDriveStructure()
-                  await runInitialSync()
-                  await loadJournal(weekKey(today()))
+                  const work = priorityWorkForRoute(window.location.hash)
+                  const priorityTasks = [runInitialSync({ priorityBuckets: work.buckets })]
+                  if (work.journal) priorityTasks.push(loadJournal(weekKey(today())))
+                  await Promise.all(priorityTasks)
                   return
                 }
                 // Silent refresh returned null — permanent failure (401)
