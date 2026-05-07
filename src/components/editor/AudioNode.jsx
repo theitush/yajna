@@ -311,6 +311,12 @@ function AudioNodeView({ node, editor, getPos, extension }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmRetranscribe, setConfirmRetranscribe] = useState(false)
   const [draftTranscript, setDraftTranscript] = useState('')
+  // Bumped whenever transcript state is replaced from outside the editor
+  // (re-transcribe, hydrate from DB). Used as a `key` on the inner editor so
+  // it remounts and rebuilds its DOM — without this, re-transcribing the same
+  // clip yields identical segment timings, the signature memo stays equal,
+  // and the editor keeps showing the previously-edited text until refresh.
+  const [transcriptVersion, setTranscriptVersion] = useState(0)
   const [selected, setSelected] = useState(false)
   const blobRef = useRef(null)
   const pendingPlayRef = useRef(false)
@@ -359,6 +365,7 @@ function AudioNodeView({ node, editor, getPos, extension }) {
         setDraftTranscript(rec.transcript)
         setTranscriptModel(rec.transcriptModel || null)
         setSegments(Array.isArray(rec.transcriptSegments) ? rec.transcriptSegments : null)
+        setTranscriptVersion(v => v + 1)
       }
       return url
     } catch (e) {
@@ -407,6 +414,7 @@ function AudioNodeView({ node, editor, getPos, extension }) {
       setDraftTranscript(text)
       setTranscriptModel(model)
       setSegments(segs)
+      setTranscriptVersion(v => v + 1)
     } catch (e) {
       setTranscriptError(e.message || 'Transcription failed')
     } finally {
@@ -950,6 +958,7 @@ function AudioNodeView({ node, editor, getPos, extension }) {
          )}
          {transcript && Array.isArray(segments) && segments.length > 0 && (
            <SegmentedTranscriptEditor
+             key={`seg-${transcriptVersion}`}
              segments={segments}
              signature={segments.map(s => `${s.start ?? 0}-${s.end ?? 0}`).join('|')}
              activeSegmentIdx={activeSegmentIdx}
@@ -973,6 +982,7 @@ function AudioNodeView({ node, editor, getPos, extension }) {
          )}
          {transcript && (!Array.isArray(segments) || segments.length === 0) && (
            <PlainTranscriptEditor
+             key={`plain-${transcriptVersion}`}
              initialHtml={transcript}
              onCommit={(text, { immediate }) => {
                if (text === transcript) return
