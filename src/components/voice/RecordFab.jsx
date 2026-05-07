@@ -106,7 +106,7 @@ export default function RecordFab({ editor }) {
         if (sel && typeof sel.to === 'number' && sel.from !== sel.to) {
           editor.commands.setTextSelection(sel.to)
         }
-        editor.chain().focus().insertAudio({ audioId: id, duration, createdAt: new Date().toISOString() }).run()
+        editor.chain().focus().insertAudio({ audioId: id, duration, createdAt: new Date().toISOString(), autoTranscribe: true }).run()
       }
     } catch (e) {
       console.error(e)

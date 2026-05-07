@@ -1,5 +1,5 @@
 import { Node, mergeAttributes } from '@tiptap/core'
-import { NodeSelection } from '@tiptap/pm/state'
+import { NodeSelection, Plugin, TextSelection } from '@tiptap/pm/state'
 import { ReactNodeViewRenderer, NodeViewWrapper } from '@tiptap/react'
 import { useEffect, useRef, useState } from 'react'
 import useAppStore from '../../store/useAppStore'
@@ -91,6 +91,26 @@ function AudioNodeView({ node, editor, getPos, extension }) {
   const [selected, setSelected] = useState(false)
   const blobRef = useRef(null)
   const pendingPlayRef = useRef(false)
+  // Debounced transcript save. We save on input (not just blur) because users
+  // sometimes navigate away without firing blur on a contenteditable, which
+  // previously dropped edits silently.
+  const transcriptSaveTimer = useRef(null)
+  const scheduleTranscriptSave = (text, segs) => {
+    if (transcriptSaveTimer.current) clearTimeout(transcriptSaveTimer.current)
+    transcriptSaveTimer.current = setTimeout(() => {
+      transcriptSaveTimer.current = null
+      saveAudioTranscript(audioId, text, transcriptModel, segs ?? null)
+    }, 600)
+  }
+  useEffect(() => () => {
+    if (transcriptSaveTimer.current) {
+      clearTimeout(transcriptSaveTimer.current)
+      // Flush on unmount so unmounting the node-view (route change, etc)
+      // doesn't lose pending edits.
+      saveAudioTranscript(audioId, transcript, transcriptModel, Array.isArray(segments) ? segments : null)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const loadBlob = async () => {
     setStatus('loading')
@@ -175,6 +195,33 @@ function AudioNodeView({ node, editor, getPos, extension }) {
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
   }, [objectUrl])
+
+  // Auto-transcribe freshly recorded clips. The flag is set by RecordFab on
+  // insert; clear it on first attempt so re-renders don't retry. Errors
+  // (no API key, offline, server) surface inline via transcriptError —
+  // never a popup.
+  useEffect(() => {
+    if (!node.attrs.autoTranscribe) return
+    if (transcript || transcribing) return
+    // Clear the flag eagerly so we don't retry on every render.
+    if (editor && typeof getPos === 'function' && !readOnly) {
+      const pos = getPos()
+      if (pos != null) {
+        try {
+          editor.chain().command(({ tr }) => {
+            tr.setNodeMarkup(pos, undefined, { ...node.attrs, autoTranscribe: false })
+            return true
+          }).run()
+        } catch { /* ignore */ }
+      }
+    }
+    if (!config?.groqApiKey) {
+      setTranscriptError('Add your Groq API key in Settings to auto-transcribe')
+      return
+    }
+    handleTranscribe()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node.attrs.autoTranscribe])
 
   // Hydrate transcript on mount so the (default-expanded) panel shows it
   // immediately, without forcing the audio blob to be decoded.
@@ -326,16 +373,20 @@ function AudioNodeView({ node, editor, getPos, extension }) {
     return $pos.index() < $pos.parent.childCount - 1
   })()
 
-  const handleDelete = async () => {
+  const handleDelete = () => {
     if (typeof getPos !== 'function') return
     const pos = getPos()
     if (pos == null) return
-    // Soft-delete first (records source for Trash), then remove from the doc.
+    // Remove from the doc first so the UI reacts instantly. Soft-delete
+    // (which scans IDB for the trash list) runs in the background — failures
+    // log but don't block the user.
     const getSource = extension?.options?.getSource
     let source = null
     try { source = typeof getSource === 'function' ? getSource() : null } catch {}
-    try { await trashAudio(audioId, source) } catch (e) { console.warn('trashAudio failed', e) }
     editor.chain().focus().deleteRange({ from: pos, to: pos + node.nodeSize }).run()
+    Promise.resolve()
+      .then(() => trashAudio(audioId, source))
+      .catch(e => console.warn('trashAudio failed', e))
   }
 
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0
@@ -699,6 +750,21 @@ function AudioNodeView({ node, editor, getPos, extension }) {
                const idx = Number(segEl.dataset.segmentIdx)
                if (Number.isInteger(idx) && segments[idx]) seekTo(segments[idx].start)
              }}
+             onInput={e => {
+               const root = e.currentTarget
+               const updated = segments.map((s, idx) => {
+                 const node = root.querySelector(`[data-segment-idx="${idx}"]`)
+                 const text = (node?.textContent || '').replace(/\s+/g, ' ').trim()
+                 return text && text !== s.text ? { ...s, text } : s
+               })
+               const changed = updated.some((s, idx) => s.text !== segments[idx].text)
+               if (!changed) return
+               const joined = updated.map(s => s.text).join(' ')
+               setSegments(updated)
+               setDraftTranscript(joined)
+               setTranscript(joined)
+               scheduleTranscriptSave(joined, updated)
+             }}
              onBlur={e => {
                const root = e.currentTarget
                const updated = segments.map((s, idx) => {
@@ -712,6 +778,10 @@ function AudioNodeView({ node, editor, getPos, extension }) {
                setSegments(updated)
                setDraftTranscript(joined)
                setTranscript(joined)
+               if (transcriptSaveTimer.current) {
+                 clearTimeout(transcriptSaveTimer.current)
+                 transcriptSaveTimer.current = null
+               }
                saveAudioTranscript(audioId, joined, transcriptModel, updated)
              }}
              style={{
@@ -746,11 +816,22 @@ function AudioNodeView({ node, editor, getPos, extension }) {
              suppressContentEditableWarning
              spellCheck={false}
              dangerouslySetInnerHTML={{ __html: transcript }}
+             onInput={e => {
+               const next = e.currentTarget.textContent || ''
+               if (next === transcript) return
+               setDraftTranscript(next)
+               setTranscript(next)
+               scheduleTranscriptSave(next, null)
+             }}
              onBlur={e => {
                const next = e.currentTarget.textContent || ''
                if (next === transcript) return
                setDraftTranscript(next)
                setTranscript(next)
+               if (transcriptSaveTimer.current) {
+                 clearTimeout(transcriptSaveTimer.current)
+                 transcriptSaveTimer.current = null
+               }
                saveAudioTranscript(audioId, next, transcriptModel, null)
              }}
              style={{
@@ -820,6 +901,10 @@ export const AudioNode = Node.create({
       audioId: { default: null },
       duration: { default: 0 },
       createdAt: { default: null },
+      // Set to true on freshly recorded clips so the node-view kicks off
+      // transcription automatically. Cleared on first attempt so re-renders
+      // don't retry forever (errors surface inline in the panel).
+      autoTranscribe: { default: false, rendered: false },
     }
   },
 
@@ -882,6 +967,71 @@ export const AudioNode = Node.create({
       Backspace: blockIfAdjacent('before'),
       Delete: blockIfAdjacent('after'),
     }
+  },
+
+  addProseMirrorPlugins() {
+    const name = this.name
+    // When an audio node is the active NodeSelection, typing a character
+    // would replace the node (PM default). Instead, drop the selection
+    // *after* the node so the typed text appears as a sibling.
+    const moveCursorAfterAudio = (view) => {
+      const { state, dispatch } = view
+      const sel = state.selection
+      if (!(sel instanceof NodeSelection)) return false
+      if (sel.node?.type?.name !== name) return false
+      const after = sel.to
+      const $after = state.doc.resolve(after)
+      let tr = state.tr
+      // If there's no text-selectable position right after the audio (e.g.
+      // it's the last block), append a paragraph so the user has somewhere
+      // to type.
+      if ($after.parent.type.name === 'doc' && !$after.nodeAfter) {
+        const para = state.schema.nodes.paragraph?.create()
+        if (para) {
+          tr = tr.insert(after, para)
+          tr = tr.setSelection(TextSelection.create(tr.doc, after + 1))
+        } else {
+          tr = tr.setSelection(TextSelection.create(tr.doc, after))
+        }
+      } else {
+        // Find nearest text position at/after the node end.
+        let pos = after
+        try {
+          const next = TextSelection.near(tr.doc.resolve(pos), 1)
+          tr = tr.setSelection(next)
+        } catch {
+          tr = tr.setSelection(TextSelection.create(tr.doc, pos))
+        }
+      }
+      dispatch(tr)
+      return true
+    }
+    return [
+      new Plugin({
+        props: {
+          handleTextInput(view) {
+            // Returning false lets PM handle insertion *after* we relocate
+            // the selection, so the typed character lands after the audio.
+            return moveCursorAfterAudio(view) ? false : false
+          },
+          handleKeyDown(view, event) {
+            const sel = view.state.selection
+            if (!(sel instanceof NodeSelection)) return false
+            if (sel.node?.type?.name !== name) return false
+            // Printable single-char keys (letters, digits, symbols, space)
+            // should move the cursor past the audio first; PM will then
+            // insert the character normally.
+            const isPrintable = event.key.length === 1
+              && !event.ctrlKey && !event.metaKey && !event.altKey
+            if (isPrintable || event.key === 'Enter') {
+              moveCursorAfterAudio(view)
+              return false
+            }
+            return false
+          },
+        },
+      }),
+    ]
   },
 
   addCommands() {

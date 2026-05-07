@@ -550,8 +550,12 @@ const useAppStore = create((set, get) => ({
   },
   trashAudio: async (id, source) => {
     await softDeleteAudio(id, source)
-    const all = await getAllAudio()
-    set({ trashedAudio: all.filter(a => a.deleted) })
+    // Refresh the trashed list in the background so callers (e.g. the audio
+    // delete button) don't wait on a full IDB scan to feel responsive. The
+    // Trash page reloads on mount, so a brief delay is fine.
+    getAllAudio()
+      .then(all => set({ trashedAudio: all.filter(a => a.deleted) }))
+      .catch(e => console.warn('refresh trashedAudio failed', e))
   },
   restoreTrashedTask: async (id) => {
     const raw = (await getAllTasksRaw()).find(t => t.id === id)
