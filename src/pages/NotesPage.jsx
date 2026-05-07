@@ -16,6 +16,7 @@ import EditorToolbar from '../components/editor/EditorToolbar'
 import { RTLExtension } from '../components/editor/RTLExtension'
 import { AudioNode } from '../components/editor/AudioNode'
 import { BlockIdExtension } from '../components/editor/BlockIdExtension'
+import { SearchHighlightExtension } from '../components/editor/SearchHighlightExtension'
 import { HashtagSuggest } from '../components/editor/HashtagSuggest'
 import { HeadingNoShortcut } from '../components/editor/HeadingNoShortcut'
 import RecordFab from '../components/voice/RecordFab'
@@ -73,6 +74,7 @@ function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags }) {
         }),
       }),
       BlockIdExtension,
+      SearchHighlightExtension,
     ],
     content: (note?.body ?? blocksToHtml(note?.blocks)) || '',
     onUpdate: ({ editor }) => {
@@ -212,47 +214,42 @@ export default function NotesPage() {
   const [activeEditor, setActiveEditor] = useState(null)
   const highlightBlock = useHighlightTarget('block')
 
-  // Once the editor has loaded the selected note, find the target block by
-  // its data-bid attribute, scroll it into view, and apply the highlight
-  // class. The marker auto-clears via useHighlightTarget on next click.
-  // We poll AND watch for mutations because content can land asynchronously
-  // (initial editor mount vs. setContent on remoteHtml change).
+  // Drive the highlight via a ProseMirror decoration (see
+  // SearchHighlightExtension). We previously toggled the class imperatively
+  // on the DOM node, but tiptap re-renders block nodes on its own
+  // transactions and would wipe the class. The decoration survives those.
+  // We also scroll the matching DOM node into view once it exists.
   useEffect(() => {
-    if (!highlightBlock || !activeEditor) return
+    if (!activeEditor) return
+    activeEditor.commands.setSearchHighlight(highlightBlock || null)
+    if (!highlightBlock) return
     const dom = activeEditor.view?.dom
     if (!dom) return
-    let cleanupEl = null
-    let cancelled = false
     const sel = `[data-bid="${CSS.escape(highlightBlock)}"]`
-    const apply = (el) => {
-      cleanupEl = el
-      el.classList.add('search-highlight')
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    let cancelled = false
+    const tryScroll = () => {
+      if (cancelled) return false
+      const el = dom.querySelector(sel)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        return true
+      }
+      return false
     }
-    const initial = dom.querySelector(sel)
-    if (initial) {
-      apply(initial)
-    } else {
-      const obs = new MutationObserver(() => {
-        if (cancelled) return
-        const el = dom.querySelector(sel)
-        if (el) {
-          apply(el)
-          obs.disconnect()
-        }
-      })
+    if (!tryScroll()) {
+      const obs = new MutationObserver(() => { if (tryScroll()) obs.disconnect() })
       obs.observe(dom, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-bid'] })
-      // Safety: stop watching after 3s.
       const stop = setTimeout(() => obs.disconnect(), 3000)
       return () => {
         cancelled = true
         clearTimeout(stop)
         obs.disconnect()
-        if (cleanupEl) cleanupEl.classList.remove('search-highlight')
+        activeEditor.commands.setSearchHighlight(null)
       }
     }
     return () => {
-      if (cleanupEl) cleanupEl.classList.remove('search-highlight')
+      cancelled = true
+      activeEditor.commands.setSearchHighlight(null)
     }
   }, [highlightBlock, activeEditor, selectedNoteId])
 
