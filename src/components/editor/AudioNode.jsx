@@ -687,8 +687,8 @@ function AudioNodeView({ node, editor, getPos, extension }) {
      <div style={{
          display: 'flex',
          alignItems: 'center',
-         gap: '10px',
-         padding: '8px 12px',
+         gap: '8px',
+         padding: '4px 10px',
          userSelect: 'none',
        }}>
       {!readOnly && !isTouchDevice && (
@@ -763,7 +763,7 @@ function AudioNodeView({ node, editor, getPos, extension }) {
         disabled={status === 'loading'}
         title={playing ? 'Pause' : 'Play'}
         style={{
-          width: 34, height: 34, flexShrink: 0,
+          width: 28, height: 28, flexShrink: 0,
           borderRadius: '50%',
           border: 'none',
           background: 'var(--accent)',
@@ -836,7 +836,7 @@ function AudioNodeView({ node, editor, getPos, extension }) {
         </div>
         <div style={{
           display: 'flex', justifyContent: 'space-between',
-          fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px',
+          fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '2px',
           fontFamily: 'var(--font-body)',
         }}>
           <span>{error ? error : formatTime(currentTime)}</span>
@@ -870,9 +870,9 @@ function AudioNodeView({ node, editor, getPos, extension }) {
         disabled={transcribing}
         title={transcript ? 'Re-transcribe' : 'Transcribe'}
         style={{
-          fontSize: '12px', fontWeight: 500,
+          fontSize: '11px', fontWeight: 500,
           color: 'var(--accent)', background: 'var(--accent-light)',
-          border: 'none', padding: '6px 12px', borderRadius: '6px',
+          border: 'none', padding: '3px 8px', borderRadius: '5px',
           cursor: transcribing ? 'wait' : 'pointer',
           fontFamily: 'var(--font-body)',
           opacity: transcribing ? 0.6 : 1,
