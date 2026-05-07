@@ -16,6 +16,7 @@ import ReviewPage from './pages/ReviewPage'
 import NotesPage from './pages/NotesPage'
 import TasksPage from './pages/TasksPage'
 import TrashPage from './pages/TrashPage'
+import SearchPage from './pages/SearchPage'
 import SettingsPage from './pages/SettingsPage'
 
 export default function App() {
@@ -335,6 +336,7 @@ export default function App() {
               <Route path="/journal" element={<Navigate to="/review" replace />} />
               <Route path="/notes" element={<NotesPage />} />
               <Route path="/tasks" element={<TasksPage />} />
+              <Route path="/search" element={<SearchPage />} />
               <Route path="/trash" element={<TrashPage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Routes>

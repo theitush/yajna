@@ -148,3 +148,17 @@ body {
   background: var(--border-mid);
   border-radius: 2px;
 }
+
+/* Marker for an item navigated to from search. Cleared on first user click. */
+.search-highlight {
+  position: relative;
+  animation: searchHighlightPulse 1.4s ease-out 2;
+  box-shadow: 0 0 0 2px var(--accent), 0 0 16px rgba(99, 102, 241, 0.35);
+  border-radius: 8px;
+  transition: box-shadow 0.25s ease;
+}
+@keyframes searchHighlightPulse {
+  0%   { box-shadow: 0 0 0 2px var(--accent), 0 0 0 rgba(99, 102, 241, 0); }
+  50%  { box-shadow: 0 0 0 2px var(--accent), 0 0 22px rgba(99, 102, 241, 0.55); }
+  100% { box-shadow: 0 0 0 2px var(--accent), 0 0 0 rgba(99, 102, 241, 0); }
+}

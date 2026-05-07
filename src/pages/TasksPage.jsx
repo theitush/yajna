@@ -1,6 +1,7 @@
-import { useState, useMemo, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import useAppStore from '../store/useAppStore'
 import TaskCard from '../components/today/TaskCard'
+import useHighlightTarget from '../lib/useHighlightTarget'
 
 const SECTIONS = [
   { key: 'active', label: 'Active' },
@@ -11,67 +12,38 @@ const SECTIONS = [
   { key: 'dismissed', label: 'Dismissed' },
 ]
 
-const HASHTAG_RE = /#([\p{L}\p{N}_-]+)/gu
-
-function extractTags(task) {
-  const text = `${task.title || ''} ${task.explanation || ''} ${task.feedback || ''} ${task.tags || ''}`
-  const out = new Set()
-  for (const m of text.matchAll(HASHTAG_RE)) out.add(m[1].toLowerCase())
-  return out
-}
-
-function matchesSearch(task, query) {
-  if (!query) return true
-  const q = query.toLowerCase()
-  const hay = `${task.title || ''} ${task.explanation || ''} ${task.feedback || ''} ${task.tags || ''}`.toLowerCase()
-  return hay.includes(q)
-}
-
 export default function TasksPage() {
   const tasks = useAppStore(s => s.tasks)
-  useAppStore(s => s.notes)
-  useAppStore(s => s.currentJournal)
-  useAppStore(s => s.journalTagPool)
   const addTask = useAppStore(s => s.addTask)
   const [showAdd, setShowAdd] = useState(false)
   const [title, setTitle] = useState('')
   const [explanation, setExplanation] = useState('')
   const [openSections, setOpenSections] = useState({ active: true, scheduled: true, backlog: true })
-  const [search, setSearch] = useState('')
-  const [showSuggestions, setShowSuggestions] = useState(false)
-  const searchRef = useRef(null)
-
-  const allTags = useAppStore.getState().getAllTags()
-
-  // Detect the hashtag token currently being typed (cursor at end of input for simplicity)
-  const activeHashtag = useMemo(() => {
-    const m = search.match(/#([\p{L}\p{N}_-]*)$/u)
-    return m ? m[1].toLowerCase() : null
-  }, [search])
-
-  const suggestions = useMemo(() => {
-    if (activeHashtag !== null) {
-      return allTags.filter(t => t.startsWith(activeHashtag) && t !== activeHashtag).slice(0, 8)
-    }
-    if (search === '') return allTags.slice(0, 8)
-    return []
-  }, [allTags, activeHashtag, search])
-
-  const applySuggestion = (tag) => {
-    const next = activeHashtag !== null
-      ? search.replace(/#([\p{L}\p{N}_-]*)$/u, `#${tag} `)
-      : `#${tag} `
-    setSearch(next)
-    setShowSuggestions(false)
-    searchRef.current?.focus()
-  }
-
-  const filtered = useMemo(() => tasks.filter(t => matchesSearch(t, search)), [tasks, search])
+  const highlightId = useHighlightTarget('id')
+  const highlightRef = useRef(null)
 
   const byStatus = SECTIONS.reduce((acc, { key }) => {
-    acc[key] = filtered.filter(t => t.status === key)
+    acc[key] = tasks.filter(t => t.status === key)
     return acc
   }, {})
+
+  // When arriving from search with ?id=…, expand the section that contains
+  // the task and scroll the card into view. The marker styling is applied
+  // via the `search-highlight` class on the wrapping div.
+  useEffect(() => {
+    if (!highlightId) return
+    const target = tasks.find(t => t.id === highlightId)
+    if (!target) return
+    if (target.status && openSections[target.status] === false) {
+      setOpenSections(s => ({ ...s, [target.status]: true }))
+    }
+    // Wait one frame for layout / sections to expand, then scroll.
+    const t = setTimeout(() => {
+      highlightRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 60)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightId, tasks])
 
   const handleAdd = async () => {
     if (!title.trim()) return
@@ -103,54 +75,7 @@ export default function TasksPage() {
         position: 'sticky', top: 0,
         background: 'var(--bg-primary)', zIndex: 10,
       }}>
-        <h1 style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-primary)', flexShrink: 0 }}>Todos</h1>
-        <div style={{ position: 'relative', flex: 1, minWidth: 0, maxWidth: '320px', margin: '0 auto' }}>
-          <input
-            ref={searchRef}
-            value={search}
-            onChange={e => { setSearch(e.target.value); setShowSuggestions(true) }}
-            onFocus={() => setShowSuggestions(true)}
-            onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-            onKeyDown={e => {
-              if (e.key === 'Escape') { setSearch(''); setShowSuggestions(false) }
-              if (e.key === 'Tab' && suggestions.length > 0) {
-                e.preventDefault()
-                applySuggestion(suggestions[0])
-              }
-            }}
-            placeholder="Search todos..."
-            dir="auto"
-            style={inputStyle}
-          />
-          {showSuggestions && suggestions.length > 0 && (
-            <div style={{
-              position: 'absolute', top: '100%', left: 0, right: 0, marginTop: '4px',
-              background: 'var(--bg-secondary)',
-              border: '1px solid var(--border-mid)',
-              borderRadius: '8px',
-              padding: '4px',
-              zIndex: 20,
-              display: 'flex', flexDirection: 'column', gap: '2px',
-              boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
-            }}>
-              {suggestions.map(tag => (
-                <button
-                  key={tag}
-                  onMouseDown={e => { e.preventDefault(); applySuggestion(tag) }}
-                  style={{
-                    textAlign: 'left', fontSize: '12px',
-                    padding: '6px 10px', borderRadius: '6px',
-                    background: 'none', border: 'none',
-                    color: 'var(--accent)', cursor: 'pointer',
-                    fontFamily: 'var(--font-body)',
-                  }}
-                >
-                  #{tag}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+        <h1 style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-primary)', flex: 1 }}>Todos</h1>
         <button
           onClick={() => setShowAdd(s => !s)}
           style={{
@@ -209,7 +134,6 @@ export default function TasksPage() {
         {SECTIONS.map(({ key, label }) => {
           const group = byStatus[key]
           if (group.length === 0 && (key === 'done' || key === 'dismissed')) return null
-          if (group.length === 0 && search) return null
           return (
             <div key={key}>
               <button
@@ -249,9 +173,18 @@ export default function TasksPage() {
                   {group.length === 0 && (
                     <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', padding: '0 4px' }}>None</p>
                   )}
-                  {group.map(task => (
-                    <TaskCard key={task.id} task={task} />
-                  ))}
+                  {group.map(task => {
+                    const isHL = task.id === highlightId
+                    return (
+                      <div
+                        key={task.id}
+                        ref={isHL ? highlightRef : null}
+                        className={isHL ? 'search-highlight' : undefined}
+                      >
+                        <TaskCard task={task} />
+                      </div>
+                    )
+                  })}
                 </div>
               )}
             </div>

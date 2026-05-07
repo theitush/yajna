@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useEditor, EditorContent } from '@tiptap/react'
+import useHighlightTarget from '../lib/useHighlightTarget'
 import StarterKit from '@tiptap/starter-kit'
 import { getAllJournals } from '../services/db'
 import useAppStore from '../store/useAppStore'
@@ -86,7 +88,7 @@ function CommentEditButton({ hasComment, onClick }) {
   )
 }
 
-function JournalBlock({ block, comments, commentsOpen, onOpenComment, onCloseComment, onAddComment, audioRanks }) {
+function JournalBlock({ block, comments, commentsOpen, onOpenComment, onCloseComment, onAddComment, audioRanks, highlighted, highlightRef }) {
   const [hovered, setHovered] = useState(false)
   const singleComment = comments?.[0] || null
   const isRtl = block.html?.includes('dir="rtl"')
@@ -115,6 +117,8 @@ function JournalBlock({ block, comments, commentsOpen, onOpenComment, onCloseCom
 
   return (
     <div
+      ref={highlighted ? highlightRef : null}
+      className={highlighted ? 'search-highlight' : undefined}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
@@ -178,7 +182,7 @@ function JournalBlock({ block, comments, commentsOpen, onOpenComment, onCloseCom
   )
 }
 
-function ReviewJournalPane({ day, title = 'Journal', openCommentKey, onOpenComment, onCloseComment, onToggleReview, onAddBlockComment }) {
+function ReviewJournalPane({ day, title = 'Journal', openCommentKey, onOpenComment, onCloseComment, onToggleReview, onAddBlockComment, highlightBlockId, highlightRef }) {
   const blocks = (day.journalEntry?.blocks || []).filter(block => !block.deleted)
 
   // Each JournalBlock renders into its own editor, so rankInDoc would only
@@ -235,6 +239,8 @@ function ReviewJournalPane({ day, title = 'Journal', openCommentKey, onOpenComme
               onOpenComment={() => onOpenComment(`journal:${day.date}:${block.id}`)}
               onCloseComment={onCloseComment}
               onAddComment={text => onAddBlockComment(block.id, text)}
+              highlighted={block.id === highlightBlockId}
+              highlightRef={block.id === highlightBlockId ? highlightRef : null}
             />
           ))
         )}
@@ -341,13 +347,38 @@ export default function ReviewPage() {
   const setJournalEntryReviewed = useAppStore(s => s.setJournalEntryReviewed)
   const addJournalBlockComment = useAppStore(s => s.addJournalBlockComment)
   const syncAllJournals = useAppStore(s => s.syncAllJournals)
+  const [searchParams] = useSearchParams()
+  const urlDate = searchParams.get('date')
+  const highlightBlock = useHighlightTarget('block')
+  const highlightRef = useRef(null)
   const [journalDocs, setJournalDocs] = useState([])
-  const [selectedDate, setSelectedDate] = useState(null)
-  const [mobileView, setMobileView] = useState('list')
+  const [selectedDate, setSelectedDate] = useState(urlDate || null)
+  const [mobileView, setMobileView] = useState(urlDate ? 'detail' : 'list')
   const [mobilePanel, setMobilePanel] = useState('journal')
   const [openCommentKey, setOpenCommentKey] = useState(null)
   const [mode, setMode] = useState('review') // 'review' | 'edit'
   const todayStr = today()
+
+  // If the URL changes (arriving from search), follow it.
+  useEffect(() => {
+    if (urlDate && urlDate !== selectedDate) {
+      setSelectedDate(urlDate)
+      setMobileView('detail')
+      setMobilePanel('journal')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlDate])
+
+  // After the selected day's blocks render, scroll the highlighted block
+  // into view. The marker is applied via the `search-highlight` className
+  // on the JournalBlock; useHighlightTarget clears the URL on next click.
+  useEffect(() => {
+    if (!highlightBlock) return
+    const t = setTimeout(() => {
+      highlightRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 100)
+    return () => clearTimeout(t)
+  }, [highlightBlock, selectedDate])
 
   useEffect(() => {
     syncAllJournals().catch(console.error)
@@ -553,6 +584,8 @@ export default function ReviewPage() {
                     onCloseComment={() => setOpenCommentKey(null)}
                     onToggleReview={() => setJournalEntryReviewed(selectedDay.date, !selectedDay.journalReviewed)}
                     onAddBlockComment={(blockId, text) => addJournalBlockComment(selectedDay.date, blockId, text)}
+                    highlightBlockId={highlightBlock}
+                    highlightRef={highlightRef}
                   />
                 )}
               </div>
@@ -584,6 +617,8 @@ export default function ReviewPage() {
                     onCloseComment={() => setOpenCommentKey(null)}
                     onToggleReview={() => setJournalEntryReviewed(selectedDay.date, !selectedDay.journalReviewed)}
                     onAddBlockComment={(blockId, text) => addJournalBlockComment(selectedDay.date, blockId, text)}
+                    highlightBlockId={highlightBlock}
+                    highlightRef={highlightRef}
                   />
                 )
               ) : (

@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import useHighlightTarget from '../lib/useHighlightTarget'
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Highlight from '@tiptap/extension-highlight'
@@ -308,10 +310,36 @@ export default function TrashPage() {
 
   useEffect(() => { loadTrash() }, [loadTrash])
 
+  const [searchParams] = useSearchParams()
+  const highlightId = useHighlightTarget('id')
+  const highlightKind = searchParams.get('kind')
+  const highlightRef = useRef(null)
+
   const sortByDeleted = (a, b) => new Date(b.deletedAt || 0) - new Date(a.deletedAt || 0)
   const tasks = [...trashedTasks].sort(sortByDeleted)
   const notes = [...trashedNotes].sort(sortByDeleted)
   const audio = [...trashedAudio].sort(sortByDeleted)
+
+  useEffect(() => {
+    if (!highlightId) return
+    const t = setTimeout(() => {
+      highlightRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 80)
+    return () => clearTimeout(t)
+  }, [highlightId, tasks.length, notes.length, audio.length])
+
+  const wrap = (kind, id, child) => {
+    const isHL = highlightId === id && (!highlightKind || highlightKind === kind)
+    return (
+      <div
+        key={id}
+        ref={isHL ? highlightRef : null}
+        className={isHL ? 'search-highlight' : undefined}
+      >
+        {child}
+      </div>
+    )
+  }
 
   const empty = tasks.length === 0 && notes.length === 0 && audio.length === 0
 
@@ -339,7 +367,7 @@ export default function TrashPage() {
           <section>
             <h2 style={sectionHeaderStyle}>Todos</h2>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {tasks.map(t => <TaskTrashCard key={t.id} task={t} onPurge={purgeTrashedTask} onRestore={restoreTrashedTask} />)}
+              {tasks.map(t => wrap('todo', t.id, <TaskTrashCard task={t} onPurge={purgeTrashedTask} onRestore={restoreTrashedTask} />))}
             </div>
           </section>
         )}
@@ -348,7 +376,7 @@ export default function TrashPage() {
           <section>
             <h2 style={sectionHeaderStyle}>Notes</h2>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {notes.map(n => <NoteTrashCard key={n.id} note={n} onPurge={purgeTrashedNote} onRestore={restoreTrashedNote} />)}
+              {notes.map(n => wrap('note', n.id, <NoteTrashCard note={n} onPurge={purgeTrashedNote} onRestore={restoreTrashedNote} />))}
             </div>
           </section>
         )}
@@ -357,15 +385,14 @@ export default function TrashPage() {
           <section>
             <h2 style={sectionHeaderStyle}>Audio</h2>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {audio.map(a => (
+              {audio.map(a => wrap('audio', a.id, (
                 <AudioTrashCard
-                  key={a.id}
                   audio={a}
                   onPurge={purgeTrashedAudio}
                   onRestore={restoreTrashedAudio}
                   getAudioReferenceCount={getAudioReferenceCount}
                 />
-              ))}
+              )))}
             </div>
           </section>
         )}

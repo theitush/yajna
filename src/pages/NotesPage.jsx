@@ -1,4 +1,6 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import useHighlightTarget from '../lib/useHighlightTarget'
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
@@ -197,143 +199,100 @@ function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags }) {
   )
 }
 
-function TagStrip({ allTags, selectedTags, onToggleTag, onClearTags }) {
-  const [tagSearch, setTagSearch] = useState('')
-  const [expanded, setExpanded] = useState(false)
-
-  const filteredTags = useMemo(() => {
-    if (!tagSearch) return allTags
-    const q = tagSearch.toLowerCase()
-    return allTags.filter(t => t.toLowerCase().includes(q))
-  }, [allTags, tagSearch])
-
-  if (allTags.length === 0) return null
-
-  const showSearch = allTags.length > 8
-  const visibleTags = expanded ? filteredTags : filteredTags.slice(0, 12)
-  const hasMore = !expanded && filteredTags.length > 12
-
-  return (
-    <div style={{
-      borderTop: '1px solid var(--border-light)',
-      flexShrink: 0,
-    }}>
-      {showSearch && (
-        <div style={{ padding: '6px 8px 0' }}>
-          <input
-            value={tagSearch}
-            onChange={e => setTagSearch(e.target.value)}
-            placeholder="Filter tags…"
-            style={{
-              width: '100%', fontSize: '11px',
-              padding: '4px 8px', borderRadius: '6px',
-              background: 'var(--bg-tertiary)', color: 'var(--text-primary)',
-              border: '1px solid var(--border-light)',
-              fontFamily: 'var(--font-body)', outline: 'none',
-            }}
-          />
-        </div>
-      )}
-      <div style={{
-        display: 'flex', flexWrap: 'wrap', gap: '4px',
-        padding: '8px',
-        maxHeight: expanded ? '140px' : '68px',
-        overflowY: expanded ? 'auto' : 'hidden',
-        transition: 'max-height 0.2s',
-      }}>
-        <button
-          onClick={onClearTags}
-          style={{
-            fontSize: '11px', whiteSpace: 'nowrap',
-            padding: '2px 8px', borderRadius: '10px',
-            background: selectedTags.length === 0 ? 'var(--accent)' : 'var(--bg-tertiary)',
-            color: selectedTags.length === 0 ? '#fff' : 'var(--text-secondary)',
-            border: 'none', cursor: 'pointer',
-            transition: 'all 0.15s',
-            fontFamily: 'var(--font-body)',
-          }}
-        >
-          All
-        </button>
-        {visibleTags.map(tag => {
-          const isActive = selectedTags.includes(tag)
-          return (
-            <button
-              key={tag}
-              onClick={() => onToggleTag(tag)}
-              style={{
-                fontSize: '11px', whiteSpace: 'nowrap',
-                padding: '2px 8px', borderRadius: '10px',
-                background: isActive ? 'var(--accent)' : 'var(--bg-tertiary)',
-                color: isActive ? '#fff' : 'var(--text-secondary)',
-                border: 'none', cursor: 'pointer',
-                transition: 'all 0.15s',
-                fontFamily: 'var(--font-body)',
-              }}
-            >
-              #{tag}
-            </button>
-          )
-        })}
-        {hasMore && (
-          <button
-            onClick={() => setExpanded(true)}
-            style={{
-              fontSize: '11px', whiteSpace: 'nowrap',
-              padding: '2px 8px', borderRadius: '10px',
-              background: 'none', color: 'var(--accent)',
-              border: 'none', cursor: 'pointer',
-              fontFamily: 'var(--font-body)',
-            }}
-          >
-            +{filteredTags.length - 12} more
-          </button>
-        )}
-      </div>
-    </div>
-  )
-}
-
 export default function NotesPage() {
   const notes = useAppStore(s => s.notes)
   const addNote = useAppStore(s => s.addNote)
   const updateNote = useAppStore(s => s.updateNote)
   const deleteNote = useAppStore(s => s.deleteNote)
   const getTags = useAppStore.getState().getAllTags
-  const [selectedTags, setSelectedTags] = useState([])
-  const [selectedNoteId, setSelectedNoteId] = useState(null)
-  const [mobileView, setMobileView] = useState('list')
+  const [params, setParams] = useSearchParams()
+  const urlNoteId = params.get('id')
+  const [selectedNoteId, setSelectedNoteId] = useState(urlNoteId || null)
+  const [mobileView, setMobileView] = useState(urlNoteId ? 'editor' : 'list')
   const [activeEditor, setActiveEditor] = useState(null)
+  const highlightBlock = useHighlightTarget('block')
 
-  const allTags = [...new Set(notes.flatMap(n => n.tags || []))].sort()
-  const filteredNotes = selectedTags.length > 0
-    ? notes.filter(n => selectedTags.some(t => n.tags?.includes(t)))
-    : notes
+  // Once the editor has loaded the selected note, find the target block by
+  // its data-bid attribute, scroll it into view, and apply the highlight
+  // class. The marker auto-clears via useHighlightTarget on next click.
+  // We poll AND watch for mutations because content can land asynchronously
+  // (initial editor mount vs. setContent on remoteHtml change).
+  useEffect(() => {
+    if (!highlightBlock || !activeEditor) return
+    const dom = activeEditor.view?.dom
+    if (!dom) return
+    let cleanupEl = null
+    let cancelled = false
+    const sel = `[data-bid="${CSS.escape(highlightBlock)}"]`
+    const apply = (el) => {
+      cleanupEl = el
+      el.classList.add('search-highlight')
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+    const initial = dom.querySelector(sel)
+    if (initial) {
+      apply(initial)
+    } else {
+      const obs = new MutationObserver(() => {
+        if (cancelled) return
+        const el = dom.querySelector(sel)
+        if (el) {
+          apply(el)
+          obs.disconnect()
+        }
+      })
+      obs.observe(dom, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-bid'] })
+      // Safety: stop watching after 3s.
+      const stop = setTimeout(() => obs.disconnect(), 3000)
+      return () => {
+        cancelled = true
+        clearTimeout(stop)
+        obs.disconnect()
+        if (cleanupEl) cleanupEl.classList.remove('search-highlight')
+      }
+    }
+    return () => {
+      if (cleanupEl) cleanupEl.classList.remove('search-highlight')
+    }
+  }, [highlightBlock, activeEditor, selectedNoteId])
+
+  // If the URL changes (e.g. arriving from Search), follow it.
+  useEffect(() => {
+    if (urlNoteId && urlNoteId !== selectedNoteId) {
+      setSelectedNoteId(urlNoteId)
+      setMobileView('editor')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlNoteId])
+
   const selectedNote = notes.find(n => n.id === selectedNoteId) || null
 
-  const handleToggleTag = (tag) => {
-    setSelectedTags(prev =>
-      prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]
-    )
+  const clearUrlNoteId = () => {
+    if (params.get('id')) {
+      const p = new URLSearchParams(params)
+      p.delete('id')
+      setParams(p, { replace: true })
+    }
   }
 
-  const handleClearTags = () => setSelectedTags([])
-
   const handleNew = async () => {
-    const note = await addNote('', selectedTags.length > 0 ? [...selectedTags] : [])
+    const note = await addNote('', [])
     setSelectedNoteId(note.id)
     setMobileView('editor')
+    clearUrlNoteId()
   }
 
   const handleSelect = (id) => {
     setSelectedNoteId(id)
     setMobileView('editor')
+    clearUrlNoteId()
   }
 
   const handleDelete = async (id) => {
     await deleteNote(id)
     setSelectedNoteId(null)
     setMobileView('list')
+    clearUrlNoteId()
   }
 
   return (
@@ -374,10 +333,10 @@ export default function NotesPage() {
           </button>
         </div>
         <div style={{ flex: 1, overflowY: 'auto' }}>
-          {filteredNotes.length === 0 && (
+          {notes.length === 0 && (
             <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', padding: '12px' }}>No notes yet</p>
           )}
-          {filteredNotes.map(note => (
+          {notes.map(note => (
             <button
               key={note.id}
               onClick={() => handleSelect(note.id)}
@@ -403,12 +362,6 @@ export default function NotesPage() {
             </button>
           ))}
         </div>
-        <TagStrip
-          allTags={allTags}
-          selectedTags={selectedTags}
-          onToggleTag={handleToggleTag}
-          onClearTags={handleClearTags}
-        />
       </div>
 
       {/* Editor */}
