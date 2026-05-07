@@ -5,6 +5,32 @@ import { useEffect, useRef, useState } from 'react'
 import useAppStore from '../../store/useAppStore'
 import { transcribeWithGroq, DEFAULT_GROQ_MODEL } from '../../services/transcribe'
 
+// Manually place the caret at the mousedown point. Needed because the
+// surrounding PM atom node-view has contentEditable=false on its wrapper,
+// and PM's selection sync would otherwise overwrite the browser's natural
+// caret placement with a NodeSelection on the audio atom (caret snaps to
+// the start of the editor, or refuses to move).
+function placeCaretFromPoint(e) {
+  const sel = window.getSelection?.()
+  if (!sel) return
+  const x = e.clientX
+  const y = e.clientY
+  let range = null
+  if (typeof document.caretPositionFromPoint === 'function') {
+    const pos = document.caretPositionFromPoint(x, y)
+    if (pos?.offsetNode) {
+      range = document.createRange()
+      range.setStart(pos.offsetNode, pos.offset)
+      range.collapse(true)
+    }
+  } else if (typeof document.caretRangeFromPoint === 'function') {
+    range = document.caretRangeFromPoint(x, y)
+  }
+  if (!range) return
+  sel.removeAllRanges()
+  sel.addRange(range)
+}
+
 // Uncontrolled contentEditable for the segmented transcript. We render the
 // segments to DOM exactly once per `signature` (the joined segment timings) —
 // after that, user keystrokes mutate the DOM directly and React does not
@@ -91,10 +117,17 @@ function SegmentedTranscriptEditor({
         if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() }
       }}
       onMouseDown={e => {
-        // Stop ProseMirror (the surrounding tiptap node-view) from receiving
-        // this mousedown — otherwise it would reset the selection and the
-        // caret would jump to the start of the editor.
+        // The audio node is a PM atom with contentEditable=false on its
+        // wrapper; PM's selection sync would otherwise force a NodeSelection
+        // on the audio and snap the DOM caret away from where the user
+        // clicked. Stop both React + native propagation so PM's view-level
+        // listeners don't fire, and place the caret ourselves from the
+        // click point — preventDefault keeps the browser from doing its
+        // own (now-conflicting) caret placement.
         e.stopPropagation()
+        e.nativeEvent.stopImmediatePropagation?.()
+        e.preventDefault()
+        placeCaretFromPoint(e)
         const segEl = e.target?.closest?.('[data-segment-idx]')
         if (!segEl) return
         const idx = Number(segEl.dataset.segmentIdx)
@@ -166,7 +199,12 @@ function PlainTranscriptEditor({ initialHtml, onCommit }) {
       onKeyDown={e => {
         if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() }
       }}
-      onMouseDown={e => { e.stopPropagation() }}
+      onMouseDown={e => {
+        e.stopPropagation()
+        e.nativeEvent.stopImmediatePropagation?.()
+        e.preventDefault()
+        placeCaretFromPoint(e)
+      }}
       onInput={() => {
         if (saveTimer.current) clearTimeout(saveTimer.current)
         saveTimer.current = setTimeout(() => {
