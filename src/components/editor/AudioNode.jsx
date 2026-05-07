@@ -113,6 +113,7 @@ function SegmentedTranscriptEditor({
       contentEditable
       suppressContentEditableWarning
       spellCheck={false}
+      dir="auto"
       onKeyDown={e => {
         if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() }
       }}
@@ -154,6 +155,7 @@ function SegmentedTranscriptEditor({
         maxHeight: 260, overflowY: 'auto',
         outline: 'none',
         cursor: 'text',
+        textAlign: 'start',
       }}
     />
   )
@@ -196,6 +198,7 @@ function PlainTranscriptEditor({ initialHtml, onCommit }) {
       contentEditable
       suppressContentEditableWarning
       spellCheck={false}
+      dir="auto"
       onKeyDown={e => {
         if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() }
       }}
@@ -223,6 +226,7 @@ function PlainTranscriptEditor({ initialHtml, onCommit }) {
         maxHeight: 260, overflowY: 'auto',
         whiteSpace: 'pre-wrap',
         outline: 'none',
+        textAlign: 'start',
       }}
     />
   )
