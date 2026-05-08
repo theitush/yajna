@@ -229,7 +229,7 @@ const useAppStore = create((set, get) => ({
   },
   addNote: async (body = '', tags = []) => {
     const lines = body.replace(/<[^>]+>/g, '\n').split('\n').map(s => s.trim()).filter(Boolean)
-    const title = lines[0]?.replace(/^#+\s*/, '') || 'Untitled'
+    const title = lines[0]?.replace(/^#+\s*/, '') || ''
     const now = new Date().toISOString()
     const note = {
       id: uuid(),
@@ -250,7 +250,7 @@ const useAppStore = create((set, get) => ({
     if (!note) return
     let title
     if ('title' in updates) {
-      title = updates.title || 'Untitled'
+      title = updates.title ?? ''
     } else {
       title = note.title
     }

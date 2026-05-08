@@ -50,8 +50,10 @@ function extractTags(text) {
   return [...new Set(matches.map(t => t.slice(1)))]
 }
 
-function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags }) {
+function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags, autoFocusTitle, onDidAutoFocusTitle, onDraftTitleChange }) {
   const saveTimeout = useRef(null)
+  const titleInputRef = useRef(null)
+  const focusBodyAfterTitleBlurRef = useRef(false)
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleValue, setTitleValue] = useState(note?.title || '')
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -93,9 +95,20 @@ function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags }) {
   useEffect(() => {
     if (!editor || !note) return
     setTitleValue(note.title || '')
+    if (onDraftTitleChange) onDraftTitleChange(note.title || '')
     setEditingTitle(false)
     setConfirmDelete(false)
   }, [note?.id])
+
+  useEffect(() => {
+    if (!note || !autoFocusTitle) return
+    setEditingTitle(true)
+    setTitleValue(note.title || '')
+    requestAnimationFrame(() => {
+      titleInputRef.current?.focus()
+      if (onDidAutoFocusTitle) onDidAutoFocusTitle()
+    })
+  }, [note?.id, autoFocusTitle, onDidAutoFocusTitle])
 
   const remoteHtml = note ? (note.body ?? blocksToHtml(note.blocks) ?? '') : ''
   useEffect(() => {
@@ -126,16 +139,40 @@ function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags }) {
       }}>
         {editingTitle ? (
           <input
-            autoFocus
+            ref={titleInputRef}
             value={titleValue}
-            onChange={e => setTitleValue(e.target.value)}
+            onChange={e => {
+              const next = e.target.value
+              setTitleValue(next)
+              if (onDraftTitleChange) onDraftTitleChange(next)
+            }}
             onBlur={() => {
+              const trimmed = titleValue.trim()
               setEditingTitle(false)
-              onUpdate(note.id, { title: titleValue.trim() || 'Untitled' })
-              setTitleValue(titleValue.trim() || 'Untitled')
+              onUpdate(note.id, { title: trimmed })
+              setTitleValue(trimmed)
+              if (onDraftTitleChange) onDraftTitleChange(trimmed)
+              if (focusBodyAfterTitleBlurRef.current) {
+                focusBodyAfterTitleBlurRef.current = false
+                requestAnimationFrame(() => {
+                  if (!editor) return
+                  try {
+                    editor.commands.focus('start')
+                  } catch {
+                    editor.commands.focus()
+                  }
+                })
+              }
             }}
             onKeyDown={e => {
-              if (e.key === 'Enter' || e.key === 'Escape') e.target.blur()
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                focusBodyAfterTitleBlurRef.current = true
+                e.currentTarget.blur()
+              }
+              if (e.key === 'Escape') {
+                e.currentTarget.blur()
+              }
             }}
             style={{
               fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)',
@@ -151,7 +188,7 @@ function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags }) {
             title="Click to edit title"
             style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'text', flex: 1, minWidth: 0 }}
           >
-            {note.title || 'Untitled'}
+            {note.title || ''}
           </span>
         )}
         {confirmDelete ? (
@@ -212,6 +249,16 @@ export default function NotesPage() {
   const [selectedNoteId, setSelectedNoteId] = useState(urlNoteId || null)
   const [mobileView, setMobileView] = useState(urlNoteId ? 'editor' : 'list')
   const [activeEditor, setActiveEditor] = useState(null)
+  const [autoFocusTitleNoteId, setAutoFocusTitleNoteId] = useState(null)
+  const [selectedDraftTitle, setSelectedDraftTitle] = useState('')
+  const [sortBy, setSortBy] = useState(() => {
+    try {
+      const v = window.localStorage.getItem('notes.sortBy')
+      return (v === 'az' || v === 'lastEdited' || v === 'date') ? v : 'lastEdited'
+    } catch {
+      return 'lastEdited'
+    }
+  })
   const highlightBlock = useHighlightTarget('block')
 
   // Drive the highlight via a ProseMirror decoration (see
@@ -263,6 +310,15 @@ export default function NotesPage() {
   }, [urlNoteId])
 
   const selectedNote = notes.find(n => n.id === selectedNoteId) || null
+  useEffect(() => {
+    setSelectedDraftTitle(selectedNote?.title || '')
+  }, [selectedNoteId, selectedNote?.title])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('notes.sortBy', sortBy)
+    } catch {}
+  }, [sortBy])
 
   const clearUrlNoteId = () => {
     if (params.get('id')) {
@@ -276,12 +332,14 @@ export default function NotesPage() {
     const note = await addNote('', [])
     setSelectedNoteId(note.id)
     setMobileView('editor')
+    setAutoFocusTitleNoteId(note.id)
     clearUrlNoteId()
   }
 
   const handleSelect = (id) => {
     setSelectedNoteId(id)
     setMobileView('editor')
+    setAutoFocusTitleNoteId(null)
     clearUrlNoteId()
   }
 
@@ -289,8 +347,27 @@ export default function NotesPage() {
     await deleteNote(id)
     setSelectedNoteId(null)
     setMobileView('list')
+    setAutoFocusTitleNoteId(null)
     clearUrlNoteId()
   }
+
+  const sortedNotes = [...notes].sort((a, b) => {
+    if (sortBy === 'az') {
+      const ta = (a.title || '').trim()
+      const tb = (b.title || '').trim()
+      if (!ta && tb) return 1
+      if (ta && !tb) return -1
+      return ta.localeCompare(tb, undefined, { sensitivity: 'base' })
+    }
+    if (sortBy === 'date') {
+      const ad = new Date(a.createdAt || 0).getTime()
+      const bd = new Date(b.createdAt || 0).getTime()
+      return bd - ad
+    }
+    const au = new Date(a.updatedAt || a.createdAt || 0).getTime()
+    const bu = new Date(b.updatedAt || b.createdAt || 0).getTime()
+    return bu - au
+  })
 
   return (
     <div style={{ display: 'flex', height: '100%', overflow: 'hidden', background: 'var(--bg-primary)' }}>
@@ -309,31 +386,54 @@ export default function NotesPage() {
         }
       >
         <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          display: 'flex', flexDirection: 'column', gap: '6px',
           padding: '10px 12px', borderBottom: '1px solid var(--border-light)',
         }}>
-          <span style={{ fontSize: '10px', fontWeight: 500, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.8px' }}>
-            Notes
-          </span>
-          <button
-            onClick={handleNew}
-            style={{
-              fontSize: '14px', color: 'var(--accent)',
-              background: 'var(--accent-light)',
-              border: 'none', width: '22px', height: '22px',
-              borderRadius: '6px', cursor: 'pointer',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontFamily: 'var(--font-body)',
-            }}
-          >
-            +
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: '10px', fontWeight: 500, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.8px' }}>
+              Notes
+            </span>
+            <button
+              onClick={handleNew}
+              style={{
+                fontSize: '14px', color: 'var(--accent)',
+                background: 'var(--accent-light)',
+                border: 'none', width: '22px', height: '22px',
+                borderRadius: '6px', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontFamily: 'var(--font-body)',
+              }}
+            >
+              +
+            </button>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Sort by:</span>
+            <select
+              value={sortBy}
+              onChange={e => setSortBy(e.target.value)}
+              style={{
+                fontSize: '11px',
+                color: 'var(--text-secondary)',
+                background: 'transparent',
+                border: 'none',
+                padding: 0,
+                fontFamily: 'var(--font-body)',
+                outline: 'none',
+                cursor: 'pointer',
+              }}
+            >
+              <option value="az">A-Z</option>
+              <option value="lastEdited">Last Edit</option>
+              <option value="date">Date</option>
+            </select>
+          </div>
         </div>
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {notes.length === 0 && (
             <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', padding: '12px' }}>No notes yet</p>
           )}
-          {notes.map(note => (
+          {sortedNotes.map(note => (
             <button
               key={note.id}
               onClick={() => handleSelect(note.id)}
@@ -349,7 +449,7 @@ export default function NotesPage() {
               }}
             >
               <p style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {note.title || 'Untitled'}
+                {(note.id === selectedNoteId ? selectedDraftTitle : note.title) || ''}
               </p>
               {note.tags?.length > 0 && (
                 <p style={{ fontSize: '11px', color: 'var(--accent)', marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -390,6 +490,9 @@ export default function NotesPage() {
           onDelete={handleDelete}
           onEditorReady={setActiveEditor}
           getTags={getTags}
+          autoFocusTitle={autoFocusTitleNoteId && selectedNoteId === autoFocusTitleNoteId}
+          onDidAutoFocusTitle={() => setAutoFocusTitleNoteId(null)}
+          onDraftTitleChange={setSelectedDraftTitle}
         />
       </div>
       {selectedNote && activeEditor && <RecordFab editor={activeEditor} />}
