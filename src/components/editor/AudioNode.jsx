@@ -492,6 +492,30 @@ function AudioNodeView({ node, editor, getPos, extension }) {
     return () => { cancelled = true }
   }, [audioId])
 
+  // Pick up transcripts that arrive from Drive after this view has mounted —
+  // without this the user has to refresh to see remotely-transcribed text.
+  // Skip if there's a pending local edit we haven't flushed yet.
+  useEffect(() => {
+    if (!audioId) return
+    const onAudioUpdated = async (e) => {
+      const ids = e?.detail?.ids
+      if (!Array.isArray(ids) || !ids.includes(audioId)) return
+      if (transcriptSaveTimer.current) return
+      try {
+        const rec = await getAudioRecord(audioId)
+        if (!rec || !rec.transcript) return
+        if (rec.transcript === transcript) return
+        setTranscript(rec.transcript)
+        setDraftTranscript(rec.transcript)
+        setTranscriptModel(rec.transcriptModel || null)
+        setSegments(Array.isArray(rec.transcriptSegments) ? rec.transcriptSegments : null)
+        setTranscriptVersion(v => v + 1)
+      } catch { /* ignore */ }
+    }
+    window.addEventListener('yajna:audio-updated', onAudioUpdated)
+    return () => window.removeEventListener('yajna:audio-updated', onAudioUpdated)
+  }, [audioId, transcript, getAudioRecord])
+
   useEffect(() => {
     if (!editor) return
     const update = () => {

@@ -304,6 +304,7 @@ async function pollRemote(storeSetter) {
     // Reconcile audio index: add stub records for any remote audio we don't
     // know about yet, and merge transcript metadata into existing records.
     // The blob itself is fetched lazily when the user plays it.
+    const audioTranscriptUpdates = []
     if (Array.isArray(audioIndex) && audioIndex.length > 0) {
       try {
         const localAudio = await getAllAudio()
@@ -329,6 +330,7 @@ async function pollRemote(storeSetter) {
               sourceId: entry.sourceId || null,
               sourceTitle: entry.sourceTitle || null,
             })
+            if (entry.transcript || entry.transcriptSegments) audioTranscriptUpdates.push(entry.id)
             continue
           }
           // Reconcile trash state: newer deletedAt wins, blank on either side means "not deleted".
@@ -371,10 +373,18 @@ async function pollRemote(storeSetter) {
             sourceId: nextSourceId,
             sourceTitle: nextSourceTitle,
           })
+          if (takeRemote) audioTranscriptUpdates.push(entry.id)
         }
       } catch (e) {
         console.warn('Audio index reconcile failed:', e.message || e)
       }
+    }
+    if (audioTranscriptUpdates.length > 0) {
+      // Notify mounted AudioNode views so transcripts pulled from Drive show
+      // immediately instead of requiring a refresh.
+      try {
+        window.dispatchEvent(new CustomEvent('yajna:audio-updated', { detail: { ids: audioTranscriptUpdates } }))
+      } catch { /* ignore */ }
     }
 
     // Pull the current journal week if one is loaded — merge per entry at
