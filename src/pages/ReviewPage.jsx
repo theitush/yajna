@@ -256,6 +256,12 @@ function ReviewTaskCard({ task, commentsOpen, onOpenComment, onCloseComment, onT
     ? (task.reviewed ? 'completedReviewed' : 'completed')
     : (task.reviewed ? 'reviewed' : 'default')
 
+  const createdDate = task.createdDate || task.createdAt?.slice(0, 10)
+  const doneDate = task.doneDate || null
+  const daysDiff = (createdDate && doneDate && createdDate !== doneDate)
+    ? Math.round((new Date(`${doneDate}T12:00:00`) - new Date(`${createdDate}T12:00:00`)) / (1000 * 60 * 60 * 24))
+    : null
+
   return (
     <article style={taskCardStyle(tone)}>
       <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
@@ -270,6 +276,11 @@ function ReviewTaskCard({ task, commentsOpen, onOpenComment, onCloseComment, onT
           <div onClick={onOpenComment} style={{ cursor: 'pointer' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
               <h3 dir="auto" style={taskTitleStyle(tone)}>{task.title?.trim() || 'Untitled'}</h3>
+              {daysDiff !== null && (
+                <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontWeight: 400 }}>
+                  {daysDiff} day{daysDiff !== 1 ? 's' : ''}
+                </span>
+              )}
             </div>
 
             {(task.explanation || task.feedback || task.tags) && (
@@ -308,20 +319,22 @@ function ReviewTaskCard({ task, commentsOpen, onOpenComment, onCloseComment, onT
 }
 
 function TasksReviewPane({ day, openCommentKey, onOpenComment, onCloseComment, onToggleTask, onAddTaskComment }) {
+  const completedTasks = day.tasks.filter(task => task.completed)
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div style={paneHeaderStyle}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
           <span style={paneLabelStyle}>Tasks</span>
-          <span style={headerCountStyle}>{day.tasks.length}</span>
+          <span style={headerCountStyle}>{completedTasks.length}</span>
         </div>
       </div>
 
       <div className="review-scroll" style={{ ...scrollPaneStyle, padding: '18px 16px 22px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-        {day.tasks.length === 0 ? (
-          <div style={emptyStateStyle}>No reviewable tasks were created on this day.</div>
+        {completedTasks.length === 0 ? (
+          <div style={emptyStateStyle}>No completed tasks to review.</div>
         ) : (
-          day.tasks.map(task => (
+          completedTasks.map(task => (
             <ReviewTaskCard
               key={`${day.date}-${task.id}`}
               task={task}
