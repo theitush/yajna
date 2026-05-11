@@ -109,7 +109,7 @@ export function buildReviewDays({ tasks, journalDocs, reviews, todayStr = today(
 
       const hasJournal = hasJournalData(journalEntry)
       const journalReviewed = !!(reviews?.[date] || journalEntry?.reviewedAt)
-      const pendingTaskReviews = taskSnapshots.filter(task => !task.reviewed).length
+      const pendingTaskReviews = taskSnapshots.filter(task => task.completed && !task.reviewed).length
       const needsReview = (hasJournal && !journalReviewed) || pendingTaskReviews > 0
 
       return {
