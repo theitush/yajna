@@ -13,6 +13,37 @@ import {
   readJsonFile, writeJsonFile,
 } from './drive'
 
+// Serialize audio.json read-modify-write cycles so concurrent updates from
+// multiple recordings/transcript saves cannot clobber each other.
+let audioIndexWriteQueue = Promise.resolve()
+
+function enqueueAudioIndexWrite(task) {
+  const run = audioIndexWriteQueue.then(task, task)
+  audioIndexWriteQueue = run.catch(() => {})
+  return run
+}
+
+async function upsertAudioIndexEntry(ids, entry) {
+  if (!ids?.audioIndexFileId) return
+  await enqueueAudioIndexWrite(async () => {
+    const remoteIndex = await readJsonFile(ids.audioIndexFileId).catch(() => [])
+    const index = Array.isArray(remoteIndex) ? remoteIndex : []
+    const filtered = index.filter(e => e.id !== entry.id)
+    filtered.push(entry)
+    await writeJsonFile(ids.rootId, 'audio.json', filtered, ids.audioIndexFileId)
+  })
+}
+
+async function removeAudioIndexEntry(ids, id) {
+  if (!ids?.audioIndexFileId) return
+  await enqueueAudioIndexWrite(async () => {
+    const remoteIndex = await readJsonFile(ids.audioIndexFileId).catch(() => [])
+    const index = Array.isArray(remoteIndex) ? remoteIndex : []
+    const filtered = index.filter(e => e.id !== id)
+    await writeJsonFile(ids.rootId, 'audio.json', filtered, ids.audioIndexFileId)
+  })
+}
+
 function toIndexEntry(rec) {
   return {
     id: rec.id,
@@ -52,11 +83,7 @@ export async function pushAudio(id) {
   await putAudio(updated)
 
   // Update audio.json index (merge with remote so concurrent uploads don't clobber)
-  const remoteIndex = await readJsonFile(ids.audioIndexFileId).catch(() => [])
-  const index = Array.isArray(remoteIndex) ? remoteIndex : []
-  const filtered = index.filter(e => e.id !== id)
-  filtered.push(toIndexEntry(updated))
-  await writeJsonFile(ids.rootId, 'audio.json', filtered, ids.audioIndexFileId)
+  await upsertAudioIndexEntry(ids, toIndexEntry(updated))
 }
 
 /**
@@ -69,11 +96,7 @@ export async function pushAudioMetadata(id) {
   const rec = await getAudio(id)
   if (!rec) return
 
-  const remoteIndex = await readJsonFile(ids.audioIndexFileId).catch(() => [])
-  const index = Array.isArray(remoteIndex) ? remoteIndex : []
-  const filtered = index.filter(e => e.id !== id)
-  filtered.push(toIndexEntry(rec))
-  await writeJsonFile(ids.rootId, 'audio.json', filtered, ids.audioIndexFileId)
+  await upsertAudioIndexEntry(ids, toIndexEntry(rec))
 }
 
 /**
@@ -151,11 +174,7 @@ export async function softDeleteAudio(id, source) {
   const ids = await getDriveFileIds()
   if (!ids || !ids.audioIndexFileId) return updated
   try {
-    const remoteIndex = await readJsonFile(ids.audioIndexFileId).catch(() => [])
-    const index = Array.isArray(remoteIndex) ? remoteIndex : []
-    const filtered = index.filter(e => e.id !== id)
-    filtered.push(toIndexEntry(updated))
-    await writeJsonFile(ids.rootId, 'audio.json', filtered, ids.audioIndexFileId)
+    await upsertAudioIndexEntry(ids, toIndexEntry(updated))
   } catch (e) {
     console.warn('softDeleteAudio index push failed', e)
   }
@@ -173,11 +192,7 @@ export async function restoreAudio(id) {
   const ids = await getDriveFileIds()
   if (!ids || !ids.audioIndexFileId) return updated
   try {
-    const remoteIndex = await readJsonFile(ids.audioIndexFileId).catch(() => [])
-    const index = Array.isArray(remoteIndex) ? remoteIndex : []
-    const filtered = index.filter(e => e.id !== id)
-    filtered.push(toIndexEntry(updated))
-    await writeJsonFile(ids.rootId, 'audio.json', filtered, ids.audioIndexFileId)
+    await upsertAudioIndexEntry(ids, toIndexEntry(updated))
   } catch (e) {
     console.warn('restoreAudio index push failed', e)
   }
@@ -198,10 +213,7 @@ export async function hardDeleteAudio(id) {
   }
   if (ids.audioIndexFileId) {
     try {
-      const remoteIndex = await readJsonFile(ids.audioIndexFileId).catch(() => [])
-      const index = Array.isArray(remoteIndex) ? remoteIndex : []
-      const filtered = index.filter(e => e.id !== id)
-      await writeJsonFile(ids.rootId, 'audio.json', filtered, ids.audioIndexFileId)
+      await removeAudioIndexEntry(ids, id)
     } catch (e) {
       console.warn('hardDeleteAudio index push failed', e)
     }
