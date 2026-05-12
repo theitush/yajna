@@ -123,13 +123,13 @@ function JournalBlock({ block, comments, commentsOpen, onOpenComment, onCloseCom
       onMouseLeave={() => setHovered(false)}
       style={{
         position: 'relative',
-        padding: '10px 0 14px',
+        padding: '2px 0',
         borderBottom: commentsOpen ? '1px solid var(--border-light)' : '1px solid transparent',
       }}
     >
       <div style={{
         position: 'absolute',
-        top: '8px',
+        top: '2px',
         [isRtl ? 'left' : 'right']: 0,
         opacity: hovered || commentsOpen ? 1 : 0,
         transition: 'opacity 0.15s'
@@ -140,8 +140,8 @@ function JournalBlock({ block, comments, commentsOpen, onOpenComment, onCloseCom
       <div
         onClick={onOpenComment}
         style={{
-          paddingRight: !isRtl ? '96px' : '0',
-          paddingLeft: isRtl ? '96px' : '0',
+          paddingRight: !isRtl ? '24px' : '0',
+          paddingLeft: isRtl ? '24px' : '0',
           cursor: 'pointer',
           borderRadius: '8px',
           textAlign: 'start',
@@ -152,9 +152,9 @@ function JournalBlock({ block, comments, commentsOpen, onOpenComment, onCloseCom
 
       {!commentsOpen && singleComment && (
         <div style={{
-          marginTop: '10px',
-          paddingRight: isRtl ? '0' : '96px',
-          paddingLeft: isRtl ? '96px' : '0'
+          marginTop: '6px',
+          paddingRight: isRtl ? '0' : '24px',
+          paddingLeft: isRtl ? '24px' : '0'
         }}>
           <CollapsedCommentPreview comment={singleComment} onClick={onOpenComment} />
         </div>
@@ -162,7 +162,7 @@ function JournalBlock({ block, comments, commentsOpen, onOpenComment, onCloseCom
 
       {commentsOpen && (
         <div style={{
-          marginTop: '12px',
+          marginTop: '8px',
           paddingRight: isRtl ? '0' : '12px',
           paddingLeft: isRtl ? '12px' : '0'
         }}>
@@ -220,8 +220,8 @@ function ReviewJournalPane({ day, title = 'Journal', openCommentKey, onOpenComme
         style={{
           ...scrollPaneStyle,
           ...reviewSurfaceStyle(day.journalReviewed),
-          margin: '2px 2px 4px',
-          padding: '18px 24px 32px',
+          margin: 0,
+          padding: '10px 12px 14px',
         }}
       >
         {blocks.length === 0 ? (
@@ -330,7 +330,7 @@ function TasksReviewPane({ day, openCommentKey, onOpenComment, onCloseComment, o
         </div>
       </div>
 
-      <div className="review-scroll" style={{ ...scrollPaneStyle, padding: '18px 16px 22px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <div className="review-scroll" style={{ ...scrollPaneStyle, padding: '10px 12px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
         {completedTasks.length === 0 ? (
           <div style={emptyStateStyle}>No completed tasks to review.</div>
         ) : (
@@ -707,7 +707,7 @@ const paneHeaderStyle = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
-  padding: '12px 16px',
+  padding: '10px 12px',
   borderBottom: '1px solid var(--border-light)',
 }
 
@@ -947,7 +947,7 @@ function taskCardStyle(tone, editable = false) {
 
   return {
     borderRadius: '10px',
-    padding: '14px',
+    padding: '10px 12px',
     border: palette.border,
     background: palette.background,
     transition: 'all 0.2s ease',
