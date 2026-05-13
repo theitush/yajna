@@ -28,8 +28,20 @@ async function upsertAudioIndexEntry(ids, entry) {
   await enqueueAudioIndexWrite(async () => {
     const remoteIndex = await readJsonFile(ids.audioIndexFileId).catch(() => [])
     const index = Array.isArray(remoteIndex) ? remoteIndex : []
+    const existing = index.find(e => e.id === entry.id) || null
+    // Never drop transcript metadata because of stale in-memory records.
+    const merged = existing
+      ? {
+          ...existing,
+          ...entry,
+          transcript: entry.transcript ?? existing.transcript ?? null,
+          transcriptModel: entry.transcriptModel ?? existing.transcriptModel ?? null,
+          transcribedAt: entry.transcribedAt ?? existing.transcribedAt ?? null,
+          transcriptSegments: entry.transcriptSegments ?? existing.transcriptSegments ?? null,
+        }
+      : entry
     const filtered = index.filter(e => e.id !== entry.id)
-    filtered.push(entry)
+    filtered.push(merged)
     await writeJsonFile(ids.rootId, 'audio.json', filtered, ids.audioIndexFileId)
   })
 }
@@ -81,9 +93,11 @@ export async function pushAudio(id) {
 
   const updated = { ...rec, driveFileId: uploaded.id, uploadedAt: new Date().toISOString() }
   await putAudio(updated)
+  // Re-read after write: transcription may have landed while upload was in flight.
+  const latest = await getAudio(id)
 
   // Update audio.json index (merge with remote so concurrent uploads don't clobber)
-  await upsertAudioIndexEntry(ids, toIndexEntry(updated))
+  await upsertAudioIndexEntry(ids, toIndexEntry(latest || updated))
 }
 
 /**

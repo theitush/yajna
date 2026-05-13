@@ -353,13 +353,18 @@ async function pollRemote(storeSetter) {
             nextSourceId = entry.sourceId || nextSourceId
             nextSourceTitle = entry.sourceTitle || nextSourceTitle
           }
-          // Merge transcript: prefer whichever side has the newer transcribedAt.
+          // Merge transcript: prefer newer transcribedAt, but also accept remote
+          // transcript when local has none (legacy/missing timestamps).
           const localT = new Date(local.transcribedAt || 0).getTime()
           const remoteT = new Date(entry.transcribedAt || 0).getTime()
-          const takeRemote = entry.transcribedAt && remoteT >= localT
+          const localHasTranscript = !!(local.transcript || (Array.isArray(local.transcriptSegments) && local.transcriptSegments.length))
+          const remoteHasTranscript = !!(entry.transcript || (Array.isArray(entry.transcriptSegments) && entry.transcriptSegments.length))
+          const takeRemoteByTime = !!entry.transcribedAt && remoteT >= localT
+          const takeRemoteByPresence = remoteHasTranscript && !localHasTranscript
+          const takeRemote = takeRemoteByTime || takeRemoteByPresence
           const trashChanged = nextDeleted !== !!local.deleted || nextDeletedAt !== (local.deletedAt || null)
           if (!takeRemote && local.transcribedAt && !trashChanged) continue
-          if (!entry.transcript && !entry.transcriptSegments && !trashChanged) continue
+          if (!remoteHasTranscript && !trashChanged) continue
           await putAudio({
             ...local,
             driveFileId: local.driveFileId || entry.driveFileId || null,
@@ -373,7 +378,16 @@ async function pollRemote(storeSetter) {
             sourceId: nextSourceId,
             sourceTitle: nextSourceTitle,
           })
-          if (takeRemote) audioTranscriptUpdates.push(entry.id)
+          if (takeRemote) {
+            console.info('[audio:sync-reconcile] adopted remote transcript', {
+              id: entry.id,
+              takeRemoteByTime,
+              takeRemoteByPresence,
+              localT,
+              remoteT,
+            })
+            audioTranscriptUpdates.push(entry.id)
+          }
         }
       } catch (e) {
         console.warn('Audio index reconcile failed:', e.message || e)
