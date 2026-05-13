@@ -77,8 +77,9 @@ const TagSelector = React.forwardRef(({ value, onChange, allTags, placeholder = 
   }, [onChange])
 
   const addTag = useCallback((tag) => {
-    if (!tag.trim() || currentTags.includes(tag.trim())) return
-    const newTags = [...currentTags, tag.trim()]
+    const normalized = String(tag || '').trim()
+    if (!normalized || currentTags.includes(normalized)) return
+    const newTags = [...currentTags, normalized]
     updateValue(newTags)
     setInputValue('')
     setShowSuggestions(false)
@@ -100,10 +101,14 @@ const TagSelector = React.forwardRef(({ value, onChange, allTags, placeholder = 
   }
 
   const handleInputKeyDown = (e) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault()
+      onCommit?.()
+    } else if (e.key === 'Enter') {
       e.preventDefault()
       if (suggestions.length > 0) {
-        addTag(suggestions[activeIndex])
+        const indexToUse = activeIndex === -1 ? 0 : activeIndex
+        addTag(suggestions[indexToUse])
       } else if (inputValue.trim()) {
         addTag(inputValue.trim())
       }
@@ -128,9 +133,6 @@ const TagSelector = React.forwardRef(({ value, onChange, allTags, placeholder = 
         e.preventDefault()
         removeTag(currentTags[currentTags.length - 1])
       }
-    } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault()
-      onCommit?.()
     } else if (e.key === ',') {
       e.preventDefault()
       if (inputValue.trim()) {

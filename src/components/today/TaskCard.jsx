@@ -80,7 +80,7 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
   }, [task.explanation, task.feedback, task.tags])
 
   const commitEdits = useCallback(() => {
-    const titleVal = titleRef.current?.innerText.trim() ?? ''
+    const titleVal = String(titleRef.current?.innerText || '').trim()
     if (!titleVal && !editExplanation.trim() && !editFeedback.trim() && !editTags.trim()) {
       deleteTask(task.id)
       return
@@ -152,7 +152,7 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
   }
 
   const handleTitleBlur = () => {
-    const val = titleRef.current?.innerText.trim()
+    const val = String(titleRef.current?.innerText || '').trim()
     if (val && val !== task.title) {
       updateTask(task.id, { title: val })
     }
@@ -169,7 +169,7 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
     }
     if (e.key === 'Tab' && !e.shiftKey) {
       e.preventDefault()
-      const val = titleRef.current?.innerText.trim() ?? ''
+      const val = String(titleRef.current?.innerText || '').trim()
       if (val && val !== task.title) updateTask(task.id, { title: val })
       setEditingTitle(false)
       explanationRef.current?.focus()
