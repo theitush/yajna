@@ -378,16 +378,7 @@ async function pollRemote(storeSetter) {
             sourceId: nextSourceId,
             sourceTitle: nextSourceTitle,
           })
-          if (takeRemote) {
-            console.info('[audio:sync-reconcile] adopted remote transcript', {
-              id: entry.id,
-              takeRemoteByTime,
-              takeRemoteByPresence,
-              localT,
-              remoteT,
-            })
-            audioTranscriptUpdates.push(entry.id)
-          }
+          if (takeRemote) audioTranscriptUpdates.push(entry.id)
         }
       } catch (e) {
         console.warn('Audio index reconcile failed:', e.message || e)
