@@ -326,6 +326,17 @@ function AudioNodeView({ node, editor, getPos, extension }) {
   // sometimes navigate away without firing blur on a contenteditable, which
   // previously dropped edits silently.
   const transcriptSaveTimer = useRef(null)
+  const logAutoTranscribe = (event, extra = {}) => {
+    console.info('[audio:auto-transcribe]', {
+      event,
+      audioId,
+      autoTranscribe: !!node?.attrs?.autoTranscribe,
+      hasTranscript: !!transcript,
+      transcribing,
+      hasApiKey: !!config?.groqApiKey,
+      ...extra,
+    })
+  }
 
   const scheduleTranscriptSave = (text, segs) => {
     if (transcriptSaveTimer.current) clearTimeout(transcriptSaveTimer.current)
@@ -392,6 +403,7 @@ function AudioNodeView({ node, editor, getPos, extension }) {
     setTranscriptError(null)
     const apiKey = config?.groqApiKey
     if (!apiKey) {
+      logAutoTranscribe('manual-skip-no-api-key')
       setTranscriptError('Add your Groq API key in Settings first')
       return
     }
@@ -402,22 +414,29 @@ function AudioNodeView({ node, editor, getPos, extension }) {
       if (blob) blobRef.current = blob
     }
     if (!blob) {
+      logAutoTranscribe('manual-fail-no-blob')
       setTranscriptError('Audio not available')
       return
     }
     const model = config?.groqModel || DEFAULT_GROQ_MODEL
+    logAutoTranscribe('transcribe-start', { model, blobBytes: blob.size || 0 })
     setTranscribing(true)
     try {
       const result = await transcribeWithGroq({ blob, apiKey, model })
       const text = typeof result === 'string' ? result : (result?.text || '')
       const segs = typeof result === 'object' && Array.isArray(result?.segments) ? result.segments : null
       await saveAudioTranscript(audioId, text, model, segs)
+      logAutoTranscribe('transcribe-success', {
+        transcriptChars: text.length,
+        segments: Array.isArray(segs) ? segs.length : 0,
+      })
       setTranscript(text)
       setDraftTranscript(text)
       setTranscriptModel(model)
       setSegments(segs)
       setTranscriptVersion(v => v + 1)
     } catch (e) {
+      logAutoTranscribe('transcribe-fail', { message: e?.message || String(e) })
       setTranscriptError(e.message || 'Transcription failed')
     } finally {
       setTranscribing(false)
@@ -436,7 +455,11 @@ function AudioNodeView({ node, editor, getPos, extension }) {
   // never a popup.
   useEffect(() => {
     if (!node.attrs.autoTranscribe) return
-    if (transcript || transcribing) return
+    if (transcript || transcribing) {
+      logAutoTranscribe('auto-skip-already-busy-or-has-transcript')
+      return
+    }
+    logAutoTranscribe('auto-attempt')
     // Clear the flag eagerly so we don't retry on every render.
     if (editor && typeof getPos === 'function' && !readOnly) {
       const pos = getPos()
@@ -446,13 +469,16 @@ function AudioNodeView({ node, editor, getPos, extension }) {
             tr.setNodeMarkup(pos, undefined, { ...node.attrs, autoTranscribe: false })
             return true
           }).run()
+          logAutoTranscribe('auto-flag-cleared', { pos })
         } catch { /* ignore */ }
       }
     }
     if (!config?.groqApiKey) {
+      logAutoTranscribe('auto-skip-no-api-key')
       setTranscriptError('Add your Groq API key in Settings to auto-transcribe')
       return
     }
+    logAutoTranscribe('auto-trigger-handleTranscribe')
     handleTranscribe()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [node.attrs.autoTranscribe])

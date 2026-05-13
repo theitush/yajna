@@ -515,7 +515,10 @@ const useAppStore = create((set, get) => ({
   },
   saveAudioTranscript: async (id, transcript, model, segments) => {
     const rec = await getAudio(id)
-    if (!rec) return null
+    if (!rec) {
+      console.warn('[audio:transcript-save] missing audio record', { id })
+      return null
+    }
     const updated = {
       ...rec,
       transcript,
@@ -524,6 +527,12 @@ const useAppStore = create((set, get) => ({
       transcriptSegments: segments === undefined ? (rec.transcriptSegments || null) : segments,
     }
     await putAudio(updated)
+    console.info('[audio:transcript-save] saved local transcript', {
+      id,
+      transcriptChars: (transcript || '').length,
+      segments: Array.isArray(updated.transcriptSegments) ? updated.transcriptSegments.length : 0,
+      mode: get().mode,
+    })
     if (get().mode !== MODE_OFFLINE) {
       withRetry(() => pushAudioMetadata(id))()
     }
