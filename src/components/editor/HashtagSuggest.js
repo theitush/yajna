@@ -121,8 +121,43 @@ export const HashtagSuggest = Extension.create({
       if (!coords || (coords.left === 0 && coords.top === 0)) { hide(); return }
       const el = ensurePopup()
       el.style.display = 'flex'
-      el.style.left = `${coords.left}px`
-      el.style.top = `${coords.bottom + 4}px`
+      // Render first to measure, then clamp to viewport (visualViewport accounts for mobile keyboard)
+      el.style.maxHeight = '220px'
+      el.style.left = '0px'
+      el.style.top = '0px'
+      const vv = window.visualViewport
+      const viewportW = vv?.width ?? window.innerWidth
+      const viewportH = vv?.height ?? window.innerHeight
+      const offsetX = vv?.offsetLeft ?? 0
+      const offsetY = vv?.offsetTop ?? 0
+      const margin = 8
+      const rect = el.getBoundingClientRect()
+      const popupW = rect.width
+      const popupH = rect.height
+      const caretX = coords.left
+      const caretBottom = coords.bottom
+      const caretTop = coords.top
+      // Horizontal: prefer aligning to caret, but clamp inside viewport
+      let left = caretX
+      const maxLeft = offsetX + viewportW - popupW - margin
+      const minLeft = offsetX + margin
+      if (left > maxLeft) left = maxLeft
+      if (left < minLeft) left = minLeft
+      // Vertical: open below if room, else above
+      const spaceBelow = (offsetY + viewportH) - caretBottom - margin
+      const spaceAbove = caretTop - offsetY - margin
+      let top
+      let maxH = 220
+      if (spaceBelow >= Math.min(popupH, 120) || spaceBelow >= spaceAbove) {
+        top = caretBottom + 4
+        maxH = Math.max(96, Math.min(220, spaceBelow))
+      } else {
+        maxH = Math.max(96, Math.min(220, spaceAbove))
+        top = caretTop - 4 - Math.min(popupH, maxH)
+      }
+      el.style.maxHeight = `${maxH}px`
+      el.style.left = `${left}px`
+      el.style.top = `${top}px`
     }
 
     const update = (view) => {

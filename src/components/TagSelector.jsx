@@ -47,6 +47,7 @@ const TagSelector = React.forwardRef(({ value, onChange, allTags, placeholder = 
   const [inputValue, setInputValue] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [activeIndex, setActiveIndex] = useState(-1)
+  const [dropdownPlacement, setDropdownPlacement] = useState({ openUp: false, maxHeight: 200 })
   const inputRef = useRef(null)
   const containerRef = useRef(null)
 
@@ -165,6 +166,35 @@ const TagSelector = React.forwardRef(({ value, onChange, allTags, placeholder = 
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
+  // Compute dropdown placement (flip up if not enough room below) and cap height to viewport
+  useEffect(() => {
+    if (!showSuggestions || suggestions.length === 0) return
+    const computePlacement = () => {
+      const inputEl = inputRef.current
+      if (!inputEl) return
+      const rect = inputEl.getBoundingClientRect()
+      const viewportH = window.visualViewport?.height ?? window.innerHeight
+      const margin = 8
+      const desired = 200
+      const spaceBelow = viewportH - rect.bottom - margin
+      const spaceAbove = rect.top - margin
+      const openUp = spaceBelow < Math.min(desired, 120) && spaceAbove > spaceBelow
+      const maxHeight = Math.max(96, Math.min(desired, openUp ? spaceAbove : spaceBelow))
+      setDropdownPlacement({ openUp, maxHeight })
+    }
+    computePlacement()
+    window.addEventListener('resize', computePlacement)
+    window.addEventListener('scroll', computePlacement, true)
+    window.visualViewport?.addEventListener('resize', computePlacement)
+    window.visualViewport?.addEventListener('scroll', computePlacement)
+    return () => {
+      window.removeEventListener('resize', computePlacement)
+      window.removeEventListener('scroll', computePlacement, true)
+      window.visualViewport?.removeEventListener('resize', computePlacement)
+      window.visualViewport?.removeEventListener('scroll', computePlacement)
+    }
+  }, [showSuggestions, suggestions.length, currentTags.length])
+
   // Scroll active suggestion into view
   useEffect(() => {
     if (showSuggestions && suggestions.length > 0 && activeIndex >= 0) {
@@ -223,7 +253,9 @@ const TagSelector = React.forwardRef(({ value, onChange, allTags, placeholder = 
       {showSuggestions && suggestions.length > 0 && (
         <div style={{
           position: 'absolute',
-          top: '100%',
+          ...(dropdownPlacement.openUp
+            ? { bottom: '100%', marginBottom: '4px' }
+            : { top: '100%', marginTop: '4px' }),
           left: 0,
           right: 0,
           background: 'var(--bg-secondary)',
@@ -232,7 +264,7 @@ const TagSelector = React.forwardRef(({ value, onChange, allTags, placeholder = 
           padding: '4px',
           zIndex: 30,
           boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
-          maxHeight: '200px',
+          maxHeight: `${dropdownPlacement.maxHeight}px`,
           overflowY: 'auto',
         }}>
           {suggestions.map((tag, index) => (
