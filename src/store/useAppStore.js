@@ -357,6 +357,32 @@ const useAppStore = create((set, get) => ({
       doc = { week, entries: {} }
     }
     const t = today()
+    const config = get().config || {}
+
+    // Daily rollover maintenance: optionally auto-dismiss completed tasks
+    // once the day changes, then stamp the last run date.
+    if (config.autoDismissCompletedNextDay && config.autoDismissCompletedLastRunDate !== t) {
+      const now = new Date().toISOString()
+      const currentTasks = get().tasks
+      const updatedTasks = currentTasks.map(task => {
+        if (task.status === 'done' && task.doneDate && task.doneDate < t) {
+          return { ...task, status: 'dismissed', dismissedDate: t, updatedAt: now }
+        }
+        return task
+      })
+      const hasTaskChanges = updatedTasks.some((task, i) => task !== currentTasks[i])
+      if (hasTaskChanges) {
+        await putTasks(updatedTasks)
+        set({ tasks: updatedTasks })
+        get().bumpReviewVersion()
+        if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
+      }
+
+      const nextConfig = { ...config, autoDismissCompletedLastRunDate: t }
+      await putConfig(nextConfig)
+      set({ config: nextConfig })
+      if (get().mode !== MODE_OFFLINE) withRetry(pushConfig)()
+    }
 
     if (get().mode !== MODE_OFFLINE) {
       doc = await mergeAndPushJournal(doc).catch(() => doc)

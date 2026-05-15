@@ -85,6 +85,7 @@ export default function SettingsPage() {
 
   const [groqKey, setGroqKey] = useState('')
   const [groqModel, setGroqModel] = useState(DEFAULT_GROQ_MODEL)
+  const [autoDismissCompletedNextDay, setAutoDismissCompletedNextDay] = useState(false)
   const [saved, setSaved] = useState(false)
   const [storageInfo, setStorageInfo] = useState(null)
   const [persistence, setPersistence] = useState(null)
@@ -93,6 +94,7 @@ export default function SettingsPage() {
   useEffect(() => {
     setGroqKey(config?.groqApiKey || '')
     setGroqModel(config?.groqModel || DEFAULT_GROQ_MODEL)
+    setAutoDismissCompletedNextDay(config?.autoDismissCompletedNextDay === true)
   }, [config])
 
   useEffect(() => {
@@ -108,7 +110,7 @@ export default function SettingsPage() {
   }, [])
 
   const handleSave = async () => {
-    await updateConfig({ groqApiKey: groqKey, groqModel })
+    await updateConfig({ groqApiKey: groqKey, groqModel, autoDismissCompletedNextDay })
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
@@ -291,6 +293,25 @@ export default function SettingsPage() {
             </div>
           </section>
         )}
+
+        {/* Voice */}
+        <section>
+          <h2 style={sectionHeadStyle}>Today</h2>
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={autoDismissCompletedNextDay}
+              onChange={e => setAutoDismissCompletedNextDay(e.target.checked)}
+              style={{ marginTop: '2px' }}
+            />
+            <span style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              Auto-dismiss completed tasks the next day
+              <span style={{ display: 'block', fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                When the day rolls over, tasks completed on previous days are moved to dismissed.
+              </span>
+            </span>
+          </label>
+        </section>
 
         {/* Voice */}
         <section>
