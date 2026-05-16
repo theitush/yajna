@@ -2,26 +2,27 @@
 
 **Yet another journaling & notes app** — local-first, with no backend of its own. Your data lives in your browser and your Google Drive.
 
-Journal · Notes · Todos · Voice.
+Journal · Notes · Todos · Voice
+
+This is NOT a productivity app!!!
+
+This app is about making documenting your day and tasks, easy and enjoyable.
+
+I'm having a lot of fun dogfooding it and you can too! 
+Just head over to [https://theitush.github.io/yajna](https://theitush.github.io/yajna) 
+
 
 ## ✨ Features
 
-- **Today** — daily journal with a rich-text editor (headings, lists, formatting, highlights, RTL).
-- **Todos** — tasks with statuses; optionally auto-dismiss completed ones on day change.
-- **Review** — a daily review flow surfacing past days and tasks that still need attention.
+- **Today** — daily journal with a rich-text editor (with RTL support!).
+- **Todos** — tasks with statuses.
+- **Review** — a daily review flow surfacing past days and completed todos.
 - **Notes** — standalone notes organized with `#hashtags` and inline tag autocomplete.
 - **Voice & transcription** — record audio in-app; the audio file is saved. Transcribe with Whisper via [Groq](https://groq.com/) — bring your own free API key.
 - **Full-text search** across journals, notes, and tasks.
 - **Offline mode** — use the whole app with no account; data never leaves your device.
 - **Export** all data to JSON anytime.
-- **PWA** — installable, responsive, mobile-ready.
-
-### Audio transcription setup
-
-1. Get a free API key at [console.groq.com](https://console.groq.com/keys).
-2. Paste it into **Settings → Groq API key** and pick a model.
-
-Audio goes straight from your browser to Groq — not through any server of mine.
+- **PWA** — Every feature works in both mobile and desktop.
 
 ## 🔒 Privacy & data
 
@@ -38,6 +39,13 @@ If you want a zero-trust setup right now: run **Offline mode**, or deploy your o
 ## 🛠️ Tech stack
 
 React 19 · Vite · Zustand · TipTap · Tailwind CSS v4 · Fuse.js · Cloudflare Workers · Google Drive API
+
+### Audio transcription setup
+
+1. Get a free API key at [console.groq.com](https://console.groq.com/keys).
+2. Paste it into **Settings → Groq API key** and pick a model.
+
+Audio goes straight from your browser to Groq — not through any server of mine.
 
 ## 🚀 Running it yourself
 
