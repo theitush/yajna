@@ -736,11 +736,21 @@ const useAppStore = create((set, get) => ({
     syncReady: { today: true, tasks: true, notes: true, audio: true },
   }),
   setSyncStatus: (s) => {
-    const updates = { syncStatus: s, syncing: s.state === 'syncing' }
     if (s.isAuth) {
-      updates.initError = s.message || 'Session expired. Please sign in again.'
+      // Tear the engine down before mutating state so the next poll tick
+      // can't race the status update and reset us back to 'syncing'.
+      try { stopSyncEngine() } catch {}
+      set({
+        syncStatus: s,
+        syncing: false,
+        initError: s.message || 'Session expired. Please sign in again.',
+        // Drop back to the login screen so the user can actually re-auth.
+        // Otherwise we'd sit on the app shell forever with a dead token.
+        isAuthenticated: false,
+      })
+      return
     }
-    set(updates)
+    set({ syncStatus: s, syncing: s.state === 'syncing' })
   },
   /**
    * Run the initial Drive merge. Hydrates the store per-bucket as each
@@ -821,7 +831,8 @@ const useAppStore = create((set, get) => ({
     }).catch((e) => {
       console.error('Sync failed', e)
       const code = e?.status || e?.result?.error?.code
-      if (code === 401 || code === 403) {
+      const isAuth = code === 401 || code === 403
+      if (isAuth) {
         get().setSyncStatus({ state: 'error', message: 'Session expired', isAuth: true })
       } else {
         set({ syncStatus: { state: 'offline' } })
@@ -829,10 +840,16 @@ const useAppStore = create((set, get) => ({
       // Don't keep surfaces gated if the merge bailed — local data is still
       // viewable; the next poll will hydrate fresh remote data.
       get().markAllSyncReady()
-      onSyncStatus((s) => {
-        useAppStore.getState().setSyncStatus(s)
-      })
-      startSyncEngine((data) => set(data), 1000, () => get())
+      // Only spin up the poll engine when auth is healthy. With a dead token
+      // the engine would just loop pollRemote every second, briefly setting
+      // status back to 'syncing' on each tick and producing the
+      // never-clearing spinner the user sees. The user must re-login first.
+      if (!isAuth) {
+        onSyncStatus((s) => {
+          useAppStore.getState().setSyncStatus(s)
+        })
+        startSyncEngine((data) => set(data), 1000, () => get())
+      }
       set({ syncing: false })
     })
 

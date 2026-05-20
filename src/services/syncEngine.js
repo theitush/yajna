@@ -527,7 +527,12 @@ async function pollRemote(storeSetter) {
   } catch (e) {
     console.warn('Poll failed:', e.message || e)
     if (isAuthError(e)) {
+      // Auth dead and silent refresh can't recover (withAuthRetry already
+      // tried). Stop polling so we don't ping Drive every second with a
+      // doomed token — the UI is already showing 'Session expired'.
       setStatus({ state: 'error', message: 'Session expired', isAuth: true })
+      clearInterval(pollTimer)
+      pollTimer = null
     } else if (!navigator.onLine) {
       setStatus({ state: 'offline' })
     }
