@@ -6,6 +6,17 @@ export function today() {
 }
 
 /**
+ * Normalizes a date input (Date or string) to a YYYY-MM-DD day key.
+ * Falls back to today's date when no input is provided.
+ */
+export function dayKey(input) {
+  if (!input) return today()
+  if (input instanceof Date) return input.toISOString().slice(0, 10)
+  const s = String(input)
+  return s.length >= 10 ? s.slice(0, 10) : today()
+}
+
+/**
  * Returns yesterday's date as YYYY-MM-DD
  */
 export function yesterday() {

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
-import { today, weekKey, isVisibleToday } from '../lib/dates'
+import { today, dayKey, isVisibleToday } from '../lib/dates'
 import { MODE_OFFLINE } from '../lib/constants'
 import {
   getTasks, putTask, putTasks,
@@ -9,10 +9,10 @@ import {
   getAllTasksRaw, getAllNotesRaw, getAllAudio,
 } from '../services/db'
 import { extractHashtags } from '../lib/hashtags'
-import { pushTasks, pushNotes, pushJournal, pushConfig, pushReviews, initialSyncStreaming, mergeAndPushJournal } from '../services/sync'
+import { pushTasks, pushNotes, pushJournal, pushConfig, initialSyncStreaming, mergeAndPushJournal } from '../services/sync'
 import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, getSyncStatus, retryNow, setPollInterval } from '../services/syncEngine'
 import { pushAudio, pushAudioMetadata, pushPendingAudio, ensureAudioLocal, softDeleteAudio, restoreAudio, hardDeleteAudio, collectAudioIdsFromBlocks } from '../services/audio'
-import { putAudio, getAudio, getReviews, putReviews } from '../services/db'
+import { putAudio, getAudio } from '../services/db'
 import { stampBlocks, stampBlocksFromDoc, blocksToHtml } from '../lib/blocks'
 
 function collectAudioIdsFromHtml(html) {
@@ -53,27 +53,17 @@ const useAppStore = create((set, get) => ({
 
   // Tasks
   tasks: [],
-  reviews: {}, // date -> reviewedAt (ISO)
+  reviews: {}, // date -> reviewedAt (ISO), derived from per-day journal docs
   reviewVersion: 0,
   bumpReviewVersion: () => set(s => ({ reviewVersion: s.reviewVersion + 1 })),
-  migrateJournalReviews: async () => {
+  rebuildReviewsFromJournals: async () => {
     const docs = await getAllJournals()
-    if (!docs?.length) return
     const index = {}
-    let found = false
-    for (const doc of docs) {
-      for (const [date, entry] of Object.entries(doc.entries || {})) {
-        if (entry.reviewedAt) {
-          index[date] = entry.reviewedAt
-          found = true
-        }
-      }
+    for (const doc of docs || []) {
+      if (doc?.date && doc.reviewedAt) index[doc.date] = doc.reviewedAt
     }
-    if (found) {
-      await putReviews(index)
-      set({ reviews: index })
-      if (get().mode !== MODE_OFFLINE) withRetry(pushReviews)()
-    }
+    set({ reviews: index })
+    return index
   },
   addTask: async (title, explanation = '') => {
     const now = new Date().toISOString()
@@ -293,31 +283,28 @@ const useAppStore = create((set, get) => ({
     if (get().mode !== MODE_OFFLINE) withRetry(pushNotes)()
   },
 
-  // Journals
-  currentJournal: null,
-  // Tags accumulated from ALL journal weeks (so suggestions don't lose tags
-  // that live in weeks other than the currently-loaded one).
+  // Journals (per-day docs keyed by date YYYY-MM-DD).
+  // currentDay shape: { date, blocks, reviewedAt, blockComments, createdAt, updatedAt }
+  currentDay: null,
+  // Tag usage accumulated from ALL local journal days so the autocomplete
+  // pool isn't limited to the currently-loaded day.
   journalTagPool: {},
   loadJournalTagPool: async () => {
     try {
       const docs = await getAllJournals()
       const usage = {}
       for (const doc of docs || []) {
-        for (const date in doc.entries || {}) {
-          const e = doc.entries[date]
-          const text = e?.content ?? blocksToHtml(e?.blocks)
-          const ts = new Date(e.updatedAt || 0).getTime()
-          for (const tag of extractHashtags(text)) {
-            const lower = tag.toLowerCase()
-            if (!usage[lower] || usage[lower] < ts) usage[lower] = ts
-          }
+        const text = blocksToHtml(doc?.blocks)
+        const ts = new Date(doc?.updatedAt || 0).getTime()
+        for (const tag of extractHashtags(text)) {
+          const lower = tag.toLowerCase()
+          if (!usage[lower] || usage[lower] < ts) usage[lower] = ts
         }
       }
       set({ journalTagPool: usage })
     } catch {}
   },
   // Aggregated, always-current tag pool across notes, tasks, and journals.
-  // Read via getAllTags() so editor extensions don't need React wiring.
   getAllTags: () => {
     const s = get()
     const usage = { ...s.journalTagPool }
@@ -337,13 +324,10 @@ const useAppStore = create((set, get) => ({
       const text = `${t.title || ''} ${t.explanation || ''} ${t.feedback || ''} ${t.tags || ''}`
       for (const tag of extractHashtags(text)) bump(tag, ts)
     }
-    if (s.currentJournal?.entries) {
-      for (const date in s.currentJournal.entries) {
-        const e = s.currentJournal.entries[date]
-        const ts = new Date(e.updatedAt || 0).getTime()
-        const text = e?.content ?? blocksToHtml(e?.blocks)
-        for (const tag of extractHashtags(text)) bump(tag, ts)
-      }
+    const cur = s.currentDay
+    if (cur) {
+      const ts = new Date(cur.updatedAt || 0).getTime()
+      for (const tag of extractHashtags(blocksToHtml(cur.blocks))) bump(tag, ts)
     }
 
     return Object.keys(usage).sort((a, b) => {
@@ -351,17 +335,25 @@ const useAppStore = create((set, get) => ({
       return diff || a.localeCompare(b)
     })
   },
-  loadJournal: async (week) => {
-    let doc = await getJournal(week)
+  loadJournal: async (date) => {
+    const key = dayKey(date)
+    let doc = await getJournal(key)
     if (!doc) {
-      doc = { week, entries: {} }
+      const now = new Date().toISOString()
+      doc = {
+        date: key,
+        blocks: [],
+        reviewedAt: null,
+        blockComments: {},
+        createdAt: now,
+        updatedAt: new Date(0).toISOString(),
+      }
     }
     const t = today()
     const config = get().config || {}
 
-    // Daily rollover maintenance: optionally auto-dismiss completed tasks
-    // once the day changes, then stamp the last run date.
-    if (config.autoDismissCompletedNextDay && config.autoDismissCompletedLastRunDate !== t) {
+    // Daily rollover maintenance (only when loading today).
+    if (key === t && config.autoDismissCompletedNextDay && config.autoDismissCompletedLastRunDate !== t) {
       const now = new Date().toISOString()
       const currentTasks = get().tasks
       const updatedTasks = currentTasks.map(task => {
@@ -388,30 +380,28 @@ const useAppStore = create((set, get) => ({
       doc = await mergeAndPushJournal(doc).catch(() => doc)
     }
 
-    if (!doc.entries[t]) {
-      doc = {
-        ...doc,
-        entries: {
-          ...doc.entries,
-          [t]: {
-            blocks: [],
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date(0).toISOString(),
-          },
-        },
-      }
-    }
-
     await putJournal(doc)
-    set({ currentJournal: doc })
+    set({ currentDay: doc })
+    if (doc.reviewedAt) {
+      const nextReviews = { ...get().reviews, [doc.date]: doc.reviewedAt }
+      set({ reviews: nextReviews })
+    }
     return doc
   },
   updateJournalEntry: async (date, payload) => {
-    const targetWeek = weekKey(date)
-    const currentDoc = get().currentJournal?.week === targetWeek ? get().currentJournal : null
-    let doc = currentDoc || await getJournal(targetWeek)
-    if (!doc) doc = { week: targetWeek, entries: {} }
-    const prior = doc.entries[date] || {}
+    const key = dayKey(date)
+    const currentDoc = get().currentDay?.date === key ? get().currentDay : null
+    let doc = currentDoc || await getJournal(key)
+    if (!doc) {
+      doc = {
+        date: key,
+        blocks: [],
+        reviewedAt: null,
+        blockComments: {},
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date(0).toISOString(),
+      }
+    }
     const now = new Date().toISOString()
     // Back-compat: older call sites pass a raw HTML string.
     const content = typeof payload === 'string' ? payload : (payload?.html ?? '')
@@ -419,22 +409,16 @@ const useAppStore = create((set, get) => ({
       ? payload.blocks
       : null
     const blocks = incomingBlocks
-      ? stampBlocksFromDoc(prior.blocks, incomingBlocks, now)
-      : stampBlocks(prior.blocks, content, now)
-    const nextEntry = {
-      ...prior,
-      blocks,
-      updatedAt: now,
-      createdAt: prior.createdAt || now,
-    }
-    // Drop legacy `content` field if present on the prior entry — blocks is now authoritative.
-    delete nextEntry.content
+      ? stampBlocksFromDoc(doc.blocks, incomingBlocks, now)
+      : stampBlocks(doc.blocks, content, now)
     const updated = {
       ...doc,
-      entries: { ...doc.entries, [date]: nextEntry },
+      blocks,
+      updatedAt: now,
+      createdAt: doc.createdAt || now,
     }
     await putJournal(updated)
-    if (currentDoc) set({ currentJournal: updated })
+    if (currentDoc) set({ currentDay: updated })
 
     get().bumpReviewVersion()
     if (get().mode !== MODE_OFFLINE) {
@@ -442,56 +426,56 @@ const useAppStore = create((set, get) => ({
     }
   },
   setJournalEntryReviewed: async (date, reviewed) => {
-    const week = weekKey(date)
-    const currentDoc = get().currentJournal?.week === week ? get().currentJournal : null
-    let doc = currentDoc || await getJournal(week)
-    if (!doc) doc = { week, entries: {} }
-
+    const key = dayKey(date)
+    const currentDoc = get().currentDay?.date === key ? get().currentDay : null
+    let doc = currentDoc || await getJournal(key)
     const now = new Date().toISOString()
-    const prior = doc.entries?.[date] || {
-      blocks: [],
-      createdAt: now,
-      updatedAt: new Date(0).toISOString(),
+    if (!doc) {
+      doc = {
+        date: key,
+        blocks: [],
+        reviewedAt: null,
+        blockComments: {},
+        createdAt: now,
+        updatedAt: new Date(0).toISOString(),
+      }
     }
-    const nextEntry = { ...prior }
-    if (reviewed) nextEntry.reviewedAt = now
-    else delete nextEntry.reviewedAt
-
     const updated = {
       ...doc,
-      entries: { ...doc.entries, [date]: nextEntry },
+      reviewedAt: reviewed ? now : null,
+      updatedAt: now,
     }
 
     await putJournal(updated)
-    if (currentDoc) set({ currentJournal: updated })
+    if (currentDoc) set({ currentDay: updated })
 
-    // Update global reviews index
     const nextReviews = { ...get().reviews }
-    if (reviewed) nextReviews[date] = now
-    else delete nextReviews[date]
-    await putReviews(nextReviews)
+    if (reviewed) nextReviews[key] = now
+    else delete nextReviews[key]
     set({ reviews: nextReviews })
 
     get().bumpReviewVersion()
     if (get().mode !== MODE_OFFLINE) {
       withRetry(() => pushJournal(updated))()
-      withRetry(pushReviews)()
     }
   },
   addJournalBlockComment: async (date, blockId, text) => {
     if (!blockId || !text?.trim()) return
-    const week = weekKey(date)
-    const currentDoc = get().currentJournal?.week === week ? get().currentJournal : null
-    let doc = currentDoc || await getJournal(week)
-    if (!doc) doc = { week, entries: {} }
-
+    const key = dayKey(date)
+    const currentDoc = get().currentDay?.date === key ? get().currentDay : null
+    let doc = currentDoc || await getJournal(key)
     const now = new Date().toISOString()
-    const prior = doc.entries?.[date] || {
-      blocks: [],
-      createdAt: now,
-      updatedAt: new Date(0).toISOString(),
+    if (!doc) {
+      doc = {
+        date: key,
+        blocks: [],
+        reviewedAt: null,
+        blockComments: {},
+        createdAt: now,
+        updatedAt: new Date(0).toISOString(),
+      }
     }
-    const blockComments = { ...(prior.blockComments || {}) }
+    const blockComments = { ...(doc.blockComments || {}) }
     const existing = blockComments[blockId]?.[0]
     blockComments[blockId] = [{
       id: existing?.id || uuid(),
@@ -499,14 +483,10 @@ const useAppStore = create((set, get) => ({
       createdAt: existing?.createdAt || now,
       updatedAt: now,
     }]
-    const nextEntry = { ...prior, blockComments }
-    const updated = {
-      ...doc,
-      entries: { ...doc.entries, [date]: nextEntry },
-    }
+    const updated = { ...doc, blockComments, updatedAt: now }
 
     await putJournal(updated)
-    if (currentDoc) set({ currentJournal: updated })
+    if (currentDoc) set({ currentDay: updated })
     get().bumpReviewVersion()
     if (get().mode !== MODE_OFFLINE) withRetry(() => pushJournal(updated))()
   },
@@ -515,7 +495,9 @@ const useAppStore = create((set, get) => ({
     if (get().mode === MODE_OFFLINE) return
     const docs = await getAllJournals()
     if (!docs?.length) return
-    // Merge all existing local journals with Drive.
+    // Merge each local day with Drive. With per-day files this is N file ops
+    // — fine for typical usage but worth batching once Phase B's manifest
+    // ships.
     await Promise.all(docs.map(doc => mergeAndPushJournal(doc)))
     get().bumpReviewVersion()
   },
@@ -641,24 +623,16 @@ const useAppStore = create((set, get) => ({
       }))
       if (get().mode !== MODE_OFFLINE) withRetry(pushNotes)()
     } else if (rec.sourceType === 'journal') {
-      const date = rec.sourceId
-      const week = weekKey(date)
-      const doc = await getJournal(week)
-      const prior = doc?.entries?.[date]
-      if (!doc || !prior) {
+      const date = dayKey(rec.sourceId)
+      const doc = await getJournal(date)
+      if (!doc) {
         return { ok: false, reason: `Can't restore — journal entry for ${sourceLabel} no longer exists.` }
       }
-      const blocks = Array.isArray(prior.blocks) ? [...prior.blocks, newBlock] : [newBlock]
-      const updatedDoc = {
-        ...doc,
-        entries: {
-          ...doc.entries,
-          [date]: { ...prior, blocks, updatedAt: now, createdAt: prior.createdAt || now },
-        },
-      }
+      const blocks = Array.isArray(doc.blocks) ? [...doc.blocks, newBlock] : [newBlock]
+      const updatedDoc = { ...doc, blocks, updatedAt: now, createdAt: doc.createdAt || now }
       await putJournal(updatedDoc)
       await restoreAudio(id)
-      set(s => (s.currentJournal?.week === week ? { currentJournal: updatedDoc } : {}))
+      set(s => (s.currentDay?.date === date ? { currentDay: updatedDoc } : {}))
       if (get().mode !== MODE_OFFLINE) withRetry(() => pushJournal(updatedDoc))()
     } else {
       return { ok: false, reason: 'Unknown audio source type.' }
@@ -681,14 +655,11 @@ const useAppStore = create((set, get) => ({
     }
 
     for (const doc of journals || []) {
-      const entries = doc?.entries || {}
-      for (const entry of Object.values(entries)) {
-        if (!entry) continue
-        const ids = Array.isArray(entry.blocks)
-          ? collectAudioIdsFromBlocks(entry.blocks)
-          : collectAudioIdsFromHtml(entry.content ?? blocksToHtml(entry.blocks))
-        for (const id of ids) if (id === audioId) journalsCount++
-      }
+      if (!doc) continue
+      const ids = Array.isArray(doc.blocks)
+        ? collectAudioIdsFromBlocks(doc.blocks)
+        : collectAudioIdsFromHtml(blocksToHtml(doc.blocks))
+      for (const id of ids) if (id === audioId) journalsCount++
     }
 
     return { total: notesCount + journalsCount, notes: notesCount, journals: journalsCount }
@@ -765,7 +736,7 @@ const useAppStore = create((set, get) => ({
    *
    * @param {Object} [opts]
    * @param {string[]} [opts.priorityBuckets] - one or more of
-   *   'tasks' | 'notes' | 'config' | 'reviews'. Awaited before this call's
+   *   'tasks' | 'notes' | 'config'. Awaited before this call's
    *   returned promise resolves. Background buckets keep going either way.
    * @returns {Promise<void>} resolves when priority buckets are hydrated.
    *   Background work (other buckets, drive writeback, sync engine startup)
@@ -773,8 +744,8 @@ const useAppStore = create((set, get) => ({
    */
   runInitialSync: async (opts = {}) => {
     const priorityBuckets = Array.isArray(opts.priorityBuckets) && opts.priorityBuckets.length
-      ? opts.priorityBuckets
-      : ['tasks', 'notes', 'config', 'reviews']
+      ? opts.priorityBuckets.filter(b => b !== 'reviews')
+      : ['tasks', 'notes', 'config']
 
     set({ syncing: true, syncStatus: { state: 'syncing' } })
 
@@ -784,15 +755,13 @@ const useAppStore = create((set, get) => ({
     } catch (e) {
       // Synchronous failure to even start the merge — fall back to local reads.
       console.error('Sync failed to start', e)
-      const [tasks, notes, config, reviews] = await Promise.all([getTasks(), getNotes(), getConfig(), getReviews()])
-      set({ tasks, notes, config: config || {}, reviews: reviews || {}, lastSync: Date.now() })
+      const [tasks, notes, config] = await Promise.all([getTasks(), getNotes(), getConfig()])
+      set({ tasks, notes, config: config || {}, lastSync: Date.now() })
       set({ syncing: false, syncStatus: { state: 'offline' } })
+      await get().rebuildReviewsFromJournals().catch(() => {})
       return
     }
 
-    // Per-bucket hydration: each bucket promise resolves with the merged
-    // data once its local IDB write is committed. Hydrate the store the
-    // moment that happens so the active screen can render.
     handle.buckets.tasks.then(tasks => {
       if (tasks != null) set({ tasks })
     }).catch(() => {})
@@ -801,9 +770,6 @@ const useAppStore = create((set, get) => ({
     }).catch(() => {})
     handle.buckets.config.then(config => {
       if (config != null) set({ config: config || {} })
-    }).catch(() => {})
-    handle.buckets.reviews.then(reviews => {
-      if (reviews != null) set({ reviews: reviews || {} })
     }).catch(() => {})
 
     // Tail work that depends on the full merge being done: lastSync stamp,
@@ -817,8 +783,8 @@ const useAppStore = create((set, get) => ({
         if (!s.tasks?.length) fills.push(getTasks().then(v => set({ tasks: v })))
         if (!s.notes?.length) fills.push(getNotes().then(v => set({ notes: v })))
         if (!Object.keys(s.config || {}).length) fills.push(getConfig().then(v => set({ config: v || {} })))
-        if (!Object.keys(s.reviews || {}).length) fills.push(getReviews().then(v => set({ reviews: v || {} })))
         await Promise.all(fills)
+        await get().rebuildReviewsFromJournals().catch(() => {})
       })().catch(() => {})
 
       set({ lastSync: Date.now(), syncing: false })
@@ -852,15 +818,12 @@ const useAppStore = create((set, get) => ({
 
   // Offline mode boot: just load from IDB
   bootOffline: async () => {
-    const [tasks, notes, config, reviews] = await Promise.all([
-      getTasks(), getNotes(), getConfig(), getReviews(),
+    const [tasks, notes, config] = await Promise.all([
+      getTasks(), getNotes(), getConfig(),
     ])
-    set({ tasks, notes, config: config || {}, reviews: reviews || {} })
+    set({ tasks, notes, config: config || {} })
+    await get().rebuildReviewsFromJournals().catch(() => {})
     get().loadJournalTagPool()
-    // Migrate reviews if the index is empty but journals exist
-    if (Object.keys(reviews || {}).length === 0) {
-      get().migrateJournalReviews()
-    }
   },
 }))
 

@@ -9,10 +9,11 @@
  *   { state: 'waiting', retryIn: <seconds remaining> }
  */
 import { getDriveFileIds, readJsonFile, findFile } from './drive'
-import { getTasks, getNotes, getConfig, getReviews, putTasks, putNotes, putConfig, putJournal, putReviews, getAllAudio, putAudio, getAllNotesRaw, getJournal } from './db'
-import { getStoredToken, trySilentRefresh, storeToken, setAccessToken, scheduleTokenRefresh, isAuthError } from './auth'
-import { mergeJournalEntry, pushReviews } from './sync'
+import { putTasks, putNotes, putConfig, putJournal, getAllAudio, putAudio, getAllNotesRaw, getJournal } from './db'
+import { getStoredToken, trySilentRefresh, storeToken, setAccessToken, isAuthError } from './auth'
+import { mergeDayDoc } from './sync'
 import { mergeBlocks, htmlToBlocks, purgeOldBlockTombstones } from '../lib/blocks'
+import { dayKey } from '../lib/dates'
 
 const BLOCK_TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
@@ -40,12 +41,9 @@ let _storeGetter = null
 let writeGeneration = 0
 let pushesInFlight = 0
 // When true, the next pollRemote skips the modifiedTime hash check and
-// fetches directly. Set on engine start and on tab visibility/focus, since
-// in those cases we almost always need fresh data and the hash round-trip
-// is pure latency.
+// fetches directly.
 let forceNextPoll = true
-// week (e.g. "2026-W18") → Drive fileId. Avoids a Drive list call on every
-// poll just to resolve the current week's journal file.
+// date (YYYY-MM-DD) → Drive fileId for the currently-loaded day's journal.
 const journalFileIdCache = new Map()
 
 export function notifyLocalWrite() {
@@ -53,7 +51,6 @@ export function notifyLocalWrite() {
 }
 
 function setStatus(s) {
-  // Deep compare for waiting state
   if (status.state === s.state && status.retryIn === s.retryIn) return
   status = s
   listeners.forEach(fn => fn(s))
@@ -68,9 +65,6 @@ export function onSyncStatus(fn) {
   return () => listeners.delete(fn)
 }
 
-/**
- * Start the sync engine. Call after initial sync is done.
- */
 export function startSyncEngine(storeSetter, intervalMs, storeGetter) {
   if (running) return
   running = true
@@ -98,15 +92,10 @@ function handleVisibility() {
   if (!running) return
   if (document.visibilityState === 'hidden') return
   if (!navigator.onLine) return
-  // Force a fetch right now without waiting for the next interval tick or
-  // paying for the modifiedTime hash check first.
   forceNextPoll = true
   pollRemote(_storeSetter)
 }
 
-/**
- * Stop the sync engine.
- */
 export function stopSyncEngine() {
   running = false
   clearInterval(pollTimer)
@@ -125,9 +114,6 @@ export function stopSyncEngine() {
   setStatus({ state: 'offline' })
 }
 
-/**
- * Manually trigger a retry now (called when user clicks the status).
- */
 export function retryNow() {
   if (!running) return
   clearTimeout(retryTimer)
@@ -143,15 +129,12 @@ export function retryNow() {
     pendingPush = null
     executePush(fn)
   } else {
-    // Just force a poll
     setStatus({ state: 'syncing' })
     pollRemote(_storeSetter).then(() => {
       if (status.state === 'syncing') setStatus({ state: 'synced' })
     })
   }
 }
-
-// --- Internal ---
 
 async function ensureValidToken() {
   const token = await getStoredToken()
@@ -160,7 +143,6 @@ async function ensureValidToken() {
     return true
   }
 
-  // Token expired or missing — try background refresh
   try {
     const refreshed = await trySilentRefresh()
     if (refreshed) {
@@ -208,9 +190,6 @@ function startPolling(storeSetter) {
   pollTimer = setInterval(() => pollRemote(storeSetter), pollIntervalMs)
 }
 
-/**
- * Update the poll interval while the engine is running.
- */
 export function setPollInterval(ms) {
   pollIntervalMs = ms || DEFAULT_POLL_INTERVAL
   if (running && pollTimer) {
@@ -225,8 +204,6 @@ async function pollRemote(storeSetter) {
     const ids = await getDriveFileIds()
     if (!ids) return
 
-    // Ensure we have a valid token before starting network calls.
-    // If refresh fails, we'll hit the catch block and set status to unauthorized.
     const hasToken = await ensureValidToken()
     if (!hasToken) {
       setStatus({ state: 'error', message: 'Session expired', isAuth: true })
@@ -238,9 +215,7 @@ async function pollRemote(storeSetter) {
     const forced = forceNextPoll
     if (forced) {
       forceNextPoll = false
-      // On forced polls (engine start, tab focus) we still need the journal
-      // fileId, but skip the modifiedTime hash round-trip.
-      journalFileId = await getJournalFileIdForCurrentWeek(ids)
+      journalFileId = await getJournalFileIdForCurrentDay(ids)
     } else {
       const res = await getRemoteHash(ids)
       hash = res.hash
@@ -249,12 +224,11 @@ async function pollRemote(storeSetter) {
     }
 
     setStatus({ state: 'syncing' })
-    const [tasks, notes, config, audioIndex, reviews] = await Promise.all([
+    const [tasks, notes, config, audioIndex] = await Promise.all([
       readJsonFile(ids.tasksFileId),
       readJsonFile(ids.notesFileId),
       readJsonFile(ids.configFileId),
       ids.audioIndexFileId ? readJsonFile(ids.audioIndexFileId).catch(() => []) : Promise.resolve([]),
-      ids.reviewsFileId ? readJsonFile(ids.reviewsFileId).catch(() => []) : Promise.resolve([]),
     ])
 
     // A local write raced with our pull — discard, the user's edit is fresher.
@@ -264,9 +238,7 @@ async function pollRemote(storeSetter) {
       return
     }
 
-    // Safe notes merge: for each note present on both sides, merge bodies at
-    // the block level rather than overwriting. Prevents the poll path from
-    // clobbering local edits that haven't flushed to Drive yet.
+    // Safe notes merge at the block level (see notes in sync.js).
     const remoteNotesArr = Array.isArray(notes) ? notes : []
     const localNotesRaw = await getAllNotesRaw()
     const localNotesById = new Map(localNotesRaw.map(n => [n.id, n]))
@@ -288,7 +260,6 @@ async function pollRemote(storeSetter) {
       delete out.body
       return out
     })
-    // Include local-only notes that the remote doesn't know about yet.
     const remoteIds = new Set(remoteNotesArr.map(n => n.id))
     for (const n of localNotesRaw) {
       if (!remoteIds.has(n.id)) mergedNotes.push(n)
@@ -298,12 +269,9 @@ async function pollRemote(storeSetter) {
       putTasks(Array.isArray(tasks) ? tasks : []),
       putNotes(mergedNotes),
       putConfig(config || {}),
-      putReviews(reviews || {}),
     ])
 
-    // Reconcile audio index: add stub records for any remote audio we don't
-    // know about yet, and merge transcript metadata into existing records.
-    // The blob itself is fetched lazily when the user plays it.
+    // Reconcile audio index (unchanged from prior behaviour).
     const audioTranscriptUpdates = []
     if (Array.isArray(audioIndex) && audioIndex.length > 0) {
       try {
@@ -333,7 +301,6 @@ async function pollRemote(storeSetter) {
             if (entry.transcript || entry.transcriptSegments) audioTranscriptUpdates.push(entry.id)
             continue
           }
-          // Reconcile trash state: newer deletedAt wins, blank on either side means "not deleted".
           const localDelT = new Date(local.deletedAt || 0).getTime()
           const remoteDelT = new Date(entry.deletedAt || 0).getTime()
           let nextDeleted = local.deleted || false
@@ -353,8 +320,6 @@ async function pollRemote(storeSetter) {
             nextSourceId = entry.sourceId || nextSourceId
             nextSourceTitle = entry.sourceTitle || nextSourceTitle
           }
-          // Merge transcript: prefer newer transcribedAt, but also accept remote
-          // transcript when local has none (legacy/missing timestamps).
           const localT = new Date(local.transcribedAt || 0).getTime()
           const remoteT = new Date(entry.transcribedAt || 0).getTime()
           const localHasTranscript = !!(local.transcript || (Array.isArray(local.transcriptSegments) && local.transcriptSegments.length))
@@ -385,28 +350,21 @@ async function pollRemote(storeSetter) {
       }
     }
     if (audioTranscriptUpdates.length > 0) {
-      // Notify mounted AudioNode views so transcripts pulled from Drive show
-      // immediately instead of requiring a refresh.
       try {
         window.dispatchEvent(new CustomEvent('yajna:audio-updated', { detail: { ids: audioTranscriptUpdates } }))
       } catch { /* ignore */ }
     }
 
-    // Pull the current journal week if one is loaded — merge per entry at
-    // the block level so local edits that haven't flushed yet aren't lost.
-    let updatedJournal = undefined
+    // Pull the currently-loaded day's journal — merge with local at the block
+    // level so local edits that haven't flushed yet aren't lost.
+    let updatedDay = undefined
     if (journalFileId) {
       const remoteDoc = await readJsonFile(journalFileId)
-      if (remoteDoc) {
-        const localDoc = await getJournal(remoteDoc.week) || { week: remoteDoc.week, entries: {} }
-        const mergedEntries = { ...(localDoc.entries || {}) }
-        for (const [date, remoteEntry] of Object.entries(remoteDoc.entries || {})) {
-          const localEntry = mergedEntries[date]
-          mergedEntries[date] = localEntry ? mergeJournalEntry(localEntry, remoteEntry) : remoteEntry
-        }
-        const mergedDoc = { ...remoteDoc, ...localDoc, entries: mergedEntries, week: remoteDoc.week }
+      if (remoteDoc?.date) {
+        const localDoc = await getJournal(remoteDoc.date)
+        const mergedDoc = localDoc ? mergeDayDoc(localDoc, remoteDoc) : remoteDoc
         await putJournal(mergedDoc)
-        updatedJournal = mergedDoc
+        updatedDay = mergedDoc
       }
     }
 
@@ -416,19 +374,15 @@ async function pollRemote(storeSetter) {
     }
 
     if (storeSetter) {
-      // Filter tombstones before hydrating the store — IDB keeps them but the UI must not see them.
-      // Use mergedNotes (block-level merge of local+remote), not the raw remote, or local
-      // edits that haven't flushed to Drive yet get clobbered until next IDB read.
       const visibleTasks = (Array.isArray(tasks) ? tasks : []).filter(t => !t.deleted)
       const visibleNotes = mergedNotes.filter(n => !n.deleted)
       const update = {
         tasks: visibleTasks,
         notes: visibleNotes,
         config: config || {},
-        reviews: reviews || {},
       }
-      if (updatedJournal !== undefined) {
-        update.currentJournal = updatedJournal
+      if (updatedDay !== undefined) {
+        update.currentDay = updatedDay
       }
       storeSetter(update)
     }
@@ -437,7 +391,7 @@ async function pollRemote(storeSetter) {
       try {
         lastRemoteHash = (await getRemoteHash(ids)).hash
       } catch {
-        // Hash refresh is best-effort; next poll will retry.
+        // best-effort
       }
     } else {
       lastRemoteHash = hash
@@ -453,14 +407,15 @@ async function pollRemote(storeSetter) {
   }
 }
 
-async function getJournalFileIdForCurrentWeek(ids) {
+async function getJournalFileIdForCurrentDay(ids) {
   if (!ids?.journalsFolderId || !_storeGetter) return null
-  const week = _storeGetter()?.currentJournal?.week
-  if (!week) return null
-  if (journalFileIdCache.has(week)) return journalFileIdCache.get(week)
+  const date = _storeGetter()?.currentDay?.date
+  if (!date) return null
+  const key = dayKey(date)
+  if (journalFileIdCache.has(key)) return journalFileIdCache.get(key)
   try {
-    const fid = await findFile(ids.journalsFolderId, `${week}.json`)
-    if (fid) journalFileIdCache.set(week, fid)
+    const fid = await findFile(ids.journalsFolderId, `${key}.json`)
+    if (fid) journalFileIdCache.set(key, fid)
     return fid
   } catch (e) {
     if (isAuthError(e)) throw e
@@ -475,7 +430,7 @@ async function getRemoteHash(ids) {
   const fileIds = [ids.tasksFileId, ids.notesFileId, ids.configFileId]
   if (ids.audioIndexFileId) fileIds.push(ids.audioIndexFileId)
 
-  const journalFileId = await getJournalFileIdForCurrentWeek(ids)
+  const journalFileId = await getJournalFileIdForCurrentDay(ids)
   if (journalFileId) fileIds.push(journalFileId)
 
   const times = await Promise.all(
@@ -510,7 +465,6 @@ function scheduleRetry(pushFn) {
   if (elapsed > 30000) {
     console.warn('Sync retry limit reached (30s). Staying offline.')
     setStatus({ state: 'offline' })
-    // keep pendingPush so user can click to retry manually
     return
   }
 
@@ -519,7 +473,6 @@ function scheduleRetry(pushFn) {
   let remaining = Math.ceil(delayMs / 1000)
   setStatus({ state: 'waiting', retryIn: remaining })
 
-  // Countdown every second
   clearInterval(countdownTimer)
   countdownTimer = setInterval(() => {
     remaining--
@@ -545,13 +498,11 @@ function scheduleRetry(pushFn) {
 
 async function executePush(pushFn) {
   if (!pushFn) return
-  // Don't attempt push if offline — go straight to queuing
   if (!navigator.onLine) {
     scheduleRetry(pushFn)
     return
   }
 
-  // Ensure we have a valid token before starting network calls.
   const hasToken = await ensureValidToken()
   if (!hasToken) {
     pendingPush = pushFn
@@ -567,7 +518,6 @@ async function executePush(pushFn) {
     retryStartTime = 0
     pendingPush = null
     setStatus({ state: 'synced' })
-    // Update hash so our own write doesn't trigger re-pull
     try {
       const ids = await getDriveFileIds()
       if (ids) lastRemoteHash = (await getRemoteHash(ids)).hash
@@ -585,15 +535,9 @@ async function executePush(pushFn) {
   }
 }
 
-/**
- * Wrap a push operation with error handling and retry.
- * Cancels any pending retry since this new push supersedes it.
- */
 export function withRetry(pushFn) {
   return () => {
-    // Mark that a local write happened so any in-flight poll discards its result
     writeGeneration++
-    // Cancel stale retry — this fresh push replaces whatever was queued
     clearTimeout(retryTimer)
     clearInterval(countdownTimer)
     retryTimer = null

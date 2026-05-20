@@ -12,7 +12,8 @@ function addDays(dateStr, delta) {
 }
 
 export function getJournalEntryHtml(entry) {
-  return entry?.content ?? blocksToHtml(entry?.blocks)
+  if (!entry) return ''
+  return blocksToHtml(entry.blocks)
 }
 
 export function hasJournalData(entry) {
@@ -58,9 +59,7 @@ export function getTaskSnapshotForDate(task, date) {
 export function collectJournalEntries(journalDocs) {
   const entries = {}
   for (const doc of journalDocs || []) {
-    for (const [date, entry] of Object.entries(doc.entries || {})) {
-      entries[date] = entry
-    }
+    if (doc?.date) entries[doc.date] = doc
   }
   return entries
 }

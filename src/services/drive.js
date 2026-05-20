@@ -220,7 +220,7 @@ export async function initDriveStructure() {
   const cached = await getMeta(FILES_KEY)
   if (cached && cached.rootId && cached.journalsFolderId && cached.audioFolderId &&
       cached.tasksFileId && cached.notesFileId && cached.configFileId &&
-      cached.audioIndexFileId && cached.reviewsFileId) {
+      cached.audioIndexFileId) {
     lap('cache hit', t0)
     return cached
   }
@@ -240,17 +240,16 @@ export async function initDriveStructure() {
     return fileId
   }
 
-  const [tasksFileId, notesFileId, configFileId, audioIndexFileId, reviewsFileId] = await Promise.all([
+  const [tasksFileId, notesFileId, configFileId, audioIndexFileId] = await Promise.all([
     ensureFile('tasks.json', []),
     ensureFile('notes.json', []),
     ensureFile('config.json', {}),
     ensureFile('audio.json', []),
-    ensureFile('reviews.json', {}),
   ]); t = lap('ensureFiles', t)
 
   const ids = {
     rootId, journalsFolderId, audioFolderId,
-    tasksFileId, notesFileId, configFileId, audioIndexFileId, reviewsFileId
+    tasksFileId, notesFileId, configFileId, audioIndexFileId,
   }
   await putMeta(FILES_KEY, ids)
   lap('TOTAL initDriveStructure', t0)

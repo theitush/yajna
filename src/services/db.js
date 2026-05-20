@@ -9,16 +9,12 @@ let dbPromise = null
 function getDB() {
   if (!dbPromise) {
     dbPromise = openDB(DB_NAME, DB_VERSION, {
-      upgrade(db) {
+      async upgrade(db, oldVersion, _newVersion, tx) {
         if (!db.objectStoreNames.contains(STORE_TASKS)) {
           db.createObjectStore(STORE_TASKS, { keyPath: 'id' })
         }
         if (!db.objectStoreNames.contains(STORE_NOTES)) {
           db.createObjectStore(STORE_NOTES, { keyPath: 'id' })
-        }
-        if (!db.objectStoreNames.contains(STORE_JOURNALS)) {
-          // key is the week string e.g. "2026-W15"
-          db.createObjectStore(STORE_JOURNALS, { keyPath: 'week' })
         }
         if (!db.objectStoreNames.contains(STORE_CONFIG)) {
           db.createObjectStore(STORE_CONFIG)
@@ -31,6 +27,67 @@ function getDB() {
         }
         if (!db.objectStoreNames.contains(STORE_REVIEWS)) {
           db.createObjectStore(STORE_REVIEWS)
+        }
+
+        // Journals: weekly docs (keyPath 'week') → per-day docs (keyPath 'date').
+        // v4 migration: read existing weekly rows, split each `entries[date]` into
+        // its own row, fold STORE_REVIEWS entries into matching day's reviewedAt,
+        // then recreate the store with the new keyPath.
+        if (!db.objectStoreNames.contains(STORE_JOURNALS)) {
+          db.createObjectStore(STORE_JOURNALS, { keyPath: 'date' })
+        } else if (oldVersion < 4) {
+          // Collect prior weekly docs and the global reviews index using the
+          // current upgrade transaction, then drop+recreate the store.
+          const oldStore = tx.objectStore(STORE_JOURNALS)
+          const weeklyDocs = await oldStore.getAll()
+          let reviewsIndex = {}
+          if (db.objectStoreNames.contains(STORE_REVIEWS)) {
+            try {
+              const rev = await tx.objectStore(STORE_REVIEWS).get('index')
+              if (rev && typeof rev === 'object') reviewsIndex = rev
+            } catch {}
+          }
+
+          db.deleteObjectStore(STORE_JOURNALS)
+          const newStore = db.createObjectStore(STORE_JOURNALS, { keyPath: 'date' })
+
+          for (const weekly of weeklyDocs || []) {
+            const entries = weekly?.entries || {}
+            for (const [date, entry] of Object.entries(entries)) {
+              if (!date || !entry) continue
+              const dayDoc = {
+                date,
+                blocks: Array.isArray(entry.blocks) ? entry.blocks : [],
+                reviewedAt: entry.reviewedAt || null,
+                blockComments: entry.blockComments || {},
+                createdAt: entry.createdAt || entry.updatedAt || new Date().toISOString(),
+                updatedAt: entry.updatedAt || entry.createdAt || new Date().toISOString(),
+              }
+              newStore.put(dayDoc)
+            }
+          }
+
+          // Fold reviews index into any day docs we just wrote (or create
+          // stubs for dates that only had a review marker but no journal).
+          for (const [date, reviewedAt] of Object.entries(reviewsIndex || {})) {
+            if (!date || !reviewedAt) continue
+            const existing = await newStore.get(date)
+            if (existing) {
+              const winnerTs = (existing.reviewedAt && existing.reviewedAt > reviewedAt)
+                ? existing.reviewedAt
+                : reviewedAt
+              newStore.put({ ...existing, reviewedAt: winnerTs })
+            } else {
+              newStore.put({
+                date,
+                blocks: [],
+                reviewedAt,
+                blockComments: {},
+                createdAt: reviewedAt,
+                updatedAt: reviewedAt,
+              })
+            }
+          }
         }
       },
     })
@@ -118,15 +175,16 @@ export async function purgeTombstones(cutoffIso) {
   }
 }
 
-// Journals
-export async function getJournal(week) {
+// Journals: per-day docs keyed by 'date' (YYYY-MM-DD).
+// Shape: { date, blocks, reviewedAt, blockComments, createdAt, updatedAt }
+export async function getJournal(date) {
   const db = await getDB()
-  return db.get(STORE_JOURNALS, week)
+  return db.get(STORE_JOURNALS, date)
 }
 
-export async function putJournal(journalDoc) {
+export async function putJournal(dayDoc) {
   const db = await getDB()
-  return db.put(STORE_JOURNALS, journalDoc)
+  return db.put(STORE_JOURNALS, dayDoc)
 }
 
 export async function getAllJournals() {
@@ -178,7 +236,9 @@ export async function putMeta(key, value) {
   return db.put(STORE_META, value, key)
 }
 
-// Reviews index (global map of date -> reviewedAt)
+// Reviews index (global map of date -> reviewedAt). Kept around for
+// backwards compatibility with code that may still read it during migration,
+// but reviews now live on per-day journal docs as `reviewedAt`.
 export async function getReviews() {
   const db = await getDB()
   return db.get(STORE_REVIEWS, 'index') || {}

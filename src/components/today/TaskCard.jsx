@@ -21,7 +21,7 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
   // Subscribe to anything that can change the tag pool, then ask the store.
   useAppStore(s => s.notes)
   useAppStore(s => s.tasks)
-  useAppStore(s => s.currentJournal)
+  useAppStore(s => s.currentDay)
   useAppStore(s => s.journalTagPool)
   const allTags = useAppStore.getState().getAllTags()
   const [showReschedule, setShowReschedule] = useState(false)

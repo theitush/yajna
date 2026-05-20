@@ -9,7 +9,7 @@ import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { DOMSerializer } from '@tiptap/pm/model'
 import { useEffect, useCallback, useRef } from 'react'
 import useAppStore from '../../store/useAppStore'
-import { today, weekKey, formatDate } from '../../lib/dates'
+import { today, formatDate } from '../../lib/dates'
 import EditorToolbar from '../editor/EditorToolbar'
 import { RTLExtension } from '../editor/RTLExtension'
 import { AudioNode } from '../editor/AudioNode'
@@ -50,7 +50,7 @@ const HashtagExtension = Extension.create({
 })
 
 export default function JournalPanel({ onInsertText, date, headerLabel }) {
-  const currentJournal = useAppStore(s => s.currentJournal)
+  const currentDay = useAppStore(s => s.currentDay)
   const updateJournalEntry = useAppStore(s => s.updateJournalEntry)
   const loadJournal = useAppStore(s => s.loadJournal)
   const getTags = useAppStore.getState().getAllTags
@@ -58,11 +58,11 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
   const targetDate = date || today()
 
   useEffect(() => {
-    loadJournal(weekKey(targetDate))
+    loadJournal(targetDate)
   }, [targetDate])
 
-  const todayEntry = currentJournal?.entries?.[targetDate]
-  const content = (todayEntry?.content ?? blocksToHtml(todayEntry?.blocks)) || ''
+  const dayDoc = currentDay?.date === targetDate ? currentDay : null
+  const content = (dayDoc ? blocksToHtml(dayDoc.blocks) : '') || ''
 
   const editor = useEditor({
     extensions: [
@@ -96,8 +96,7 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
     },
   })
 
-  const remoteEntry = currentJournal?.entries?.[targetDate]
-  const remoteContent = remoteEntry?.content ?? blocksToHtml(remoteEntry?.blocks)
+  const remoteContent = dayDoc ? blocksToHtml(dayDoc.blocks) : ''
   useEffect(() => {
     if (!editor || !remoteContent) return
     // Don't overwrite the editor if there's a pending local save —

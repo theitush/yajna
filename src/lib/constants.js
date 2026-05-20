@@ -15,7 +15,7 @@ export const AUTH_WORKER_URL = RAW_WORKER_URL.replace(/[.\/]+$/, '')
 export const SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email'
 
 export const DB_NAME = 'yajna-db'
-export const DB_VERSION = 3
+export const DB_VERSION = 4
 export const STORE_TASKS = 'tasks'
 export const STORE_NOTES = 'notes'
 export const STORE_JOURNALS = 'journals'

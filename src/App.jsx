@@ -3,10 +3,11 @@ import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import useAppStore from './store/useAppStore'
 import { loadGAPI, initGAPI, getStoredToken, getTokenRemainingSeconds, startAuthRedirect, consumeAuthRedirect, storeToken, storeRefreshBlob, setAccessToken, trySilentRefresh, scheduleTokenRefresh, isAuthError } from './services/auth'
 import { initDriveStructure } from './services/drive'
+import { migrateDriveJournalsIfNeeded } from './services/journalMigration'
 import { getMeta, putMeta } from './services/db'
 import { requestStoragePersistence } from './services/storage'
 import { GOOGLE_CLIENT_ID, MODE_DRIVE, MODE_OFFLINE, MODE_KEY } from './lib/constants'
-import { weekKey, today } from './lib/dates'
+import { today } from './lib/dates'
 
 import LoginScreen from './components/auth/LoginScreen'
 import Sidebar from './components/layout/Sidebar'
@@ -36,7 +37,7 @@ export default function App() {
   function priorityWorkForRoute(hash) {
     // Strip leading "#" and query/fragment leftovers.
     const path = (hash || '').replace(/^#/, '').split('?')[0] || '/'
-    if (path.startsWith('/review')) return { buckets: ['reviews'], journal: true }
+    if (path.startsWith('/review')) return { buckets: ['tasks', 'notes'], journal: true }
     if (path.startsWith('/notes')) return { buckets: ['notes'], journal: false }
     if (path.startsWith('/tasks')) return { buckets: ['tasks'], journal: false }
     if (path.startsWith('/trash')) return { buckets: ['tasks', 'notes'], journal: false }
@@ -70,7 +71,7 @@ export default function App() {
           await putMeta(MODE_KEY, MODE_DRIVE)
           setMode(MODE_DRIVE)
           await bootOffline()
-          await loadJournal(weekKey(today()))
+          await loadJournal(today())
           setAuthenticated(true)
 
           // Finish Drive setup in background
@@ -84,9 +85,10 @@ export default function App() {
               scheduleTokenRefresh(redirectResult.expiresIn, handleTokenExpired)
               fetchUserEmail()
               await initDriveStructure()
+              await migrateDriveJournalsIfNeeded().catch(e => console.warn('journal migration failed (will retry next boot):', e))
               const work = priorityWorkForRoute(window.location.hash)
               const priorityTasks = [runInitialSync({ priorityBuckets: work.buckets })]
-              if (work.journal) priorityTasks.push(loadJournal(weekKey(today())))
+              if (work.journal) priorityTasks.push(loadJournal(today()))
               await Promise.all(priorityTasks)
             } catch (e) {
               console.error('Background Drive init after redirect failed:', e)
@@ -108,7 +110,7 @@ export default function App() {
         if (savedMode === MODE_OFFLINE) {
           setMode(MODE_OFFLINE)
           await bootOffline()
-          await loadJournal(weekKey(today()))
+          await loadJournal(today())
           setAuthenticated(true)
           return
         }
@@ -117,7 +119,7 @@ export default function App() {
           // Show the app immediately from local data
           setMode(MODE_DRIVE)
           await bootOffline()
-          await loadJournal(weekKey(today()))
+          await loadJournal(today())
           setAuthenticated(true)
 
           // Connect to Drive in the background — app is already usable
@@ -136,9 +138,10 @@ export default function App() {
                 scheduleTokenRefresh(await getTokenRemainingSeconds(), handleTokenExpired)
                 fetchUserEmail(); t = lap('fetchUserEmail (kicked off)', t)
                 await initDriveStructure(); t = lap('initDriveStructure', t)
+                await migrateDriveJournalsIfNeeded().catch(e => console.warn('journal migration failed (will retry next boot):', e)); t = lap('journal migration', t)
                 const work = priorityWorkForRoute(window.location.hash)
                 const priorityTasks = [runInitialSync({ priorityBuckets: work.buckets })]
-                if (work.journal) priorityTasks.push(loadJournal(weekKey(today())))
+                if (work.journal) priorityTasks.push(loadJournal(today()))
                 await Promise.all(priorityTasks); t = lap('priority sync', t)
                 lap('TOTAL boot gate', tBoot)
                 return
@@ -154,7 +157,7 @@ export default function App() {
                   await initDriveStructure()
                   const work = priorityWorkForRoute(window.location.hash)
                   const priorityTasks = [runInitialSync({ priorityBuckets: work.buckets })]
-                  if (work.journal) priorityTasks.push(loadJournal(weekKey(today())))
+                  if (work.journal) priorityTasks.push(loadJournal(today()))
                   await Promise.all(priorityTasks)
                   return
                 }
@@ -260,7 +263,7 @@ export default function App() {
     await requestStoragePersistence()
 
     await bootOffline()
-    await loadJournal(weekKey(today()))
+    await loadJournal(today())
     setAuthenticated(true)
   }
 

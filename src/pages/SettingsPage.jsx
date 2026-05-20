@@ -81,7 +81,7 @@ export default function SettingsPage() {
   const userEmail = useAppStore(s => s.userEmail)
   const tasks = useAppStore(s => s.tasks)
   const notes = useAppStore(s => s.notes)
-  const currentJournal = useAppStore(s => s.currentJournal)
+  const currentDay = useAppStore(s => s.currentDay)
 
   const [groqKey, setGroqKey] = useState('')
   const [groqModel, setGroqModel] = useState(DEFAULT_GROQ_MODEL)
@@ -130,7 +130,7 @@ export default function SettingsPage() {
   }
 
   const handleExport = () => {
-    const journals = currentJournal ? [currentJournal] : []
+    const journals = currentDay ? [currentDay] : []
     exportData(tasks, notes, journals)
   }
 

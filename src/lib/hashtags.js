@@ -18,12 +18,8 @@ export function collectAllHashtags({ notes = [], tasks = [], journal = null } = 
   for (const t of tasks) {
     for (const tag of extractHashtags(`${t.title || ''} ${t.explanation || ''} ${t.feedback || ''} ${t.tags || ''}`)) set.add(tag)
   }
-  if (journal?.entries) {
-    for (const date in journal.entries) {
-      const e = journal.entries[date]
-      const text = e?.content ?? blocksToHtml(e?.blocks)
-      for (const tag of extractHashtags(text)) set.add(tag)
-    }
+  if (journal?.blocks) {
+    for (const tag of extractHashtags(blocksToHtml(journal.blocks))) set.add(tag)
   }
   return [...set].sort()
 }

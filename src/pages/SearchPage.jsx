@@ -133,24 +133,22 @@ export default function SearchPage() {
   const journalDocsForSearch = useMemo(() => {
     const out = []
     for (const doc of journalDocs) {
-      for (const date in doc.entries || {}) {
-        const e = doc.entries[date]
-        if (!e) continue
-        const blocks = blocksWithText(e.blocks)
-        for (const b of blocks) {
-          const audioTexts = b.audioIds.map(id => audioMap[id]).filter(Boolean)
-          const body = buildSearchableText([b.text, ...audioTexts])
-          if (!body) continue
-          out.push({
-            kind: 'journal',
-            id: `${date}:${b.blockId || ''}`,
-            title: fmtDate(date) || date,
-            body,
-            date,
-            blockId: b.blockId,
-            reviewedAt: e.reviewedAt || null,
-          })
-        }
+      if (!doc?.date) continue
+      const date = doc.date
+      const blocks = blocksWithText(doc.blocks)
+      for (const b of blocks) {
+        const audioTexts = b.audioIds.map(id => audioMap[id]).filter(Boolean)
+        const body = buildSearchableText([b.text, ...audioTexts])
+        if (!body) continue
+        out.push({
+          kind: 'journal',
+          id: `${date}:${b.blockId || ''}`,
+          title: fmtDate(date) || date,
+          body,
+          date,
+          blockId: b.blockId,
+          reviewedAt: doc.reviewedAt || null,
+        })
       }
     }
     return out
