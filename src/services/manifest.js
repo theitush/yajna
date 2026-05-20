@@ -24,6 +24,7 @@
  */
 import { getMeta, putMeta } from './db'
 import { readJsonFile, findFile } from './drive'
+import { withAuthRetry } from './auth'
 
 const MANIFEST_FILENAME = 'manifest.json'
 const MAX_ENTRIES = 500
@@ -82,10 +83,10 @@ function isValidManifest(m) {
  * null if the file doesn't exist yet (pre-migration).
  */
 async function getManifestFileMeta(rootId) {
-  const res = await withTimeout(window.gapi.client.drive.files.list({
+  const res = await withAuthRetry(() => withTimeout(window.gapi.client.drive.files.list({
     q: `name='${MANIFEST_FILENAME}' and '${rootId}' in parents and trashed=false`,
     fields: 'files(id, headRevisionId)',
-  }))
+  })))
   const f = res.result.files?.[0]
   return f ? { fileId: f.id, headRevisionId: f.headRevisionId || null } : null
 }
@@ -109,28 +110,30 @@ export async function readManifest(rootId) {
  * on 412. Other errors throw.
  */
 async function writeManifestWithIfMatch(fileId, manifest, ifMatchRevision) {
-  const token = window.gapi.client.getToken()?.access_token
-  const headers = { Authorization: `Bearer ${token}` }
-  if (ifMatchRevision) headers['If-Match'] = ifMatchRevision
-  const form = new FormData()
-  form.append('metadata', new Blob(
-    [JSON.stringify({ name: MANIFEST_FILENAME, mimeType: 'application/json' })],
-    { type: 'application/json' }
-  ))
-  form.append('media', new Blob([JSON.stringify(manifest)], { type: 'application/json' }))
-  const res = await fetch(
-    `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart&fields=id,headRevisionId`,
-    { method: 'PATCH', headers, body: form }
-  )
-  if (res.status === 412) return { ok: false, conflict: true }
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    const error = new Error(err.error?.message || `Manifest write failed: ${res.status}`)
-    error.status = res.status
-    throw error
-  }
-  const json = await res.json()
-  return { ok: true, headRevisionId: json.headRevisionId || null }
+  return withAuthRetry(async () => {
+    const token = window.gapi.client.getToken()?.access_token
+    const headers = { Authorization: `Bearer ${token}` }
+    if (ifMatchRevision) headers['If-Match'] = ifMatchRevision
+    const form = new FormData()
+    form.append('metadata', new Blob(
+      [JSON.stringify({ name: MANIFEST_FILENAME, mimeType: 'application/json' })],
+      { type: 'application/json' }
+    ))
+    form.append('media', new Blob([JSON.stringify(manifest)], { type: 'application/json' }))
+    const res = await fetch(
+      `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart&fields=id,headRevisionId`,
+      { method: 'PATCH', headers, body: form }
+    )
+    if (res.status === 412) return { ok: false, conflict: true }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      const error = new Error(err.error?.message || `Manifest write failed: ${res.status}`)
+      error.status = res.status
+      throw error
+    }
+    const json = await res.json()
+    return { ok: true, headRevisionId: json.headRevisionId || null }
+  })
 }
 
 /**
@@ -138,22 +141,26 @@ async function writeManifestWithIfMatch(fileId, manifest, ifMatchRevision) {
  * the entities migration on first run.
  */
 export async function createManifest(rootId, manifest = emptyManifest()) {
-  const token = window.gapi.client.getToken()?.access_token
-  const form = new FormData()
-  form.append('metadata', new Blob(
-    [JSON.stringify({ name: MANIFEST_FILENAME, mimeType: 'application/json', parents: [rootId] })],
-    { type: 'application/json' }
-  ))
-  form.append('media', new Blob([JSON.stringify(manifest)], { type: 'application/json' }))
-  const res = await fetch(
-    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,headRevisionId',
-    { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form }
-  )
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(err.error?.message || `Manifest create failed: ${res.status}`)
-  }
-  return res.json()
+  return withAuthRetry(async () => {
+    const token = window.gapi.client.getToken()?.access_token
+    const form = new FormData()
+    form.append('metadata', new Blob(
+      [JSON.stringify({ name: MANIFEST_FILENAME, mimeType: 'application/json', parents: [rootId] })],
+      { type: 'application/json' }
+    ))
+    form.append('media', new Blob([JSON.stringify(manifest)], { type: 'application/json' }))
+    const res = await fetch(
+      'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,headRevisionId',
+      { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form }
+    )
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      const error = new Error(err.error?.message || `Manifest create failed: ${res.status}`)
+      error.status = res.status
+      throw error
+    }
+    return res.json()
+  })
 }
 
 /**

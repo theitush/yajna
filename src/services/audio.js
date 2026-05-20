@@ -13,6 +13,7 @@ import {
   readJsonFile, writeJsonFile, writeEntityFile, readEntityFile,
 } from './drive'
 import { appendChanges, getDeviceId } from './manifest'
+import { withAuthRetry } from './auth'
 
 /**
  * Phase B: per-id audio metadata. Each upsert merges with the remote file
@@ -54,10 +55,10 @@ async function removeAudioMeta(ids, id) {
   if (existing) {
     // Drive doesn't expose deleteByName, so we need the actual fileId.
     try {
-      const res = await window.gapi.client.drive.files.list({
+      const res = await withAuthRetry(() => window.gapi.client.drive.files.list({
         q: `name='${id}.json' and '${ids.audioMetaFolderId}' in parents and trashed=false`,
         fields: 'files(id)',
-      })
+      }))
       const fid = res.result.files?.[0]?.id
       if (fid) await deleteDriveFile(fid)
     } catch (e) {

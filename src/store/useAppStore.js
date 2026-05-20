@@ -13,6 +13,7 @@ import { pushTasks, pushNotes, pushJournal, pushConfig, initialSyncStreaming, me
 import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, getSyncStatus, retryNow, setPollInterval } from '../services/syncEngine'
 import { pushAudio, pushAudioMetadata, pushPendingAudio, ensureAudioLocal, softDeleteAudio, restoreAudio, hardDeleteAudio, collectAudioIdsFromBlocks } from '../services/audio'
 import { putAudio, getAudio } from '../services/db'
+import { withAuthRetry } from '../services/auth'
 import { stampBlocks, stampBlocksFromDoc, blocksToHtml } from '../lib/blocks'
 
 function collectAudioIdsFromHtml(html) {
@@ -40,7 +41,9 @@ const useAppStore = create((set, get) => ({
   setMode: (mode) => set({ mode }),
   fetchUserEmail: async () => {
     try {
-      const res = await window.gapi.client.request({ path: 'https://www.googleapis.com/oauth2/v3/userinfo' })
+      const res = await withAuthRetry(() =>
+        window.gapi.client.request({ path: 'https://www.googleapis.com/oauth2/v3/userinfo' })
+      )
       const email = res.result?.email || null
       if (email) set({ userEmail: email })
     } catch {}

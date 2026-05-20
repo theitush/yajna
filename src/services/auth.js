@@ -205,3 +205,58 @@ export function isAuthError(e) {
   const code = e?.status || e?.result?.error?.code
   return code === 401 || code === 403
 }
+
+let refreshInFlight = null
+let lastAuthFailureAt = 0
+
+/**
+ * Coalesced silent refresh. If a refresh is already running, the second caller
+ * awaits the same promise instead of stacking parallel /refresh requests
+ * against the worker.
+ */
+async function refreshOnce() {
+  if (refreshInFlight) return refreshInFlight
+  refreshInFlight = (async () => {
+    try {
+      const refreshed = await trySilentRefresh()
+      if (!refreshed) return false
+      await storeToken(refreshed.token, refreshed.expiresIn)
+      setAccessToken(refreshed.token)
+      return true
+    } finally {
+      refreshInFlight = null
+    }
+  })()
+  return refreshInFlight
+}
+
+/**
+ * Run `fn`; on a 401/403, refresh the token once and retry. If the refresh
+ * fails (no refresh blob, worker rejected it, or the retry still 401/403s),
+ * the original error is rethrown so callers can surface "session expired".
+ *
+ * A short cooldown after a failed refresh prevents tight loops when every
+ * pending Drive call hits the same expired token in parallel.
+ */
+export async function withAuthRetry(fn) {
+  try {
+    return await fn()
+  } catch (e) {
+    if (!isAuthError(e)) throw e
+    // Throttle: if we just gave up on a refresh, don't keep trying for 60s.
+    if (Date.now() - lastAuthFailureAt < 60_000) throw e
+    let refreshed = false
+    try {
+      refreshed = await refreshOnce()
+    } catch (refreshErr) {
+      // Network / server error from the worker. Surface the original auth error
+      // since callers care about "is this auth-broken" not "is the worker down".
+      console.warn('withAuthRetry: silent refresh failed', refreshErr)
+    }
+    if (!refreshed) {
+      lastAuthFailureAt = Date.now()
+      throw e
+    }
+    return await fn()
+  }
+}

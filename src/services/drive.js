@@ -1,5 +1,6 @@
 import { DRIVE_FOLDER_NAME, DRIVE_MIME_FOLDER } from '../lib/constants'
 import { getMeta, putMeta } from './db'
+import { withAuthRetry } from './auth'
 
 const FOLDER_ID_KEY = 'drive_folder_id'
 const FILES_KEY = 'drive_files'
@@ -17,6 +18,28 @@ function withTimeout(promise, ms = API_TIMEOUT_MS) {
 }
 
 /**
+ * Wrap a gapi request thunk in both auth retry and timeout. The thunk is
+ * re-invoked on retry so the second attempt picks up the refreshed token
+ * via gapi.client.setToken (and the multipart fetch helpers below re-read
+ * the token from gapi inside their thunks for the same reason).
+ */
+function gapiCall(makeRequest, ms = API_TIMEOUT_MS) {
+  return withAuthRetry(() => withTimeout(makeRequest(), ms))
+}
+
+/**
+ * Treat a fetch Response with auth failure as a thrown error so withAuthRetry
+ * can refresh + retry the whole multipart call.
+ */
+async function ensureFetchOk(res, label) {
+  if (res.ok) return res
+  const err = await res.json().catch(() => ({}))
+  const error = new Error(err.error?.message || `${label}: ${res.status}`)
+  error.status = res.status
+  throw error
+}
+
+/**
  * Find or create the app root folder in Drive
  */
 export async function getOrCreateAppFolder() {
@@ -24,7 +47,7 @@ export async function getOrCreateAppFolder() {
   if (cached) return cached
 
   // Search for existing folder
-  const res = await withTimeout(window.gapi.client.drive.files.list({
+  const res = await gapiCall(() => window.gapi.client.drive.files.list({
     q: `name='${DRIVE_FOLDER_NAME}' and mimeType='${DRIVE_MIME_FOLDER}' and trashed=false`,
     fields: 'files(id)',
     spaces: 'drive',
@@ -37,7 +60,7 @@ export async function getOrCreateAppFolder() {
   }
 
   // Create folder
-  const created = await withTimeout(window.gapi.client.drive.files.create({
+  const created = await gapiCall(() => window.gapi.client.drive.files.create({
     resource: {
       name: DRIVE_FOLDER_NAME,
       mimeType: DRIVE_MIME_FOLDER,
@@ -53,13 +76,13 @@ export async function getOrCreateAppFolder() {
  * Get or create a subfolder inside the app folder
  */
 export async function getOrCreateSubfolder(parentId, name) {
-  const res = await withTimeout(window.gapi.client.drive.files.list({
+  const res = await gapiCall(() => window.gapi.client.drive.files.list({
     q: `name='${name}' and mimeType='${DRIVE_MIME_FOLDER}' and '${parentId}' in parents and trashed=false`,
     fields: 'files(id)',
   }))
   if (res.result.files.length > 0) return res.result.files[0].id
 
-  const created = await withTimeout(window.gapi.client.drive.files.create({
+  const created = await gapiCall(() => window.gapi.client.drive.files.create({
     resource: {
       name,
       mimeType: DRIVE_MIME_FOLDER,
@@ -74,7 +97,7 @@ export async function getOrCreateSubfolder(parentId, name) {
  * Find a file by name in a folder
  */
 export async function findFile(parentId, name) {
-  const res = await withTimeout(window.gapi.client.drive.files.list({
+  const res = await gapiCall(() => window.gapi.client.drive.files.list({
     q: `name='${name}' and '${parentId}' in parents and trashed=false`,
     fields: 'files(id)',
   }))
@@ -85,7 +108,7 @@ export async function findFile(parentId, name) {
  * Read a JSON file from Drive
  */
 export async function readJsonFile(fileId) {
-  const res = await withTimeout(window.gapi.client.drive.files.get({
+  const res = await gapiCall(() => window.gapi.client.drive.files.get({
     fileId,
     alt: 'media',
   }))
@@ -108,29 +131,26 @@ export async function writeJsonFile(parentId, name, data, existingFileId = null)
     ...(existingFileId ? {} : { parents: [parentId] }),
   }
 
-  const form = new FormData()
-  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }))
-  form.append('media', blob)
+  return withAuthRetry(async () => {
+    // FormData with a Blob body is single-consumption — rebuild it per attempt
+    // so a refresh-and-retry doesn't try to send an already-read stream.
+    const form = new FormData()
+    form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }))
+    form.append('media', blob)
+    const token = window.gapi.client.getToken()?.access_token
 
-  const token = window.gapi.client.getToken()?.access_token
-
-  if (existingFileId) {
-    const res = await fetch(
-      `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart`,
-      {
-        method: 'PATCH',
-        headers: { Authorization: `Bearer ${token}` },
-        body: form,
-      }
-    )
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      const error = new Error(err.error?.message || `Drive patch failed: ${res.status}`)
-      error.status = res.status
-      throw error
+    if (existingFileId) {
+      const res = await fetch(
+        `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart`,
+        {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${token}` },
+          body: form,
+        }
+      )
+      await ensureFetchOk(res, 'Drive patch failed')
+      return existingFileId
     }
-    return existingFileId
-  } else {
     const res = await fetch(
       'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
       {
@@ -139,46 +159,37 @@ export async function writeJsonFile(parentId, name, data, existingFileId = null)
         body: form,
       }
     )
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      const error = new Error(err.error?.message || `Drive create failed: ${res.status}`)
-      error.status = res.status
-      throw error
-    }
+    await ensureFetchOk(res, 'Drive create failed')
     const json = await res.json()
     return json.id
-  }
+  })
 }
 
 /**
  * Upload an audio blob to Drive
  */
 export async function uploadAudioFile(parentId, name, blob) {
-  const token = window.gapi.client.getToken()?.access_token
   const metadata = {
     name,
     mimeType: blob.type || 'audio/webm',
     parents: [parentId],
   }
-  const form = new FormData()
-  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }))
-  form.append('media', blob)
-
-  const res = await fetch(
-    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
-    {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      body: form,
-    }
-  )
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    const error = new Error(err.error?.message || `Audio upload failed: ${res.status}`)
-    error.status = res.status
-    throw error
-  }
-  return res.json()
+  return withAuthRetry(async () => {
+    const form = new FormData()
+    form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }))
+    form.append('media', blob)
+    const token = window.gapi.client.getToken()?.access_token
+    const res = await fetch(
+      'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      }
+    )
+    await ensureFetchOk(res, 'Audio upload failed')
+    return res.json()
+  })
 }
 
 /**
@@ -187,7 +198,7 @@ export async function uploadAudioFile(parentId, name, blob) {
 export async function deleteDriveFile(fileId) {
   if (!fileId) return
   try {
-    await withTimeout(window.gapi.client.drive.files.delete({ fileId }))
+    await gapiCall(() => window.gapi.client.drive.files.delete({ fileId }))
   } catch (e) {
     const status = e?.status || e?.result?.error?.code
     if (status === 404) return
@@ -199,13 +210,15 @@ export async function deleteDriveFile(fileId) {
  * Download a file from Drive as a Blob (used for lazy audio fetch).
  */
 export async function downloadFileBlob(fileId) {
-  const token = window.gapi.client.getToken()?.access_token
-  const res = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  )
-  if (!res.ok) throw new Error(`Drive download failed: ${res.status}`)
-  return res.blob()
+  return withAuthRetry(async () => {
+    const token = window.gapi.client.getToken()?.access_token
+    const res = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    )
+    await ensureFetchOk(res, 'Drive download failed')
+    return res.blob()
+  })
 }
 
 /**
@@ -290,7 +303,7 @@ export async function getDriveFileIds() {
 export async function getFileRevisions(fileIds) {
   const entries = await Promise.all(fileIds.filter(Boolean).map(async (id) => {
     try {
-      const res = await withTimeout(window.gapi.client.drive.files.get({
+      const res = await gapiCall(() => window.gapi.client.drive.files.get({
         fileId: id,
         fields: 'headRevisionId',
       }))
@@ -319,7 +332,7 @@ export async function listFolder(folderId) {
   const out = []
   let pageToken = undefined
   do {
-    const res = await withTimeout(window.gapi.client.drive.files.list({
+    const res = await gapiCall(() => window.gapi.client.drive.files.list({
       q: `'${folderId}' in parents and trashed=false`,
       fields: 'nextPageToken, files(id, name, modifiedTime)',
       pageToken,

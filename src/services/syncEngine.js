@@ -16,7 +16,7 @@ import {
   putTasks, putNotes, putConfig, putJournal,
   getAllAudio, putAudio, getAllNotesRaw, getAllTasksRaw, getJournal,
 } from './db'
-import { getStoredToken, trySilentRefresh, storeToken, setAccessToken, isAuthError } from './auth'
+import { getStoredToken, trySilentRefresh, storeToken, setAccessToken, isAuthError, withAuthRetry } from './auth'
 import { mergeDayDoc } from './sync'
 import { readManifest, diffManifest, getLocalLastSeq, setLocalLastSeq } from './manifest'
 import { mergeBlocks, htmlToBlocks, purgeOldBlockTombstones } from '../lib/blocks'
@@ -571,10 +571,10 @@ async function getRemoteHash(ids) {
   const times = await Promise.all(
     fileIds.map(async (fid) => {
       try {
-        const res = await window.gapi.client.drive.files.get({
+        const res = await withAuthRetry(() => window.gapi.client.drive.files.get({
           fileId: fid,
           fields: 'modifiedTime',
-        })
+        }))
         return res.result.modifiedTime
       } catch (e) {
         if (isAuthError(e)) throw e

@@ -17,6 +17,7 @@ import {
   readJsonFile, writeJsonFile, deleteDriveFile, getDriveFileIds, findFile,
 } from './drive'
 import { getMeta, putMeta } from './db'
+import { withAuthRetry } from './auth'
 
 const MIGRATION_FLAG = 'journals_split_v1'
 const BACKUP_FILENAME = '_backup_pre_daily.json'
@@ -37,12 +38,12 @@ async function listFolder(folderId) {
   const out = []
   let pageToken = undefined
   do {
-    const res = await withTimeout(window.gapi.client.drive.files.list({
+    const res = await withAuthRetry(() => withTimeout(window.gapi.client.drive.files.list({
       q: `'${folderId}' in parents and trashed=false`,
       fields: 'nextPageToken, files(id, name, modifiedTime)',
       pageToken,
       pageSize: 200,
-    }))
+    })))
     for (const f of res.result.files || []) out.push(f)
     pageToken = res.result.nextPageToken
   } while (pageToken)
