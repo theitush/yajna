@@ -1,0 +1,41 @@
+import useAppStore from '../../store/useAppStore'
+
+/**
+ * Non-dismissable overlay shown while a Phase B sync bucket is still loading.
+ * Blocks editing on the surface — a stale read-only view is fine, but writes
+ * to a partially-hydrated surface could clobber data we haven't merged yet.
+ *
+ * Usage: `<SurfaceLoadingGate bucket="tasks">{page contents}</SurfaceLoadingGate>`
+ * Once syncReady[bucket] is true it renders children with no overlay.
+ */
+export default function SurfaceLoadingGate({ bucket, children, label }) {
+  const ready = useAppStore(s => s.syncReady?.[bucket])
+  return (
+    <div style={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      {children}
+      {!ready && (
+        <div
+          aria-hidden="true"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 50,
+            background: 'rgba(0,0,0,0.25)',
+            backdropFilter: 'blur(1.5px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            pointerEvents: 'all',
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+            <div style={{ width: 18, height: 18, border: '2px solid rgba(255,255,255,0.35)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.9)' }}>
+              {label || `Loading ${bucket}...`}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

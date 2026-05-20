@@ -10,50 +10,69 @@
 import { putAudio, getAudio, getAllAudio, deleteAudio as dbDeleteAudio } from './db'
 import {
   getDriveFileIds, uploadAudioFile, downloadFileBlob, deleteDriveFile,
-  readJsonFile, writeJsonFile,
+  readJsonFile, writeJsonFile, writeEntityFile, readEntityFile,
 } from './drive'
+import { appendChanges, getDeviceId } from './manifest'
 
-// Serialize audio.json read-modify-write cycles so concurrent updates from
-// multiple recordings/transcript saves cannot clobber each other.
-let audioIndexWriteQueue = Promise.resolve()
-
-function enqueueAudioIndexWrite(task) {
-  const run = audioIndexWriteQueue.then(task, task)
-  audioIndexWriteQueue = run.catch(() => {})
-  return run
+/**
+ * Phase B: per-id audio metadata. Each upsert merges with the remote file
+ * (transcripts never get dropped because of stale in-memory state) and
+ * appends a manifest entry.
+ */
+async function upsertAudioMeta(ids, entry) {
+  if (!ids?.audioMetaFolderId) return
+  const remote = await readEntityFile(ids.audioMetaFolderId, entry.id)
+  const merged = remote
+    ? {
+        ...remote,
+        ...entry,
+        transcript: entry.transcript ?? remote.transcript ?? null,
+        transcriptModel: entry.transcriptModel ?? remote.transcriptModel ?? null,
+        transcribedAt: entry.transcribedAt ?? remote.transcribedAt ?? null,
+        transcriptSegments: entry.transcriptSegments ?? remote.transcriptSegments ?? null,
+      }
+    : entry
+  await writeEntityFile(ids.audioMetaFolderId, entry.id, merged)
+  try {
+    await appendChanges(ids.rootId, [{
+      type: 'audio',
+      id: entry.id,
+      op: merged.deleted ? 'delete' : 'upsert',
+      at: new Date().toISOString(),
+      deviceId: await getDeviceId(),
+    }])
+  } catch (e) {
+    console.warn('[audio] manifest append failed (entity file still authoritative):', e.message || e)
+  }
 }
 
-async function upsertAudioIndexEntry(ids, entry) {
-  if (!ids?.audioIndexFileId) return
-  await enqueueAudioIndexWrite(async () => {
-    const remoteIndex = await readJsonFile(ids.audioIndexFileId).catch(() => [])
-    const index = Array.isArray(remoteIndex) ? remoteIndex : []
-    const existing = index.find(e => e.id === entry.id) || null
-    // Never drop transcript metadata because of stale in-memory records.
-    const merged = existing
-      ? {
-          ...existing,
-          ...entry,
-          transcript: entry.transcript ?? existing.transcript ?? null,
-          transcriptModel: entry.transcriptModel ?? existing.transcriptModel ?? null,
-          transcribedAt: entry.transcribedAt ?? existing.transcribedAt ?? null,
-          transcriptSegments: entry.transcriptSegments ?? existing.transcriptSegments ?? null,
-        }
-      : entry
-    const filtered = index.filter(e => e.id !== entry.id)
-    filtered.push(merged)
-    await writeJsonFile(ids.rootId, 'audio.json', filtered, ids.audioIndexFileId)
-  })
-}
-
-async function removeAudioIndexEntry(ids, id) {
-  if (!ids?.audioIndexFileId) return
-  await enqueueAudioIndexWrite(async () => {
-    const remoteIndex = await readJsonFile(ids.audioIndexFileId).catch(() => [])
-    const index = Array.isArray(remoteIndex) ? remoteIndex : []
-    const filtered = index.filter(e => e.id !== id)
-    await writeJsonFile(ids.rootId, 'audio.json', filtered, ids.audioIndexFileId)
-  })
+async function removeAudioMeta(ids, id) {
+  if (!ids?.audioMetaFolderId) return
+  // Hard-delete: drop the per-id meta file. Manifest entry records the delete
+  // so other devices know to drop their local copy.
+  const existing = await readEntityFile(ids.audioMetaFolderId, id)
+  if (existing) {
+    // Drive doesn't expose deleteByName, so we need the actual fileId.
+    try {
+      const res = await window.gapi.client.drive.files.list({
+        q: `name='${id}.json' and '${ids.audioMetaFolderId}' in parents and trashed=false`,
+        fields: 'files(id)',
+      })
+      const fid = res.result.files?.[0]?.id
+      if (fid) await deleteDriveFile(fid)
+    } catch (e) {
+      console.warn('[audio] meta delete failed:', e.message || e)
+    }
+  }
+  try {
+    await appendChanges(ids.rootId, [{
+      type: 'audio',
+      id,
+      op: 'delete',
+      at: new Date().toISOString(),
+      deviceId: await getDeviceId(),
+    }])
+  } catch {}
 }
 
 function toIndexEntry(rec) {
@@ -97,7 +116,7 @@ export async function pushAudio(id) {
   const latest = await getAudio(id)
 
   // Update audio.json index (merge with remote so concurrent uploads don't clobber)
-  await upsertAudioIndexEntry(ids, toIndexEntry(latest || updated))
+  await upsertAudioMeta(ids, toIndexEntry(latest || updated))
 }
 
 /**
@@ -110,7 +129,7 @@ export async function pushAudioMetadata(id) {
   const rec = await getAudio(id)
   if (!rec) return
 
-  await upsertAudioIndexEntry(ids, toIndexEntry(rec))
+  await upsertAudioMeta(ids, toIndexEntry(rec))
 }
 
 /**
@@ -133,8 +152,17 @@ export async function ensureAudioLocal(id) {
   let transcribedAt = local?.transcribedAt || null
   let transcriptSegments = local?.transcriptSegments || null
   if (!driveFileId) {
-    const remoteIndex = await readJsonFile(ids.audioIndexFileId).catch(() => [])
-    const entry = Array.isArray(remoteIndex) ? remoteIndex.find(e => e.id === id) : null
+    // Phase B: per-id meta file. Falls back to legacy audio.json during the
+    // brief migration window (entitiesMigration deletes audio.json only after
+    // every per-id write succeeds).
+    let entry = null
+    if (ids.audioMetaFolderId) {
+      entry = await readEntityFile(ids.audioMetaFolderId, id)
+    }
+    if (!entry && ids.audioIndexFileId) {
+      const remoteIndex = await readJsonFile(ids.audioIndexFileId).catch(() => [])
+      entry = Array.isArray(remoteIndex) ? remoteIndex.find(e => e.id === id) : null
+    }
     if (!entry?.driveFileId) return local || null
     driveFileId = entry.driveFileId
     mimeType = entry.mimeType || mimeType
@@ -186,11 +214,11 @@ export async function softDeleteAudio(id, source) {
   await putAudio(updated)
 
   const ids = await getDriveFileIds()
-  if (!ids || !ids.audioIndexFileId) return updated
+  if (!ids?.audioMetaFolderId) return updated
   try {
-    await upsertAudioIndexEntry(ids, toIndexEntry(updated))
+    await upsertAudioMeta(ids, toIndexEntry(updated))
   } catch (e) {
-    console.warn('softDeleteAudio index push failed', e)
+    console.warn('softDeleteAudio meta push failed', e)
   }
   return updated
 }
@@ -204,11 +232,11 @@ export async function restoreAudio(id) {
   const updated = { ...rec, deleted: false, deletedAt: null }
   await putAudio(updated)
   const ids = await getDriveFileIds()
-  if (!ids || !ids.audioIndexFileId) return updated
+  if (!ids?.audioMetaFolderId) return updated
   try {
-    await upsertAudioIndexEntry(ids, toIndexEntry(updated))
+    await upsertAudioMeta(ids, toIndexEntry(updated))
   } catch (e) {
-    console.warn('restoreAudio index push failed', e)
+    console.warn('restoreAudio meta push failed', e)
   }
   return updated
 }
@@ -225,11 +253,11 @@ export async function hardDeleteAudio(id) {
   if (rec?.driveFileId) {
     try { await deleteDriveFile(rec.driveFileId) } catch (e) { console.warn('Drive audio delete failed', e) }
   }
-  if (ids.audioIndexFileId) {
+  if (ids.audioMetaFolderId) {
     try {
-      await removeAudioIndexEntry(ids, id)
+      await removeAudioMeta(ids, id)
     } catch (e) {
-      console.warn('hardDeleteAudio index push failed', e)
+      console.warn('hardDeleteAudio meta push failed', e)
     }
   }
 }

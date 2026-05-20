@@ -19,6 +19,7 @@ import TasksPage from './pages/TasksPage'
 import TrashPage from './pages/TrashPage'
 import SearchPage from './pages/SearchPage'
 import SettingsPage from './pages/SettingsPage'
+import SurfaceLoadingGate from './components/layout/SurfaceLoadingGate'
 
 export default function App() {
   const {
@@ -33,17 +34,19 @@ export default function App() {
   const [blockingInitialSync, setBlockingInitialSync] = useState(false)
 
   // Map the active route to the buckets/journal it needs to render. Used
-  // at boot to decide what to wait for before releasing the spinner lock.
+  // at boot to decide what to wait for before releasing the global spinner.
+  // Phase B: per-surface gates take over once the global spinner drops, so
+  // most routes only need to wait for Stage 1 (`today`) to unblock the UI
+  // shell — tasks/notes finish behind a surface-gated overlay.
   function priorityWorkForRoute(hash) {
     // Strip leading "#" and query/fragment leftovers.
     const path = (hash || '').replace(/^#/, '').split('?')[0] || '/'
-    if (path.startsWith('/review')) return { buckets: ['tasks', 'notes'], journal: true }
-    if (path.startsWith('/notes')) return { buckets: ['notes'], journal: false }
-    if (path.startsWith('/tasks')) return { buckets: ['tasks'], journal: false }
-    if (path.startsWith('/trash')) return { buckets: ['tasks', 'notes'], journal: false }
     if (path.startsWith('/settings')) return { buckets: ['config'], journal: false }
-    // Today (/, /journal): journal entry for the week + tasks panel data.
-    return { buckets: ['tasks'], journal: true }
+    // Today (/, /journal, /review): just wait for Stage 1.
+    if (path.startsWith('/review')) return { buckets: ['today'], journal: true }
+    // Tasks/Notes/Trash: drop the global spinner after Stage 1; the surface
+    // gate keeps its own overlay until the specific bucket lands.
+    return { buckets: ['today'], journal: path === '/' || path.startsWith('/journal') }
   }
 
   const effectiveSyncStatus = mode === MODE_OFFLINE ? { state: 'offline' } : syncStatus
@@ -334,13 +337,23 @@ export default function App() {
           </div>
           <main className="flex-1 overflow-hidden flex flex-col">
             <Routes>
-              <Route path="/" element={<TodayPage />} />
-              <Route path="/review" element={<ReviewPage />} />
+              <Route path="/" element={
+                <SurfaceLoadingGate bucket="tasks" label="Loading tasks..."><TodayPage /></SurfaceLoadingGate>
+              } />
+              <Route path="/review" element={
+                <SurfaceLoadingGate bucket="tasks" label="Loading..."><ReviewPage /></SurfaceLoadingGate>
+              } />
               <Route path="/journal" element={<Navigate to="/review" replace />} />
-              <Route path="/notes" element={<NotesPage />} />
-              <Route path="/tasks" element={<TasksPage />} />
+              <Route path="/notes" element={
+                <SurfaceLoadingGate bucket="notes" label="Loading notes..."><NotesPage /></SurfaceLoadingGate>
+              } />
+              <Route path="/tasks" element={
+                <SurfaceLoadingGate bucket="tasks" label="Loading tasks..."><TasksPage /></SurfaceLoadingGate>
+              } />
               <Route path="/search" element={<SearchPage />} />
-              <Route path="/trash" element={<TrashPage />} />
+              <Route path="/trash" element={
+                <SurfaceLoadingGate bucket="notes" label="Loading..."><TrashPage /></SurfaceLoadingGate>
+              } />
               <Route path="/settings" element={<SettingsPage />} />
             </Routes>
           </main>

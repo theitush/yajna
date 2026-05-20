@@ -8,10 +8,17 @@
  *   { state: 'offline' }
  *   { state: 'waiting', retryIn: <seconds remaining> }
  */
-import { getDriveFileIds, readJsonFile, findFile } from './drive'
-import { putTasks, putNotes, putConfig, putJournal, getAllAudio, putAudio, getAllNotesRaw, getJournal } from './db'
+import {
+  getDriveFileIds, readJsonFile, findFile,
+  listFolder, readEntityFilesBatched,
+} from './drive'
+import {
+  putTasks, putNotes, putConfig, putJournal,
+  getAllAudio, putAudio, getAllNotesRaw, getAllTasksRaw, getJournal,
+} from './db'
 import { getStoredToken, trySilentRefresh, storeToken, setAccessToken, isAuthError } from './auth'
 import { mergeDayDoc } from './sync'
+import { readManifest, diffManifest, getLocalLastSeq, setLocalLastSeq } from './manifest'
 import { mergeBlocks, htmlToBlocks, purgeOldBlockTombstones } from '../lib/blocks'
 import { dayKey } from '../lib/dates'
 
@@ -203,6 +210,9 @@ async function pollRemote(storeSetter) {
   try {
     const ids = await getDriveFileIds()
     if (!ids) return
+    // Phase B: poll relies on manifest + per-entity files. If the migration
+    // hasn't run yet (initial connect flow handles it), defer until it has.
+    if (!ids.notesFolderId || !ids.tasksFolderId || !ids.audioMetaFolderId) return
 
     const hasToken = await ensureValidToken()
     if (!hasToken) {
@@ -224,62 +234,173 @@ async function pollRemote(storeSetter) {
     }
 
     setStatus({ state: 'syncing' })
-    const [tasks, notes, config, audioIndex] = await Promise.all([
-      readJsonFile(ids.tasksFileId),
-      readJsonFile(ids.notesFileId),
-      readJsonFile(ids.configFileId),
-      ids.audioIndexFileId ? readJsonFile(ids.audioIndexFileId).catch(() => []) : Promise.resolve([]),
-    ])
+
+    // 1. Manifest diff — what entity ids changed since we last polled?
+    const head = await readManifest(ids.rootId)
+    const localLastSeq = await getLocalLastSeq()
+    let changedByType = { task: new Map(), note: new Map(), audio: new Map() }
+    let coldStart = false
+    let headSeq = 0
+    if (!head) {
+      // No manifest yet; treat like a cold start so we don't miss anything.
+      coldStart = true
+    } else {
+      headSeq = head.manifest.seq || 0
+      const diff = diffManifest(head.manifest, localLastSeq)
+      if (diff.gap) {
+        coldStart = true
+      } else {
+        for (const c of diff.changes || []) {
+          const bucket = changedByType[c.type]
+          if (!bucket) continue
+          // Newest op wins (diffManifest already deduped per id).
+          bucket.set(c.id, c)
+        }
+      }
+    }
+
+    // 2. Config (still a single file — small, no per-entity model for config).
+    const remoteConfig = await readJsonFile(ids.configFileId).catch(() => ({}))
+
+    // 3. Fetch the per-entity files that changed (or all, on cold start).
+    let taskDocs = []
+    let noteDocs = []
+    let audioDocs = []
+    if (coldStart) {
+      const [taskList, noteList, audioList] = await Promise.all([
+        listFolder(ids.tasksFolderId),
+        listFolder(ids.notesFolderId),
+        listFolder(ids.audioMetaFolderId),
+      ])
+      const toEntries = (files) => files
+        .map(f => {
+          const m = /^(.+)\.json$/.exec(f.name || '')
+          if (!m || m[1].startsWith('_')) return null
+          return { id: m[1], fileId: f.id }
+        })
+        .filter(Boolean)
+      const [t, n, a] = await Promise.all([
+        readEntityFilesBatched(ids.tasksFolderId, toEntries(taskList)),
+        readEntityFilesBatched(ids.notesFolderId, toEntries(noteList)),
+        readEntityFilesBatched(ids.audioMetaFolderId, toEntries(audioList)),
+      ])
+      taskDocs = t
+      noteDocs = n
+      audioDocs = a
+    } else {
+      const fetchChanged = async (folderId, bucket) => {
+        const ids2 = Array.from(bucket.keys())
+        if (!ids2.length) return []
+        return readEntityFilesBatched(folderId, ids2.map(id => ({ id })))
+      }
+      const [t, n, a] = await Promise.all([
+        fetchChanged(ids.tasksFolderId, changedByType.task),
+        fetchChanged(ids.notesFolderId, changedByType.note),
+        fetchChanged(ids.audioMetaFolderId, changedByType.audio),
+      ])
+      taskDocs = t
+      noteDocs = n
+      audioDocs = a
+    }
 
     // A local write raced with our pull — discard, the user's edit is fresher.
-    // Don't update lastRemoteHash either; let the next poll re-evaluate.
     if (writeGeneration !== startGen || pushesInFlight > 0) {
       setStatus({ state: 'synced' })
       return
     }
 
-    // Safe notes merge at the block level (see notes in sync.js).
-    const remoteNotesArr = Array.isArray(notes) ? notes : []
+    // 4. Merge tasks. For each changed id: if the remote file is missing AND
+    // the manifest said "delete", drop locally. Otherwise newer updatedAt
+    // wins per id; local-only tasks are preserved untouched.
+    const localTasksRaw = await getAllTasksRaw()
+    const localTasksById = new Map(localTasksRaw.map(t => [t.id, t]))
+    const mergedTaskMap = new Map(localTasksById)
+    for (const { id, doc } of taskDocs) {
+      const local = localTasksById.get(id)
+      const change = changedByType.task.get(id)
+      if (!doc) {
+        if (change?.op === 'delete') mergedTaskMap.delete(id)
+        continue
+      }
+      if (!local) { mergedTaskMap.set(id, doc); continue }
+      const lt = new Date(local.updatedAt || local.createdAt || 0).getTime()
+      const rt = new Date(doc.updatedAt || doc.createdAt || 0).getTime()
+      mergedTaskMap.set(id, rt >= lt ? doc : local)
+    }
+    const mergedTasks = Array.from(mergedTaskMap.values())
+
+    // 5. Merge notes (block-level body merge).
     const localNotesRaw = await getAllNotesRaw()
     const localNotesById = new Map(localNotesRaw.map(n => [n.id, n]))
-    const mergedNotes = remoteNotesArr.map(remoteNote => {
-      const localNote = localNotesById.get(remoteNote.id)
-      if (!localNote || localNote.deleted || remoteNote.deleted) return remoteNote
-      const localBlocks = Array.isArray(localNote.blocks) && localNote.blocks.length
-        ? localNote.blocks
-        : htmlToBlocks(localNote.body || '')
-      const remoteBlocks = Array.isArray(remoteNote.blocks) && remoteNote.blocks.length
-        ? remoteNote.blocks
-        : htmlToBlocks(remoteNote.body || '')
+    const mergedNotesMap = new Map(localNotesById)
+    for (const { id, doc } of noteDocs) {
+      const local = localNotesById.get(id)
+      const change = changedByType.note.get(id)
+      if (!doc) {
+        if (change?.op === 'delete') mergedNotesMap.delete(id)
+        continue
+      }
+      if (!local) { mergedNotesMap.set(id, doc); continue }
+      if (local.deleted || doc.deleted) {
+        const lt = new Date(local.updatedAt || 0).getTime()
+        const rt = new Date(doc.updatedAt || 0).getTime()
+        mergedNotesMap.set(id, rt >= lt ? doc : local)
+        continue
+      }
+      const localBlocks = Array.isArray(local.blocks) && local.blocks.length
+        ? local.blocks
+        : htmlToBlocks(local.body || '')
+      const remoteBlocks = Array.isArray(doc.blocks) && doc.blocks.length
+        ? doc.blocks
+        : htmlToBlocks(doc.body || '')
       const cutoff = new Date(Date.now() - BLOCK_TOMBSTONE_TTL_MS).toISOString()
       const blocks = purgeOldBlockTombstones(mergeBlocks(localBlocks, remoteBlocks), cutoff)
-      const localT = new Date(localNote.updatedAt || 0).getTime()
-      const remoteT = new Date(remoteNote.updatedAt || 0).getTime()
-      const winner = remoteT >= localT ? remoteNote : localNote
+      const lt = new Date(local.updatedAt || 0).getTime()
+      const rt = new Date(doc.updatedAt || 0).getTime()
+      const winner = rt >= lt ? doc : local
       const out = { ...winner, blocks }
       delete out.body
-      return out
-    })
-    const remoteIds = new Set(remoteNotesArr.map(n => n.id))
-    for (const n of localNotesRaw) {
-      if (!remoteIds.has(n.id)) mergedNotes.push(n)
+      mergedNotesMap.set(id, out)
+    }
+    const mergedNotes = Array.from(mergedNotesMap.values())
+
+    // 6. Persist tasks + notes + config.
+    const taskChangedIds = new Set(taskDocs.map(d => d.id))
+    const tasksToPut = mergedTasks.filter(t => taskChangedIds.has(t.id))
+    const noteChangedIds = new Set(noteDocs.map(d => d.id))
+    const notesToPut = mergedNotes.filter(n => noteChangedIds.has(n.id))
+    await Promise.all([
+      tasksToPut.length ? putTasks(tasksToPut, { fromSync: true }) : Promise.resolve(),
+      notesToPut.length ? putNotes(notesToPut, { fromSync: true }) : Promise.resolve(),
+      putConfig(remoteConfig || {}),
+    ])
+    // Apply task deletions (entity-file missing + manifest delete op).
+    for (const [id, change] of changedByType.task) {
+      if (change?.op === 'delete' && !mergedTaskMap.has(id)) {
+        // Soft tombstone so other devices still see it.
+        await putTasks([{ id, deleted: true, deletedAt: change.at, updatedAt: change.at }], { fromSync: true })
+      }
     }
 
-    await Promise.all([
-      putTasks(Array.isArray(tasks) ? tasks : []),
-      putNotes(mergedNotes),
-      putConfig(config || {}),
-    ])
-
-    // Reconcile audio index (unchanged from prior behaviour).
+    // 7. Reconcile audio metadata (per-id files now).
     const audioTranscriptUpdates = []
-    if (Array.isArray(audioIndex) && audioIndex.length > 0) {
+    if (audioDocs.length > 0) {
       try {
         const localAudio = await getAllAudio()
         const localById = new Map(localAudio.map(a => [a.id, a]))
-        for (const entry of audioIndex) {
-          if (!entry?.id) continue
-          const local = localById.get(entry.id)
+        for (const { id, doc: entry } of audioDocs) {
+          const change = changedByType.audio.get(id)
+          if (!entry) {
+            if (change?.op === 'delete') {
+              // Other device hard-deleted the meta. Mark local as deleted.
+              const local = localById.get(id)
+              if (local && !local.deleted) {
+                await putAudio({ ...local, deleted: true, deletedAt: change.at }, { fromSync: true })
+              }
+            }
+            continue
+          }
+          const local = localById.get(id)
           if (!local) {
             await putAudio({
               id: entry.id,
@@ -297,7 +418,7 @@ async function pollRemote(storeSetter) {
               sourceType: entry.sourceType || null,
               sourceId: entry.sourceId || null,
               sourceTitle: entry.sourceTitle || null,
-            })
+            }, { fromSync: true })
             if (entry.transcript || entry.transcriptSegments) audioTranscriptUpdates.push(entry.id)
             continue
           }
@@ -342,11 +463,11 @@ async function pollRemote(storeSetter) {
             sourceType: nextSourceType,
             sourceId: nextSourceId,
             sourceTitle: nextSourceTitle,
-          })
+          }, { fromSync: true })
           if (takeRemote) audioTranscriptUpdates.push(entry.id)
         }
       } catch (e) {
-        console.warn('Audio index reconcile failed:', e.message || e)
+        console.warn('Audio reconcile failed:', e.message || e)
       }
     }
     if (audioTranscriptUpdates.length > 0) {
@@ -355,8 +476,7 @@ async function pollRemote(storeSetter) {
       } catch { /* ignore */ }
     }
 
-    // Pull the currently-loaded day's journal — merge with local at the block
-    // level so local edits that haven't flushed yet aren't lost.
+    // 8. Pull the currently-loaded day's journal — block-level merge.
     let updatedDay = undefined
     if (journalFileId) {
       const remoteDoc = await readJsonFile(journalFileId)
@@ -374,17 +494,24 @@ async function pollRemote(storeSetter) {
     }
 
     if (storeSetter) {
-      const visibleTasks = (Array.isArray(tasks) ? tasks : []).filter(t => !t.deleted)
+      const visibleTasks = mergedTasks.filter(t => !t.deleted)
       const visibleNotes = mergedNotes.filter(n => !n.deleted)
       const update = {
         tasks: visibleTasks,
         notes: visibleNotes,
-        config: config || {},
+        config: remoteConfig || {},
       }
       if (updatedDay !== undefined) {
         update.currentDay = updatedDay
       }
       storeSetter(update)
+    }
+
+    // Advance localLastSeq to the manifest head. On cold start we adopt the
+    // head as-is — we just enumerated every entity file, so anything older is
+    // covered by the per-id merges above.
+    if (headSeq > localLastSeq) {
+      await setLocalLastSeq(headSeq)
     }
 
     if (forced) {
@@ -423,15 +550,23 @@ async function getJournalFileIdForCurrentDay(ids) {
   }
 }
 
+/**
+ * Cheap "did anything change?" probe: modifiedTime of manifest.json,
+ * config.json, and today's journal file. Manifest covers tasks/notes/audio.
+ */
 async function getRemoteHash(ids) {
   const token = window.gapi?.client?.getToken()?.access_token
   if (!token) return { hash: null, journalFileId: null }
 
-  const fileIds = [ids.tasksFileId, ids.notesFileId, ids.configFileId]
-  if (ids.audioIndexFileId) fileIds.push(ids.audioIndexFileId)
+  const manifestFileId = await findFile(ids.rootId, 'manifest.json').catch(() => null)
+  const fileIds = []
+  if (manifestFileId) fileIds.push(manifestFileId)
+  if (ids.configFileId) fileIds.push(ids.configFileId)
 
   const journalFileId = await getJournalFileIdForCurrentDay(ids)
   if (journalFileId) fileIds.push(journalFileId)
+
+  if (!fileIds.length) return { hash: null, journalFileId }
 
   const times = await Promise.all(
     fileIds.map(async (fid) => {

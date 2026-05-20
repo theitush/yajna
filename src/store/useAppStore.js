@@ -721,6 +721,17 @@ const useAppStore = create((set, get) => ({
   syncing: false,
   lastSync: null,
   syncStatus: { state: 'offline' }, // { state: 'synced'|'syncing'|'offline'|'waiting', retryIn?: number }
+  // Per-surface gates. False during initial connect; flipped true as each
+  // staged-pull bucket resolves. Once true they stay true — incremental polls
+  // are cheap and merge-safe via writeGeneration, no need to re-gate.
+  // Offline mode: everything is immediately ready since there's no Drive merge.
+  syncReady: { today: false, tasks: false, notes: false, audio: false },
+  markSyncReady: (bucket) => set(s => ({
+    syncReady: { ...s.syncReady, [bucket]: true },
+  })),
+  markAllSyncReady: () => set({
+    syncReady: { today: true, tasks: true, notes: true, audio: true },
+  }),
   setSyncStatus: (s) => {
     const updates = { syncStatus: s, syncing: s.state === 'syncing' }
     if (s.isAuth) {
@@ -762,12 +773,20 @@ const useAppStore = create((set, get) => ({
       return
     }
 
+    handle.buckets.today.then(() => {
+      get().markSyncReady('today')
+    }).catch(() => { get().markSyncReady('today') })
     handle.buckets.tasks.then(tasks => {
       if (tasks != null) set({ tasks })
-    }).catch(() => {})
+      get().markSyncReady('tasks')
+    }).catch(() => { get().markSyncReady('tasks') })
+    handle.buckets.audio.then(() => {
+      get().markSyncReady('audio')
+    }).catch(() => { get().markSyncReady('audio') })
     handle.buckets.notes.then(notes => {
       if (notes != null) set({ notes })
-    }).catch(() => {})
+      get().markSyncReady('notes')
+    }).catch(() => { get().markSyncReady('notes') })
     handle.buckets.config.then(config => {
       if (config != null) set({ config: config || {} })
     }).catch(() => {})
@@ -804,6 +823,9 @@ const useAppStore = create((set, get) => ({
       } else {
         set({ syncStatus: { state: 'offline' } })
       }
+      // Don't keep surfaces gated if the merge bailed — local data is still
+      // viewable; the next poll will hydrate fresh remote data.
+      get().markAllSyncReady()
       onSyncStatus((s) => {
         useAppStore.getState().setSyncStatus(s)
       })
@@ -822,6 +844,8 @@ const useAppStore = create((set, get) => ({
       getTasks(), getNotes(), getConfig(),
     ])
     set({ tasks, notes, config: config || {} })
+    // No Drive merge to wait on — every surface is immediately editable.
+    get().markAllSyncReady()
     await get().rebuildReviewsFromJournals().catch(() => {})
     get().loadJournalTagPool()
   },

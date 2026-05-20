@@ -109,15 +109,19 @@ export async function getAllTasksRaw() {
   return db.getAll(STORE_TASKS)
 }
 
-export async function putTask(task) {
+export async function putTask(task, opts) {
   const db = await getDB()
-  return db.put(STORE_TASKS, task)
+  await db.put(STORE_TASKS, task)
+  if (task?.id && !opts?.fromSync) await markDirty('task', task.id)
 }
 
-export async function putTasks(tasks) {
+export async function putTasks(tasks, opts) {
   const db = await getDB()
   const tx = db.transaction(STORE_TASKS, 'readwrite')
   await Promise.all([...tasks.map(t => tx.store.put(t)), tx.done])
+  if (opts?.fromSync) return
+  // Mark every id dirty for the per-entity push path (local-origin only).
+  for (const t of tasks) if (t?.id) await markDirty('task', t.id)
 }
 
 // Soft-delete: writes a tombstone (deleted: true + deletedAt) so the delete
@@ -125,7 +129,8 @@ export async function putTasks(tasks) {
 export async function deleteTask(id) {
   const db = await getDB()
   const now = new Date().toISOString()
-  return db.put(STORE_TASKS, { id, deleted: true, deletedAt: now, updatedAt: now })
+  await db.put(STORE_TASKS, { id, deleted: true, deletedAt: now, updatedAt: now })
+  await markDirty('task', id)
 }
 
 // Notes
@@ -140,21 +145,25 @@ export async function getAllNotesRaw() {
   return db.getAll(STORE_NOTES)
 }
 
-export async function putNote(note) {
+export async function putNote(note, opts) {
   const db = await getDB()
-  return db.put(STORE_NOTES, note)
+  await db.put(STORE_NOTES, note)
+  if (note?.id && !opts?.fromSync) await markDirty('note', note.id)
 }
 
-export async function putNotes(notes) {
+export async function putNotes(notes, opts) {
   const db = await getDB()
   const tx = db.transaction(STORE_NOTES, 'readwrite')
   await Promise.all([...notes.map(n => tx.store.put(n)), tx.done])
+  if (opts?.fromSync) return
+  for (const n of notes) if (n?.id) await markDirty('note', n.id)
 }
 
 export async function deleteNote(id) {
   const db = await getDB()
   const now = new Date().toISOString()
-  return db.put(STORE_NOTES, { id, deleted: true, deletedAt: now, updatedAt: now })
+  await db.put(STORE_NOTES, { id, deleted: true, deletedAt: now, updatedAt: now })
+  await markDirty('note', id)
 }
 
 // Purge tombstones that the user has explicitly purged from Trash. We only
@@ -205,9 +214,10 @@ export async function putConfig(config) {
 
 // Audio: local-first audio blob store. Each record is
 // { id, blob, mimeType, duration, createdAt, driveFileId? }
-export async function putAudio(record) {
+export async function putAudio(record, opts) {
   const db = await getDB()
-  return db.put(STORE_AUDIO, record)
+  await db.put(STORE_AUDIO, record)
+  if (record?.id && !opts?.fromSync) await markDirty('audio', record.id)
 }
 
 export async function getAudio(id) {
@@ -234,6 +244,42 @@ export async function getMeta(key) {
 export async function putMeta(key, value) {
   const db = await getDB()
   return db.put(STORE_META, value, key)
+}
+
+/**
+ * Per-entity dirty tracking for Phase B push path. The bulk push helpers
+ * (`pushTasks`/`pushNotes`/etc) no longer rewrite the entire array — they
+ * drain this set and push only the touched ids, then append a single manifest
+ * batch. Keyed in meta as `dirty_<type>` → { [id]: true }.
+ *
+ * Race-safe by virtue of how it's used: `markDirty` is called *before* the
+ * push fires (puts inside store actions, push scheduled via withRetry). If a
+ * push completes and then another mutation happens, the next push picks the
+ * new id up. The `clearDirty(ids)` call only removes the ids we just pushed,
+ * so a write that landed mid-push survives into the next round.
+ */
+export async function markDirty(type, id) {
+  if (!id) return
+  const db = await getDB()
+  const key = `dirty_${type}`
+  const current = (await db.get(STORE_META, key)) || {}
+  if (current[id]) return
+  current[id] = true
+  await db.put(STORE_META, current, key)
+}
+
+export async function getDirty(type) {
+  const db = await getDB()
+  return (await db.get(STORE_META, `dirty_${type}`)) || {}
+}
+
+export async function clearDirty(type, ids) {
+  if (!ids?.length) return
+  const db = await getDB()
+  const key = `dirty_${type}`
+  const current = (await db.get(STORE_META, key)) || {}
+  for (const id of ids) delete current[id]
+  await db.put(STORE_META, current, key)
 }
 
 // Reviews index (global map of date -> reviewedAt). Kept around for

@@ -218,19 +218,28 @@ export async function initDriveStructure() {
   // If we already have a fully-populated ids cache, skip all the lookups —
   // initDriveStructure on a warm start should be a no-op.
   const cached = await getMeta(FILES_KEY)
+  // Cache is only authoritative once it includes the Phase B folders. Old
+  // caches from pre-Phase-B installs fall through to the resolver below, which
+  // creates the new folders and rewrites the cache. Post-migration the legacy
+  // *FileId keys may be null, which is expected.
   if (cached && cached.rootId && cached.journalsFolderId && cached.audioFolderId &&
-      cached.tasksFileId && cached.notesFileId && cached.configFileId &&
-      cached.audioIndexFileId) {
+      cached.notesFolderId && cached.tasksFolderId && cached.audioMetaFolderId &&
+      cached.configFileId) {
     lap('cache hit', t0)
     return cached
   }
 
   let t = performance.now()
   const rootId = await getOrCreateAppFolder(); t = lap('getOrCreateAppFolder', t)
-  const [journalsFolderId, audioFolderId] = await Promise.all([
+  const [journalsFolderId, audioFolderId, notesFolderId, tasksFolderId] = await Promise.all([
     getOrCreateSubfolder(rootId, 'journals'),
     getOrCreateSubfolder(rootId, 'audio'),
+    getOrCreateSubfolder(rootId, 'notes'),
+    getOrCreateSubfolder(rootId, 'tasks'),
   ]); t = lap('subfolders', t)
+  // audio/meta lives under audio/ so audio blobs and metadata share a parent.
+  const audioMetaFolderId = await getOrCreateSubfolder(audioFolderId, 'meta')
+  t = lap('audio/meta subfolder', t)
 
   const ensureFile = async (name, defaultData) => {
     let fileId = await findFile(rootId, name)
@@ -240,15 +249,29 @@ export async function initDriveStructure() {
     return fileId
   }
 
+  // Pre-migration: legacy bulk files still exist and we resolve their ids so
+  // the entities migration can read them. We only CREATE them (defaultData) if
+  // they're missing AND the migration flag isn't set — once Phase B has run,
+  // these files are gone and findFile returns null. The post-migration ids
+  // cache drops these keys.
+  const entitiesMigrated = !!(await getMeta('entities_split_v1'))
+
+  const findOrEnsureLegacy = async (name, defaultData) => {
+    const existing = await findFile(rootId, name)
+    if (existing) return existing
+    if (entitiesMigrated) return null
+    return writeJsonFile(rootId, name, defaultData)
+  }
+
   const [tasksFileId, notesFileId, configFileId, audioIndexFileId] = await Promise.all([
-    ensureFile('tasks.json', []),
-    ensureFile('notes.json', []),
+    findOrEnsureLegacy('tasks.json', []),
+    findOrEnsureLegacy('notes.json', []),
     ensureFile('config.json', {}),
-    ensureFile('audio.json', []),
+    findOrEnsureLegacy('audio.json', []),
   ]); t = lap('ensureFiles', t)
 
   const ids = {
-    rootId, journalsFolderId, audioFolderId,
+    rootId, journalsFolderId, audioFolderId, notesFolderId, tasksFolderId, audioMetaFolderId,
     tasksFileId, notesFileId, configFileId, audioIndexFileId,
   }
   await putMeta(FILES_KEY, ids)
@@ -285,4 +308,75 @@ export async function getStoredRevisions() {
 
 export async function setStoredRevisions(revs) {
   await putMeta(REVISIONS_KEY, revs)
+}
+
+/**
+ * List all files in a Drive folder (id + name + modifiedTime), paginated.
+ * Used by Phase B cold-start enumeration when the local manifest seq is too
+ * far behind the remote ring.
+ */
+export async function listFolder(folderId) {
+  const out = []
+  let pageToken = undefined
+  do {
+    const res = await withTimeout(window.gapi.client.drive.files.list({
+      q: `'${folderId}' in parents and trashed=false`,
+      fields: 'nextPageToken, files(id, name, modifiedTime)',
+      pageToken,
+      pageSize: 200,
+    }))
+    for (const f of res.result.files || []) out.push(f)
+    pageToken = res.result.nextPageToken
+  } while (pageToken)
+  return out
+}
+
+/**
+ * Per-entity helpers. Filenames are `<id>.json` inside the entity folder.
+ * Each helper returns null on missing-file rather than throwing so cold-start
+ * enumeration can be tolerant.
+ */
+export async function readEntityFile(folderId, id) {
+  const fileId = await findFile(folderId, `${id}.json`)
+  if (!fileId) return null
+  try {
+    const body = await readJsonFile(fileId)
+    return body
+  } catch {
+    return null
+  }
+}
+
+export async function writeEntityFile(folderId, id, data) {
+  const filename = `${id}.json`
+  const existing = await findFile(folderId, filename)
+  return writeJsonFile(folderId, filename, data, existing)
+}
+
+/**
+ * Read many entity files in batches. Drive rate limits are generous but a
+ * 500-task cold start firing all in parallel can trigger 429s. Batches of 20
+ * keep things fast without poking the limit. Returns an array of
+ * { id, doc } in input order; doc is null on failure.
+ *
+ * `entries` is [{ id, fileId? }]. If fileId is provided we skip the lookup;
+ * otherwise we resolve by name inside `folderId`.
+ */
+export async function readEntityFilesBatched(folderId, entries, batchSize = 20) {
+  const out = []
+  for (let i = 0; i < entries.length; i += batchSize) {
+    const slice = entries.slice(i, i + batchSize)
+    const results = await Promise.all(slice.map(async ({ id, fileId }) => {
+      try {
+        const fid = fileId || await findFile(folderId, `${id}.json`)
+        if (!fid) return { id, doc: null }
+        const doc = await readJsonFile(fid)
+        return { id, doc }
+      } catch {
+        return { id, doc: null }
+      }
+    }))
+    out.push(...results)
+  }
+  return out
 }
