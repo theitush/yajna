@@ -8,58 +8,30 @@ import {
   putMeta, getAllTasksRaw, getAllNotesRaw, purgeTombstones,
   getDirty, clearDirty, putAudio, getAllAudio,
   getTaskDocBytes, putTaskWithDoc,
+  getNoteDocBytes, putNoteWithDoc,
 } from './db'
 import {
   getDriveFileIds, readJsonFile, writeJsonFile,
   findFile, writeJsonFile as driveWrite,
   getFileRevisions, getStoredRevisions, setStoredRevisions,
-  writeEntityFile, readEntityFile, readEntityFilesBatched, listFolder,
+  readEntityFilesBatched, listFolder,
   writeEntityBinFile, readEntityBinFile, readEntityBinFilesBatched,
 } from './drive'
 import { appendChanges, getDeviceId, readManifest, diffManifest, getLocalLastSeq, setLocalLastSeq } from './manifest'
 import { migrateDriveEntitiesIfNeeded } from './entitiesMigration'
 import { migrateTasksToAutomergeIfNeeded } from './tasksAutomergeMigration'
-import { createDoc, loadDoc, saveDoc, mergeDoc, applyTaskFields, materializeTaskRow } from './automergeDoc'
+import { migrateNotesToAutomergeIfNeeded } from './notesAutomergeMigration'
+import {
+  createDoc, loadDoc, saveDoc, mergeDoc,
+  applyTaskFields, materializeTaskRow,
+  applyNoteFields, materializeNoteRow,
+} from './automergeDoc'
 import { mergeBlocks, htmlToBlocks, purgeOldBlockTombstones } from '../lib/blocks'
 import { dayKey } from '../lib/dates'
 
 const BLOCK_TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 const LAST_SYNC_KEY = 'last_sync'
-
-/**
- * Merge two arrays by id. For items present on both sides, newer updatedAt wins.
- * Items only on one side are always kept.
- */
-function mergeById(local, remote, opts = {}) {
-  const map = new Map()
-  for (const item of local) map.set(item.id, item)
-  for (const item of remote) {
-    const existing = map.get(item.id)
-    if (!existing) {
-      map.set(item.id, item)
-    } else {
-      const localTime = new Date(existing.updatedAt || existing.createdAt || 0).getTime()
-      const remoteTime = new Date(item.updatedAt || item.createdAt || 0).getTime()
-      const winner = remoteTime > localTime ? item : existing
-      const loser = winner === item ? existing : item
-      if (opts.mergeBody && !winner.deleted && !loser.deleted) {
-        // Safe body merge: merge blocks so concurrent edits on different
-        // paragraphs both survive. Nothing gets silently dropped.
-        const winnerBlocks = Array.isArray(winner.blocks) && winner.blocks.length ? winner.blocks : htmlToBlocks(winner.body || '')
-        const loserBlocks = Array.isArray(loser.blocks) && loser.blocks.length ? loser.blocks : htmlToBlocks(loser.body || '')
-        const cutoff = new Date(Date.now() - BLOCK_TOMBSTONE_TTL_MS).toISOString()
-        const merged = purgeOldBlockTombstones(mergeBlocks(loserBlocks, winnerBlocks), cutoff)
-        const mergedNote = { ...winner, blocks: merged }
-        delete mergedNote.body
-        map.set(item.id, mergedNote)
-      } else {
-        map.set(item.id, winner)
-      }
-    }
-  }
-  return Array.from(map.values())
-}
 
 /**
  * Merge two per-day journal docs. Blocks merge at the block level;
@@ -281,34 +253,81 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
   return Array.from(localById.values())
 }
 
-async function mergeNoteDocs(noteDocs, changedMap) {
+/**
+ * Phase C note pull. Same shape as resolveTaskDocs: for each remote-changed
+ * id (or full folder on cold start), fetch `notes/<id>.bin`.
+ *
+ * Returns [{ id, bytes }] where bytes is null on missing (manifest-delete
+ * cases — handled by mergeNoteDocs as a tombstone).
+ */
+export async function resolveNoteDocs(folderId, coldStart, changedMap) {
+  let entries = []
+  if (coldStart) {
+    const files = await listFolder(folderId)
+    entries = files
+      .map(f => {
+        const m = /^(.+)\.bin$/.exec(f.name || '')
+        if (!m || m[1].startsWith('_')) return null
+        return { id: m[1], fileId: f.id }
+      })
+      .filter(Boolean)
+  } else {
+    entries = Array.from(changedMap.keys()).map(id => ({ id, fileId: undefined }))
+  }
+
+  if (!entries.length) return []
+  return readEntityBinFilesBatched(folderId, entries)
+}
+
+export async function mergeNoteDocs(noteDocs, changedMap) {
   const local = await getAllNotesRaw()
   const localById = new Map(local.map(n => [n.id, n]))
-  const writes = []
-  for (const { id, doc } of noteDocs) {
+  const writeRows = []
+  const writeDocBytes = new Map()
+  for (const { id, bytes } of noteDocs) {
     const l = localById.get(id)
     const change = changedMap.get(id)
-    if (!doc) {
+    if (!bytes) {
+      // .bin missing on remote. If the manifest says delete, write a tombstone
+      // row locally so the UI hides the note immediately.
       if (change?.op === 'delete') {
-        writes.push({ id, deleted: true, deletedAt: change.at, updatedAt: change.at })
+        writeRows.push({ id, deleted: true, deletedAt: change.at, updatedAt: change.at })
         localById.delete(id)
       }
       continue
     }
-    if (!l) { writes.push(doc); localById.set(id, doc); continue }
-    if (l.deleted || doc.deleted) {
-      const lt = new Date(l.updatedAt || 0).getTime()
-      const rt = new Date(doc.updatedAt || 0).getTime()
-      const winner = rt >= lt ? doc : l
-      if (winner !== l) writes.push(winner)
-      localById.set(id, winner)
-      continue
+
+    const remoteDoc = await loadDoc(bytes)
+
+    // Local doc: load if we have bytes, else seed from the local row (pre-Phase-C
+    // notes lack `_doc`). If we have nothing local at all, the remote doc is it.
+    const localBytes = await getNoteDocBytes(id)
+    let mergedDoc
+    if (localBytes) {
+      const localDoc = await loadDoc(localBytes)
+      mergedDoc = await mergeDoc(localDoc, remoteDoc)
+    } else if (l) {
+      const seedDoc = await createDoc('note', l)
+      mergedDoc = await mergeDoc(seedDoc, remoteDoc)
+    } else {
+      mergedDoc = remoteDoc
     }
-    const merged = mergeById([l], [doc], { mergeBody: true })[0]
-    if (merged !== l) writes.push(merged)
-    localById.set(id, merged)
+
+    const mergedBytes = await saveDoc(mergedDoc)
+    const mergedRow = materializeNoteRow(mergedDoc)
+    writeRows.push(mergedRow)
+    writeDocBytes.set(id, mergedBytes)
+    localById.set(id, mergedRow)
   }
-  if (writes.length) await putNotes(writes, { fromSync: true })
+
+  for (const row of writeRows) {
+    const bytes = writeDocBytes.get(row.id)
+    if (bytes) {
+      await putNoteWithDoc(row, bytes, { fromSync: true })
+    } else {
+      await putNotes([row], { fromSync: true })
+    }
+  }
   return Array.from(localById.values())
 }
 
@@ -409,6 +428,16 @@ async function mergeWithDriveImpl(resolvers, onProgress = null) {
     console.warn('[sync] automerge tasks migration failed:', e.message || e)
   }
 
+  // Phase C notes migration: notes/<id>.json → notes/<id>.bin (Automerge).
+  // Same shape as tasks — idempotent, flag-gated, hard cutover.
+  try {
+    const tMig = performance.now()
+    await migrateNotesToAutomergeIfNeeded()
+    mark('automerge notes migration', tMig)
+  } catch (e) {
+    console.warn('[sync] automerge notes migration failed:', e.message || e)
+  }
+
   // Re-fetch ids after migration in case it rewrote drive_files (legacy ids
   // cleared post-migration).
   const idsAfterMig = await getDriveFileIds()
@@ -469,9 +498,10 @@ async function mergeWithDriveImpl(resolvers, onProgress = null) {
     await stage2.catch(() => {})
     const tStage = performance.now()
     const noteProgress = onProgress
-      ? (label, cur, total) => onProgress({ phase: 'cold-start-progress', label, current: cur, total })
+      ? (cur, total) => onProgress({ phase: 'cold-start-progress', label: 'notes', current: cur, total })
       : null
-    const noteDocs = await resolveEntityDocs(notesFolderId, inspection.coldStart, inspection.changedByType.note, noteProgress, 'notes')
+    const noteDocs = await resolveNoteDocs(notesFolderId, inspection.coldStart, inspection.changedByType.note)
+    if (noteProgress && inspection.coldStart) noteProgress(noteDocs.length, noteDocs.length)
     const mergedNotes = await mergeNoteDocs(noteDocs, inspection.changedByType.note)
     mark(`stage3 notes (cold=${inspection.coldStart}, ${noteDocs.length}n)`, tStage)
     resolvers.notes(mergedNotes.filter(n => !n.deleted))
@@ -594,9 +624,10 @@ export async function pushTasks() {
 }
 
 /**
- * Push all dirty notes to Drive. Same shape as pushTasks but uses block-level
- * body merge (mergeById with mergeBody: true) to preserve concurrent paragraph
- * edits.
+ * Push all dirty notes to Drive (Phase C — Automerge). Mirrors pushTasks:
+ * load-or-create the local Automerge doc, apply the row's fields into it,
+ * blind-upload `notes/<id>.bin`. No pre-merge read — Automerge's merge picks
+ * up concurrent device edits on the next pull.
  */
 export async function pushNotes() {
   const ids = await getDriveFileIds()
@@ -613,20 +644,28 @@ export async function pushNotes() {
 
   for (const id of dirtyIds) {
     const local = localById.get(id)
-    if (!local) { pushedIds.push(id); continue }
-    const remote = await readEntityFile(ids.notesFolderId, id)
-    const winner = remote
-      ? mergeById([local], [remote], { mergeBody: true })[0]
-      : local
-    if (remote && winner === remote) {
+    if (!local) {
+      // Local row gone but still dirty — drop from dirty set; the soft-delete
+      // tombstone (if any) was pushed in an earlier iteration.
       pushedIds.push(id)
       continue
     }
-    await writeEntityFile(ids.notesFolderId, id, winner)
+
+    const existingBytes = await getNoteDocBytes(id)
+    let doc = existingBytes ? await loadDoc(existingBytes) : await createDoc('note', local)
+    doc = await applyNoteFields(doc, local)
+    const bytes = await saveDoc(doc)
+
+    // Persist bytes locally before upload so a mid-push crash can't leave the
+    // remote ahead of the local doc.
+    await putNoteWithDoc(local, bytes, { fromSync: true })
+
+    await writeEntityBinFile(ids.notesFolderId, id, bytes)
+
     changes.push({
       type: 'note',
       id,
-      op: winner.deleted ? 'delete' : 'upsert',
+      op: local.deleted ? 'delete' : 'upsert',
       at: new Date().toISOString(),
       deviceId,
     })

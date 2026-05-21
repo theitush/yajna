@@ -204,24 +204,70 @@ export async function deleteTask(id) {
 export async function getNotes() {
   const db = await getDB()
   const all = await db.getAll(STORE_NOTES)
-  return all.filter(n => !n.deleted)
+  return all.filter(n => !n.deleted).map(stripDoc)
 }
 
 export async function getAllNotesRaw() {
   const db = await getDB()
-  return db.getAll(STORE_NOTES)
+  const all = await db.getAll(STORE_NOTES)
+  return all.map(stripDoc)
+}
+
+/**
+ * Phase C: per-note Automerge document bytes live alongside the materialized
+ * row under the `_doc` key. Same shape as task doc bytes.
+ */
+export async function getNoteDocBytes(id) {
+  const db = await getDB()
+  const row = await db.get(STORE_NOTES, id)
+  return row?._doc instanceof Uint8Array ? row._doc : null
+}
+
+export async function putNoteDocBytes(id, bytes) {
+  if (!id || !(bytes instanceof Uint8Array)) return
+  const db = await getDB()
+  const existing = await db.get(STORE_NOTES, id)
+  await db.put(STORE_NOTES, { ...(existing || { id }), _doc: bytes })
+}
+
+export async function putNoteWithDoc(note, bytes, opts) {
+  if (!note?.id) return
+  const db = await getDB()
+  const next = bytes instanceof Uint8Array ? { ...note, _doc: bytes } : note
+  await db.put(STORE_NOTES, next)
+  if (!opts?.fromSync) await markDirty('note', note.id)
 }
 
 export async function putNote(note, opts) {
+  if (!note?.id) return
   const db = await getDB()
-  await db.put(STORE_NOTES, note)
-  if (note?.id && !opts?.fromSync) await markDirty('note', note.id)
+  // Same preserve-existing-_doc rule as putTask — UI write paths read via
+  // stripDoc and pass back a row without `_doc`; preserve whatever bytes were
+  // already there so we don't blow away the local Automerge state.
+  let next = note
+  if (!(note._doc instanceof Uint8Array)) {
+    const existing = await db.get(STORE_NOTES, note.id)
+    if (existing?._doc instanceof Uint8Array) next = { ...note, _doc: existing._doc }
+  }
+  await db.put(STORE_NOTES, next)
+  if (!opts?.fromSync) await markDirty('note', note.id)
 }
 
 export async function putNotes(notes, opts) {
   const db = await getDB()
   const tx = db.transaction(STORE_NOTES, 'readwrite')
-  await Promise.all([...notes.map(n => tx.store.put(n)), tx.done])
+  await Promise.all([
+    ...notes.map(async (n) => {
+      if (!n?.id) return
+      let next = n
+      if (!(n._doc instanceof Uint8Array)) {
+        const existing = await tx.store.get(n.id)
+        if (existing?._doc instanceof Uint8Array) next = { ...n, _doc: existing._doc }
+      }
+      return tx.store.put(next)
+    }),
+    tx.done,
+  ])
   if (opts?.fromSync) return
   for (const n of notes) if (n?.id) await markDirty('note', n.id)
 }
