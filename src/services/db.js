@@ -96,36 +96,98 @@ function getDB() {
 }
 
 // Tasks
-// Reads filter out tombstones so the UI never sees soft-deleted rows.
+// Reads filter out tombstones so the UI never sees soft-deleted rows. Also
+// strip the Phase C `_doc` Uint8Array (Automerge bytes) — the UI doesn't need
+// it and serializing it through zustand/React would just bloat snapshots.
 // Tombstones still live in IDB/Drive so multi-device sync knows about the delete.
+function stripDoc(row) {
+  if (!row || !row._doc) return row
+  const { _doc, ...rest } = row
+  return rest
+}
+
 export async function getTasks() {
   const db = await getDB()
   const all = await db.getAll(STORE_TASKS)
-  return all.filter(t => !t.deleted)
+  return all.filter(t => !t.deleted).map(stripDoc)
 }
 
 export async function getAllTasksRaw() {
   const db = await getDB()
-  return db.getAll(STORE_TASKS)
+  const all = await db.getAll(STORE_TASKS)
+  return all.map(stripDoc)
 }
 
 export async function getTask(id) {
   const db = await getDB()
-  return db.get(STORE_TASKS, id)
+  return stripDoc(await db.get(STORE_TASKS, id))
+}
+
+/**
+ * Phase C: per-task Automerge document bytes live alongside the materialized
+ * row under the `_doc` key. These helpers read/write just the bytes without
+ * disturbing the row (or vice versa) so push/pull can stage updates safely.
+ */
+export async function getTaskDocBytes(id) {
+  const db = await getDB()
+  const row = await db.get(STORE_TASKS, id)
+  return row?._doc instanceof Uint8Array ? row._doc : null
+}
+
+export async function putTaskDocBytes(id, bytes) {
+  if (!id || !(bytes instanceof Uint8Array)) return
+  const db = await getDB()
+  const existing = await db.get(STORE_TASKS, id)
+  await db.put(STORE_TASKS, { ...(existing || { id }), _doc: bytes })
+}
+
+/**
+ * Atomically replace both the materialized row and its Automerge bytes. Used
+ * by the pull path so a partial write can't leave the row pointing at a doc
+ * version it doesn't reflect. Mirrors putTask's dirty-marking behavior.
+ */
+export async function putTaskWithDoc(task, bytes, opts) {
+  if (!task?.id) return
+  const db = await getDB()
+  const next = bytes instanceof Uint8Array ? { ...task, _doc: bytes } : task
+  await db.put(STORE_TASKS, next)
+  if (!opts?.fromSync) await markDirty('task', task.id)
 }
 
 export async function putTask(task, opts) {
+  if (!task?.id) return
   const db = await getDB()
-  await db.put(STORE_TASKS, task)
-  if (task?.id && !opts?.fromSync) await markDirty('task', task.id)
+  // Preserve any `_doc` bytes already on the row — UI write paths read tasks
+  // via stripDoc and then pass the result back in, which would otherwise drop
+  // the Automerge bytes. The push pipeline always wins over this preserve via
+  // putTaskWithDoc.
+  let next = task
+  if (!(task._doc instanceof Uint8Array)) {
+    const existing = await db.get(STORE_TASKS, task.id)
+    if (existing?._doc instanceof Uint8Array) next = { ...task, _doc: existing._doc }
+  }
+  await db.put(STORE_TASKS, next)
+  if (!opts?.fromSync) await markDirty('task', task.id)
 }
 
 export async function putTasks(tasks, opts) {
   const db = await getDB()
   const tx = db.transaction(STORE_TASKS, 'readwrite')
-  await Promise.all([...tasks.map(t => tx.store.put(t)), tx.done])
+  // Same preserve-existing-_doc rule as putTask. We read inside the same tx so
+  // a concurrent write can't slip between the get and put.
+  await Promise.all([
+    ...tasks.map(async (t) => {
+      if (!t?.id) return
+      let next = t
+      if (!(t._doc instanceof Uint8Array)) {
+        const existing = await tx.store.get(t.id)
+        if (existing?._doc instanceof Uint8Array) next = { ...t, _doc: existing._doc }
+      }
+      return tx.store.put(next)
+    }),
+    tx.done,
+  ])
   if (opts?.fromSync) return
-  // Mark every id dirty for the per-entity push path (local-origin only).
   for (const t of tasks) if (t?.id) await markDirty('task', t.id)
 }
 

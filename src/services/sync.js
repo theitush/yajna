@@ -7,15 +7,19 @@ import {
   putTasks, putNotes, putJournal, getConfig, putConfig,
   putMeta, getAllTasksRaw, getAllNotesRaw, purgeTombstones,
   getDirty, clearDirty, putAudio, getAllAudio,
+  getTaskDocBytes, putTaskWithDoc,
 } from './db'
 import {
   getDriveFileIds, readJsonFile, writeJsonFile,
   findFile, writeJsonFile as driveWrite,
   getFileRevisions, getStoredRevisions, setStoredRevisions,
   writeEntityFile, readEntityFile, readEntityFilesBatched, listFolder,
+  writeEntityBinFile, readEntityBinFile, readEntityBinFilesBatched,
 } from './drive'
 import { appendChanges, getDeviceId, readManifest, diffManifest, getLocalLastSeq, setLocalLastSeq } from './manifest'
 import { migrateDriveEntitiesIfNeeded } from './entitiesMigration'
+import { migrateTasksToAutomergeIfNeeded } from './tasksAutomergeMigration'
+import { createDoc, loadDoc, saveDoc, mergeDoc, applyTaskFields, materializeTaskRow } from './automergeDoc'
 import { mergeBlocks, htmlToBlocks, purgeOldBlockTombstones } from '../lib/blocks'
 import { dayKey } from '../lib/dates'
 
@@ -198,33 +202,114 @@ async function resolveEntityDocs(folderId, coldStart, changedMap, onProgress = n
 }
 
 /**
- * Apply per-entity tasks: local-only rows are preserved; changed rows merge
- * newer-updatedAt-wins. Deletes flagged in the manifest tombstone locally.
- * Writes go through putTasks with `{fromSync: true}` so the dirty set is left
- * alone.
+ * Phase C task pull. For each remote-changed id, prefer the `.bin` Automerge
+ * doc and fall back to legacy `.json` (which we wrap in a fresh doc) so
+ * mid-migration accounts still resolve cleanly. Merges with the local doc
+ * via Automerge — commutative + idempotent, so stale pulls cannot clobber.
+ * Materializes the merged doc back into the task row and persists both.
  */
-async function mergeTaskDocs(taskDocs, changedMap) {
+export async function resolveTaskDocs(folderId, coldStart, changedMap) {
+  // Decide which ids to fetch and which file ids (if known from listFolder).
+  let entries = []
+  if (coldStart) {
+    const files = await listFolder(folderId)
+    // Prefer .bin per id; fall back to .json if no .bin exists.
+    const binByName = new Map()
+    const jsonByName = new Map()
+    for (const f of files) {
+      const name = f.name || ''
+      if (name.startsWith('_')) continue
+      let m = /^(.+)\.bin$/.exec(name)
+      if (m) { binByName.set(m[1], f.id); continue }
+      m = /^(.+)\.json$/.exec(name)
+      if (m) jsonByName.set(m[1], f.id)
+    }
+    const allIds = new Set([...binByName.keys(), ...jsonByName.keys()])
+    entries = Array.from(allIds).map(id => ({
+      id,
+      binFileId: binByName.get(id) || null,
+      jsonFileId: jsonByName.get(id) || null,
+    }))
+  } else {
+    entries = Array.from(changedMap.keys()).map(id => ({ id, binFileId: null, jsonFileId: null }))
+  }
+
+  // Batched binary reads first.
+  const binResults = await readEntityBinFilesBatched(
+    folderId,
+    entries.map(e => ({ id: e.id, fileId: e.binFileId || undefined })),
+  )
+  const bytesById = new Map(binResults.map(r => [r.id, r.bytes]))
+
+  // Fall back to .json for any id without bytes.
+  const fallbackEntries = entries.filter(e => !bytesById.get(e.id))
+  const jsonResults = fallbackEntries.length
+    ? await readEntityFilesBatched(
+        folderId,
+        fallbackEntries.map(e => ({ id: e.id, fileId: e.jsonFileId || undefined })),
+      )
+    : []
+  const jsonById = new Map(jsonResults.map(r => [r.id, r.doc]))
+
+  return entries.map(e => ({
+    id: e.id,
+    bytes: bytesById.get(e.id) || null,
+    json: jsonById.get(e.id) || null,
+  }))
+}
+
+export async function mergeTaskDocs(taskDocs, changedMap) {
   const local = await getAllTasksRaw()
   const localById = new Map(local.map(t => [t.id, t]))
-  const writes = []
-  for (const { id, doc } of taskDocs) {
+  const writeRows = []
+  const writeDocBytes = new Map() // id → bytes
+  for (const { id, bytes, json } of taskDocs) {
     const l = localById.get(id)
     const change = changedMap.get(id)
-    if (!doc) {
+    if (!bytes && !json) {
+      // Both formats missing. If the manifest says delete, write a tombstone
+      // row so the UI hides it locally too.
       if (change?.op === 'delete') {
-        writes.push({ id, deleted: true, deletedAt: change.at, updatedAt: change.at })
+        writeRows.push({ id, deleted: true, deletedAt: change.at, updatedAt: change.at })
         localById.delete(id)
       }
       continue
     }
-    if (!l) { writes.push(doc); localById.set(id, doc); continue }
-    const lt = new Date(l.updatedAt || l.createdAt || 0).getTime()
-    const rt = new Date(doc.updatedAt || doc.createdAt || 0).getTime()
-    const winner = rt >= lt ? doc : l
-    if (winner !== l) writes.push(winner)
-    localById.set(id, winner)
+
+    // Build the remote doc (real Automerge if .bin, synthesized from .json
+    // otherwise so the merge can still happen on a common substrate).
+    const remoteDoc = bytes ? await loadDoc(bytes) : await createDoc('task', json)
+
+    // Local doc: load if we have bytes, else seed from the local row so the
+    // merge has something to merge into. Pre-migration rows lack `_doc`.
+    const localBytes = await getTaskDocBytes(id)
+    let mergedDoc
+    if (localBytes) {
+      const localDoc = await loadDoc(localBytes)
+      mergedDoc = await mergeDoc(localDoc, remoteDoc)
+    } else if (l) {
+      const seedDoc = await createDoc('task', l)
+      mergedDoc = await mergeDoc(seedDoc, remoteDoc)
+    } else {
+      mergedDoc = remoteDoc
+    }
+
+    const mergedBytes = await saveDoc(mergedDoc)
+    const mergedRow = materializeTaskRow(mergedDoc)
+    writeRows.push(mergedRow)
+    writeDocBytes.set(id, mergedBytes)
+    localById.set(id, mergedRow)
   }
-  if (writes.length) await putTasks(writes, { fromSync: true })
+
+  // Persist each merged row + its bytes atomically (one record per row).
+  for (const row of writeRows) {
+    const bytes = writeDocBytes.get(row.id)
+    if (bytes) {
+      await putTaskWithDoc(row, bytes, { fromSync: true })
+    } else {
+      await putTasks([row], { fromSync: true })
+    }
+  }
   return Array.from(localById.values())
 }
 
@@ -345,6 +430,17 @@ async function mergeWithDriveImpl(resolvers, onProgress = null) {
     console.warn('[sync] entities migration failed:', e.message || e)
   }
 
+  // Phase C tasks migration: converts tasks/<id>.json → tasks/<id>.bin
+  // (Automerge binary). Idempotent; flag-gated; runs alongside the dual-write
+  // window before any push/pull touches the tasks folder.
+  try {
+    const tMig = performance.now()
+    await migrateTasksToAutomergeIfNeeded()
+    mark('automerge tasks migration', tMig)
+  } catch (e) {
+    console.warn('[sync] automerge tasks migration failed:', e.message || e)
+  }
+
   // Re-fetch ids after migration in case it rewrote drive_files (legacy ids
   // cleared post-migration).
   const idsAfterMig = await getDriveFileIds()
@@ -386,9 +482,10 @@ async function mergeWithDriveImpl(resolvers, onProgress = null) {
       ? (label, cur, total) => onProgress({ phase: 'cold-start-progress', label, current: cur, total })
       : null
     const [taskDocs, audioDocs] = await Promise.all([
-      resolveEntityDocs(tasksFolderId, inspection.coldStart, inspection.changedByType.task, progress, 'tasks'),
+      resolveTaskDocs(tasksFolderId, inspection.coldStart, inspection.changedByType.task),
       resolveEntityDocs(audioMetaFolderId, inspection.coldStart, inspection.changedByType.audio, progress, 'audio'),
     ])
+    if (progress && inspection.coldStart) progress('tasks', taskDocs.length, taskDocs.length)
     const mergedTasks = await mergeTaskDocs(taskDocs, inspection.changedByType.task)
     await mergeAudioDocs(audioDocs, inspection.changedByType.audio)
     mark(`stage2 tasks+audio (cold=${inspection.coldStart}, ${taskDocs.length}t/${audioDocs.length}a)`, tStage)
@@ -458,10 +555,16 @@ export async function pullFromDrive() {
 }
 
 /**
- * Push all dirty tasks to Drive (Phase B per-entity model). Drains the dirty
- * set in db.meta, writes one file per task, then appends a single batched
- * manifest entry. Per-id remote merge: read the remote file, mergeById against
- * the local record, write the winner.
+ * Push all dirty tasks to Drive (Phase C — Automerge). Drains the dirty set,
+ * mutates each task's local Automerge doc with the row's fields, blind-uploads
+ * the binary doc to `tasks/<id>.bin`, and dual-writes the legacy `.json` so
+ * pre-Phase-C builds on other devices keep working through the dual-write
+ * window. Appends a single batched manifest entry.
+ *
+ * No pre-merge read needed: Automerge's merge is commutative + idempotent, so
+ * any other device's concurrent edit will be folded in on the next pull. This
+ * replaces the Phase B per-id read-merge-write loop and removes the entire
+ * race window around tasks.
  *
  * Caller is expected to be wrapped in `withRetry` from syncEngine — failures
  * leave the dirty set intact so the next attempt retries the same ids.
@@ -482,27 +585,42 @@ export async function pushTasks() {
   for (const id of dirtyIds) {
     const local = localById.get(id)
     if (!local) {
-      // Local row gone but still dirty — treat as a hard-delete tombstone.
+      // Local row gone but still dirty — nothing to push and no doc to ship.
+      // Mark resolved so we don't retry forever; the delete tombstone (if
+      // any) already went through a normal local edit and was pushed earlier.
       pushedIds.push(id)
       continue
     }
-    // Per-id remote merge keeps concurrent device writes from clobbering.
-    const remote = await readEntityFile(ids.tasksFolderId, id)
-    const winner = remote
-      ? mergeById([local], [remote])[0]
-      : local
-    // If remote won the merge, the entity file already contains `winner` —
-    // re-uploading would just bump modifiedTime, fan out a no-op manifest
-    // entry, and race with newer writes from other devices. Skip.
-    if (remote && winner === remote) {
-      pushedIds.push(id)
-      continue
+
+    // Load or create the local Automerge doc, then apply the row's fields.
+    const existingBytes = await getTaskDocBytes(id)
+    let doc = existingBytes ? await loadDoc(existingBytes) : await createDoc('task', local)
+    doc = await applyTaskFields(doc, local)
+    const bytes = await saveDoc(doc)
+
+    // Persist the new bytes locally before uploading so a mid-push crash
+    // doesn't leave the remote ahead of local.
+    await putTaskWithDoc(local, bytes, { fromSync: true })
+
+    // Blind upload — no pre-merge read. Other devices' edits get folded in
+    // on the next pull via Automerge.merge.
+    await writeEntityBinFile(ids.tasksFolderId, id, bytes)
+
+    // Dual-write the legacy .json so a pre-Phase-C build on another device
+    // keeps seeing fresh data through the dual-write window. Strip the
+    // Automerge bytes from the row before serializing.
+    try {
+      await writeEntityFile(ids.tasksFolderId, id, local)
+    } catch (e) {
+      // Dual-write failures are non-fatal — .bin is authoritative for new
+      // clients. Log and move on.
+      console.warn(`[sync] dual-write tasks/${id}.json failed:`, e.message || e)
     }
-    await writeEntityFile(ids.tasksFolderId, id, winner)
+
     changes.push({
       type: 'task',
       id,
-      op: winner.deleted ? 'delete' : 'upsert',
+      op: local.deleted ? 'delete' : 'upsert',
       at: new Date().toISOString(),
       deviceId,
     })

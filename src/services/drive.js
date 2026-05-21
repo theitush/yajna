@@ -396,3 +396,98 @@ export async function readEntityFilesBatched(folderId, entries, batchSize = 20, 
   }
   return out
 }
+
+/**
+ * Binary file helpers — Phase C. Automerge documents are saved as opaque
+ * Uint8Array blobs; we upload them as application/octet-stream so Drive
+ * preserves them byte-for-byte and doesn't try to re-encode.
+ */
+export async function readBinaryFile(fileId) {
+  return withAuthRetry(async () => {
+    const token = window.gapi.client.getToken()?.access_token
+    const res = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    )
+    await ensureFetchOk(res, 'Drive binary download failed')
+    const buf = await res.arrayBuffer()
+    return new Uint8Array(buf)
+  })
+}
+
+export async function writeBinaryFile(parentId, name, bytes, existingFileId = null) {
+  const blob = new Blob([bytes], { type: 'application/octet-stream' })
+  const metadata = {
+    name,
+    mimeType: 'application/octet-stream',
+    ...(existingFileId ? {} : { parents: [parentId] }),
+  }
+  return withAuthRetry(async () => {
+    // FormData with a Blob body is single-consumption — rebuild per attempt.
+    const form = new FormData()
+    form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }))
+    form.append('media', blob)
+    const token = window.gapi.client.getToken()?.access_token
+    if (existingFileId) {
+      const res = await fetch(
+        `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart`,
+        { method: 'PATCH', headers: { Authorization: `Bearer ${token}` }, body: form }
+      )
+      await ensureFetchOk(res, 'Drive binary patch failed')
+      return existingFileId
+    }
+    const res = await fetch(
+      'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+      { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form }
+    )
+    await ensureFetchOk(res, 'Drive binary create failed')
+    const json = await res.json()
+    return json.id
+  })
+}
+
+/**
+ * Per-entity binary helpers. Filename is `<id>.bin`. Returns null on missing
+ * file so cold-start callers can be tolerant.
+ */
+export async function readEntityBinFile(folderId, id) {
+  const fileId = await findFile(folderId, `${id}.bin`)
+  if (!fileId) return null
+  try {
+    return await readBinaryFile(fileId)
+  } catch {
+    return null
+  }
+}
+
+export async function writeEntityBinFile(folderId, id, bytes) {
+  const filename = `${id}.bin`
+  const existing = await findFile(folderId, filename)
+  return writeBinaryFile(folderId, filename, bytes, existing)
+}
+
+/**
+ * Batched binary reader. Mirrors readEntityFilesBatched but for `.bin` files.
+ * `entries` is [{ id, fileId? }]. Returns [{ id, bytes }]; bytes null on miss.
+ */
+export async function readEntityBinFilesBatched(folderId, entries, batchSize = 20, onBatch = null) {
+  const out = []
+  for (let i = 0; i < entries.length; i += batchSize) {
+    const slice = entries.slice(i, i + batchSize)
+    const results = await Promise.all(slice.map(async ({ id, fileId }) => {
+      try {
+        const fid = fileId || await findFile(folderId, `${id}.bin`)
+        if (!fid) return { id, bytes: null }
+        const bytes = await readBinaryFile(fid)
+        return { id, bytes }
+      } catch {
+        return { id, bytes: null }
+      }
+    }))
+    out.push(...results)
+    if (onBatch) {
+      try { onBatch(out.length, entries.length) } catch { /* ignore */ }
+    }
+  }
+  return out
+}

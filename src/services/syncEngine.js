@@ -13,11 +13,11 @@ import {
   listFolder, readEntityFilesBatched,
 } from './drive'
 import {
-  putTasks, putNotes, putConfig, putJournal,
-  getAllAudio, putAudio, getAllNotesRaw, getAllTasksRaw, getJournal,
+  putNotes, putConfig, putJournal,
+  getAllAudio, putAudio, getAllNotesRaw, getJournal,
 } from './db'
 import { getStoredToken, trySilentRefresh, storeToken, setAccessToken, isAuthError, withAuthRetry } from './auth'
-import { mergeDayDoc } from './sync'
+import { mergeDayDoc, resolveTaskDocs, mergeTaskDocs } from './sync'
 import { readManifest, diffManifest, getLocalLastSeq, setLocalLastSeq } from './manifest'
 import { mergeBlocks, htmlToBlocks, purgeOldBlockTombstones } from '../lib/blocks'
 import { dayKey } from '../lib/dates'
@@ -263,12 +263,14 @@ async function pollRemote(storeSetter) {
     const remoteConfig = await readJsonFile(ids.configFileId).catch(() => ({}))
 
     // 3. Fetch the per-entity files that changed (or all, on cold start).
+    //    Tasks: Phase C — Automerge .bin via resolveTaskDocs.
+    //    Notes / audio: Phase B per-id .json (their own cutover sessions land
+    //    later — see project_sync_redesign memory).
     let taskDocs = []
     let noteDocs = []
     let audioDocs = []
     if (coldStart) {
-      const [taskList, noteList, audioList] = await Promise.all([
-        listFolder(ids.tasksFolderId),
+      const [noteList, audioList] = await Promise.all([
         listFolder(ids.notesFolderId),
         listFolder(ids.audioMetaFolderId),
       ])
@@ -279,28 +281,28 @@ async function pollRemote(storeSetter) {
           return { id: m[1], fileId: f.id }
         })
         .filter(Boolean)
-      const [t, n, a] = await Promise.all([
-        readEntityFilesBatched(ids.tasksFolderId, toEntries(taskList)),
+      const [n, a, t] = await Promise.all([
         readEntityFilesBatched(ids.notesFolderId, toEntries(noteList)),
         readEntityFilesBatched(ids.audioMetaFolderId, toEntries(audioList)),
+        resolveTaskDocs(ids.tasksFolderId, true, changedByType.task),
       ])
-      taskDocs = t
       noteDocs = n
       audioDocs = a
+      taskDocs = t
     } else {
       const fetchChanged = async (folderId, bucket) => {
         const ids2 = Array.from(bucket.keys())
         if (!ids2.length) return []
         return readEntityFilesBatched(folderId, ids2.map(id => ({ id })))
       }
-      const [t, n, a] = await Promise.all([
-        fetchChanged(ids.tasksFolderId, changedByType.task),
+      const [n, a, t] = await Promise.all([
         fetchChanged(ids.notesFolderId, changedByType.note),
         fetchChanged(ids.audioMetaFolderId, changedByType.audio),
+        resolveTaskDocs(ids.tasksFolderId, false, changedByType.task),
       ])
-      taskDocs = t
       noteDocs = n
       audioDocs = a
+      taskDocs = t
     }
 
     // A local write raced with our pull — discard, the user's edit is fresher.
@@ -309,25 +311,10 @@ async function pollRemote(storeSetter) {
       return
     }
 
-    // 4. Merge tasks. For each changed id: if the remote file is missing AND
-    // the manifest said "delete", drop locally. Otherwise newer updatedAt
-    // wins per id; local-only tasks are preserved untouched.
-    const localTasksRaw = await getAllTasksRaw()
-    const localTasksById = new Map(localTasksRaw.map(t => [t.id, t]))
-    const mergedTaskMap = new Map(localTasksById)
-    for (const { id, doc } of taskDocs) {
-      const local = localTasksById.get(id)
-      const change = changedByType.task.get(id)
-      if (!doc) {
-        if (change?.op === 'delete') mergedTaskMap.delete(id)
-        continue
-      }
-      if (!local) { mergedTaskMap.set(id, doc); continue }
-      const lt = new Date(local.updatedAt || local.createdAt || 0).getTime()
-      const rt = new Date(doc.updatedAt || doc.createdAt || 0).getTime()
-      mergedTaskMap.set(id, rt >= lt ? doc : local)
-    }
-    const mergedTasks = Array.from(mergedTaskMap.values())
+    // 4. Merge tasks via Automerge. mergeTaskDocs persists merged rows + bytes
+    // back to IDB internally, so we just need the resulting list for the
+    // store update below.
+    const mergedTasks = await mergeTaskDocs(taskDocs, changedByType.task)
 
     // 5. Merge notes (block-level body merge).
     const localNotesRaw = await getAllNotesRaw()
@@ -364,23 +351,14 @@ async function pollRemote(storeSetter) {
     }
     const mergedNotes = Array.from(mergedNotesMap.values())
 
-    // 6. Persist tasks + notes + config.
-    const taskChangedIds = new Set(taskDocs.map(d => d.id))
-    const tasksToPut = mergedTasks.filter(t => taskChangedIds.has(t.id))
+    // 6. Persist notes + config. Tasks already persisted by mergeTaskDocs
+    // (rows + Automerge bytes together via putTaskWithDoc).
     const noteChangedIds = new Set(noteDocs.map(d => d.id))
     const notesToPut = mergedNotes.filter(n => noteChangedIds.has(n.id))
     await Promise.all([
-      tasksToPut.length ? putTasks(tasksToPut, { fromSync: true }) : Promise.resolve(),
       notesToPut.length ? putNotes(notesToPut, { fromSync: true }) : Promise.resolve(),
       putConfig(remoteConfig || {}),
     ])
-    // Apply task deletions (entity-file missing + manifest delete op).
-    for (const [id, change] of changedByType.task) {
-      if (change?.op === 'delete' && !mergedTaskMap.has(id)) {
-        // Soft tombstone so other devices still see it.
-        await putTasks([{ id, deleted: true, deletedAt: change.at, updatedAt: change.at }], { fromSync: true })
-      }
-    }
 
     // 7. Reconcile audio metadata (per-id files now).
     const audioTranscriptUpdates = []
