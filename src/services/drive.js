@@ -375,7 +375,7 @@ export async function writeEntityFile(folderId, id, data) {
  * `entries` is [{ id, fileId? }]. If fileId is provided we skip the lookup;
  * otherwise we resolve by name inside `folderId`.
  */
-export async function readEntityFilesBatched(folderId, entries, batchSize = 20) {
+export async function readEntityFilesBatched(folderId, entries, batchSize = 20, onBatch = null) {
   const out = []
   for (let i = 0; i < entries.length; i += batchSize) {
     const slice = entries.slice(i, i + batchSize)
@@ -390,6 +390,9 @@ export async function readEntityFilesBatched(folderId, entries, batchSize = 20) 
       }
     }))
     out.push(...results)
+    if (onBatch) {
+      try { onBatch(out.length, entries.length) } catch { /* ignore */ }
+    }
   }
   return out
 }

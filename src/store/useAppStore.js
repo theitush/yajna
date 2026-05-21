@@ -724,6 +724,12 @@ const useAppStore = create((set, get) => ({
   syncing: false,
   lastSync: null,
   syncStatus: { state: 'offline' }, // { state: 'synced'|'syncing'|'offline'|'waiting', retryIn?: number }
+  // Cold-pull progress shown in the boot overlay + surface gates. `active` is
+  // true while the initial cold-start enumeration is running on a fresh device.
+  // `progress` maps bucket label → { current, total } for the most recent
+  // batch tick of that bucket.
+  coldPull: { active: false, progress: {} },
+  setColdPull: (next) => set({ coldPull: next }),
   // Per-surface gates. False during initial connect; flipped true as each
   // staged-pull bucket resolves. Once true they stay true — incremental polls
   // are cheap and merge-safe via writeGeneration, no need to re-gate.
@@ -773,9 +779,25 @@ const useAppStore = create((set, get) => ({
 
     set({ syncing: true, syncStatus: { state: 'syncing' } })
 
+    const onProgress = (evt) => {
+      if (!evt) return
+      if (evt.phase === 'cold-start-begin') {
+        set({ coldPull: { active: true, progress: {} } })
+      } else if (evt.phase === 'cold-start-progress') {
+        set(s => ({
+          coldPull: {
+            active: true,
+            progress: { ...(s.coldPull?.progress || {}), [evt.label]: { current: evt.current, total: evt.total } },
+          },
+        }))
+      } else if (evt.phase === 'cold-start-done') {
+        set({ coldPull: { active: false, progress: {} } })
+      }
+    }
+
     let handle
     try {
-      handle = initialSyncStreaming()
+      handle = initialSyncStreaming(onProgress)
     } catch (e) {
       // Synchronous failure to even start the merge — fall back to local reads.
       console.error('Sync failed to start', e)
@@ -819,7 +841,7 @@ const useAppStore = create((set, get) => ({
         await get().rebuildReviewsFromJournals().catch(() => {})
       })().catch(() => {})
 
-      set({ lastSync: Date.now(), syncing: false })
+      set({ lastSync: Date.now(), syncing: false, coldPull: { active: false, progress: {} } })
 
       onSyncStatus((s) => {
         useAppStore.getState().setSyncStatus(s)
@@ -840,6 +862,7 @@ const useAppStore = create((set, get) => ({
       // Don't keep surfaces gated if the merge bailed — local data is still
       // viewable; the next poll will hydrate fresh remote data.
       get().markAllSyncReady()
+      set({ coldPull: { active: false, progress: {} } })
       // Only spin up the poll engine when auth is healthy. With a dead token
       // the engine would just loop pollRemote every second, briefly setting
       // status back to 'syncing' on each tick and producing the

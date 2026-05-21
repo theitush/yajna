@@ -136,7 +136,7 @@ function toMs(iso) {
  * `done` resolves with `{ mergedConfig }` once every stage finishes. Callers
  * can await `done` to start the sync engine afterwards.
  */
-export function mergeWithDriveStreaming() {
+export function mergeWithDriveStreaming(onProgress = null) {
   const buckets = { today: null, tasks: null, audio: null, notes: null, config: null }
   const resolvers = {}
   for (const k of Object.keys(buckets)) {
@@ -144,7 +144,7 @@ export function mergeWithDriveStreaming() {
     buckets[k].catch(() => {})
   }
 
-  const done = (async () => mergeWithDriveImpl(resolvers))()
+  const done = (async () => mergeWithDriveImpl(resolvers, onProgress))()
 
   return { buckets, done }
 }
@@ -177,7 +177,7 @@ async function inspectManifest(rootId) {
  * Resolve the per-entity docs we need for a bucket: full folder enumeration
  * on cold start, otherwise just the changed ids from the manifest diff.
  */
-async function resolveEntityDocs(folderId, coldStart, changedMap) {
+async function resolveEntityDocs(folderId, coldStart, changedMap, onProgress = null, label = null) {
   if (coldStart) {
     const files = await listFolder(folderId)
     const entries = files
@@ -187,7 +187,10 @@ async function resolveEntityDocs(folderId, coldStart, changedMap) {
         return { id: m[1], fileId: f.id }
       })
       .filter(Boolean)
-    return readEntityFilesBatched(folderId, entries)
+    if (onProgress) onProgress(label, 0, entries.length)
+    return readEntityFilesBatched(folderId, entries, 20, (cur, total) => {
+      if (onProgress) onProgress(label, cur, total)
+    })
   }
   const ids = Array.from(changedMap.keys())
   if (!ids.length) return []
@@ -319,7 +322,7 @@ async function mergeAudioDocs(audioDocs, changedMap) {
   }
 }
 
-async function mergeWithDriveImpl(resolvers) {
+async function mergeWithDriveImpl(resolvers, onProgress = null) {
   const t0 = performance.now()
   const mark = (label, from) => console.log(`[sync] ${label}: ${(performance.now() - from).toFixed(0)}ms`)
 
@@ -354,6 +357,9 @@ async function mergeWithDriveImpl(resolvers) {
   const tManifest = performance.now()
   const inspection = await inspectManifest(rootId)
   mark(`manifest inspect (coldStart=${inspection.coldStart})`, tManifest)
+  if (inspection.coldStart && onProgress) {
+    onProgress({ phase: 'cold-start-begin' })
+  }
 
   // -- Stage 1: config + today's journal (cheap, unblocks Today UI) --
   const stage1 = (async () => {
@@ -376,9 +382,12 @@ async function mergeWithDriveImpl(resolvers) {
   const stage2 = (async () => {
     await stage1.catch(() => {})
     const tStage = performance.now()
+    const progress = onProgress
+      ? (label, cur, total) => onProgress({ phase: 'cold-start-progress', label, current: cur, total })
+      : null
     const [taskDocs, audioDocs] = await Promise.all([
-      resolveEntityDocs(tasksFolderId, inspection.coldStart, inspection.changedByType.task),
-      resolveEntityDocs(audioMetaFolderId, inspection.coldStart, inspection.changedByType.audio),
+      resolveEntityDocs(tasksFolderId, inspection.coldStart, inspection.changedByType.task, progress, 'tasks'),
+      resolveEntityDocs(audioMetaFolderId, inspection.coldStart, inspection.changedByType.audio, progress, 'audio'),
     ])
     const mergedTasks = await mergeTaskDocs(taskDocs, inspection.changedByType.task)
     await mergeAudioDocs(audioDocs, inspection.changedByType.audio)
@@ -394,7 +403,10 @@ async function mergeWithDriveImpl(resolvers) {
   const stage3 = (async () => {
     await stage2.catch(() => {})
     const tStage = performance.now()
-    const noteDocs = await resolveEntityDocs(notesFolderId, inspection.coldStart, inspection.changedByType.note)
+    const noteProgress = onProgress
+      ? (label, cur, total) => onProgress({ phase: 'cold-start-progress', label, current: cur, total })
+      : null
+    const noteDocs = await resolveEntityDocs(notesFolderId, inspection.coldStart, inspection.changedByType.note, noteProgress, 'notes')
     const mergedNotes = await mergeNoteDocs(noteDocs, inspection.changedByType.note)
     mark(`stage3 notes (cold=${inspection.coldStart}, ${noteDocs.length}n)`, tStage)
     resolvers.notes(mergedNotes.filter(n => !n.deleted))
@@ -404,6 +416,9 @@ async function mergeWithDriveImpl(resolvers) {
   })
 
   const [mergedConfig] = await Promise.all([stage1, stage2, stage3])
+  if (inspection.coldStart && onProgress) {
+    onProgress({ phase: 'cold-start-done' })
+  }
 
   // Advance localLastSeq once everything has been applied. On cold start the
   // head seq is the new floor.

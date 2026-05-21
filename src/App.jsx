@@ -29,6 +29,7 @@ export default function App() {
   } = useAppStore()
   const syncStatus = useAppStore(s => s.syncStatus)
   const mode = useAppStore(s => s.mode)
+  const coldPull = useAppStore(s => s.coldPull)
   const [loginLoading, setLoginLoading] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [blockingInitialSync, setBlockingInitialSync] = useState(false)
@@ -371,14 +372,39 @@ export default function App() {
               justifyContent: 'center',
             }}
           >
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, maxWidth: 320, textAlign: 'center', padding: '0 20px' }}>
               <div style={{ width: 22, height: 22, border: '2px solid rgba(255,255,255,0.35)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-              <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.9)' }}>Syncing...</div>
+              {coldPull?.active ? (
+                <>
+                  <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.95)', fontWeight: 500 }}>First-time setup on this device</div>
+                  <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.75)', lineHeight: 1.5 }}>
+                    Pulling everything from Drive. This can take a few minutes — leave the app open.
+                  </div>
+                  <ColdPullProgress progress={coldPull.progress} />
+                </>
+              ) : (
+                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.9)' }}>Syncing...</div>
+              )}
             </div>
             <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
           </div>
         )}
       </div>
     </HashRouter>
+  )
+}
+
+function ColdPullProgress({ progress }) {
+  const entries = Object.entries(progress || {})
+  if (!entries.length) return null
+  return (
+    <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'rgba(255,255,255,0.7)', fontVariantNumeric: 'tabular-nums' }}>
+      {entries.map(([label, { current, total }]) => (
+        <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, minWidth: 180 }}>
+          <span style={{ textTransform: 'capitalize' }}>{label}</span>
+          <span>{current}/{total}</span>
+        </div>
+      ))}
+    </div>
   )
 }

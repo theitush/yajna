@@ -10,6 +10,9 @@ import useAppStore from '../../store/useAppStore'
  */
 export default function SurfaceLoadingGate({ bucket, children, label }) {
   const ready = useAppStore(s => s.syncReady?.[bucket])
+  const coldPull = useAppStore(s => s.coldPull)
+  const bucketLabel = bucket === 'tasks' ? 'tasks' : bucket === 'notes' ? 'notes' : bucket
+  const bucketProgress = coldPull?.active ? coldPull.progress?.[bucketLabel] : null
   return (
     <div style={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       {children}
@@ -28,11 +31,23 @@ export default function SurfaceLoadingGate({ bucket, children, label }) {
             pointerEvents: 'all',
           }}
         >
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, maxWidth: 280, textAlign: 'center', padding: '0 16px' }}>
             <div style={{ width: 18, height: 18, border: '2px solid rgba(255,255,255,0.35)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.9)' }}>
-              {label || `Loading ${bucket}...`}
-            </div>
+            {coldPull?.active ? (
+              <>
+                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.95)', fontWeight: 500 }}>
+                  First-time setup
+                </div>
+                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', lineHeight: 1.5 }}>
+                  Pulling {bucketLabel} from Drive…
+                  {bucketProgress ? ` ${bucketProgress.current}/${bucketProgress.total}` : ''}
+                </div>
+              </>
+            ) : (
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.9)' }}>
+                {label || `Loading ${bucket}...`}
+              </div>
+            )}
           </div>
         </div>
       )}
