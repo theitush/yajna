@@ -202,60 +202,30 @@ async function resolveEntityDocs(folderId, coldStart, changedMap, onProgress = n
 }
 
 /**
- * Phase C task pull. For each remote-changed id, prefer the `.bin` Automerge
- * doc and fall back to legacy `.json` (which we wrap in a fresh doc) so
- * mid-migration accounts still resolve cleanly. Merges with the local doc
- * via Automerge — commutative + idempotent, so stale pulls cannot clobber.
- * Materializes the merged doc back into the task row and persists both.
+ * Phase C task pull. For each remote-changed id, fetches the `.bin` Automerge
+ * doc. The migration deletes `.json` after writing `.bin`, so post-migration
+ * `.bin` is the only on-disk format.
+ *
+ * Returns [{ id, bytes }] where bytes is null on missing (manifest-delete
+ * cases — the row is tombstoned in mergeTaskDocs).
  */
 export async function resolveTaskDocs(folderId, coldStart, changedMap) {
-  // Decide which ids to fetch and which file ids (if known from listFolder).
   let entries = []
   if (coldStart) {
     const files = await listFolder(folderId)
-    // Prefer .bin per id; fall back to .json if no .bin exists.
-    const binByName = new Map()
-    const jsonByName = new Map()
-    for (const f of files) {
-      const name = f.name || ''
-      if (name.startsWith('_')) continue
-      let m = /^(.+)\.bin$/.exec(name)
-      if (m) { binByName.set(m[1], f.id); continue }
-      m = /^(.+)\.json$/.exec(name)
-      if (m) jsonByName.set(m[1], f.id)
-    }
-    const allIds = new Set([...binByName.keys(), ...jsonByName.keys()])
-    entries = Array.from(allIds).map(id => ({
-      id,
-      binFileId: binByName.get(id) || null,
-      jsonFileId: jsonByName.get(id) || null,
-    }))
+    entries = files
+      .map(f => {
+        const m = /^(.+)\.bin$/.exec(f.name || '')
+        if (!m || m[1].startsWith('_')) return null
+        return { id: m[1], fileId: f.id }
+      })
+      .filter(Boolean)
   } else {
-    entries = Array.from(changedMap.keys()).map(id => ({ id, binFileId: null, jsonFileId: null }))
+    entries = Array.from(changedMap.keys()).map(id => ({ id, fileId: undefined }))
   }
 
-  // Batched binary reads first.
-  const binResults = await readEntityBinFilesBatched(
-    folderId,
-    entries.map(e => ({ id: e.id, fileId: e.binFileId || undefined })),
-  )
-  const bytesById = new Map(binResults.map(r => [r.id, r.bytes]))
-
-  // Fall back to .json for any id without bytes.
-  const fallbackEntries = entries.filter(e => !bytesById.get(e.id))
-  const jsonResults = fallbackEntries.length
-    ? await readEntityFilesBatched(
-        folderId,
-        fallbackEntries.map(e => ({ id: e.id, fileId: e.jsonFileId || undefined })),
-      )
-    : []
-  const jsonById = new Map(jsonResults.map(r => [r.id, r.doc]))
-
-  return entries.map(e => ({
-    id: e.id,
-    bytes: bytesById.get(e.id) || null,
-    json: jsonById.get(e.id) || null,
-  }))
+  if (!entries.length) return []
+  return readEntityBinFilesBatched(folderId, entries)
 }
 
 export async function mergeTaskDocs(taskDocs, changedMap) {
@@ -263,12 +233,12 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
   const localById = new Map(local.map(t => [t.id, t]))
   const writeRows = []
   const writeDocBytes = new Map() // id → bytes
-  for (const { id, bytes, json } of taskDocs) {
+  for (const { id, bytes } of taskDocs) {
     const l = localById.get(id)
     const change = changedMap.get(id)
-    if (!bytes && !json) {
-      // Both formats missing. If the manifest says delete, write a tombstone
-      // row so the UI hides it locally too.
+    if (!bytes) {
+      // .bin missing. If the manifest says delete, write a tombstone row so
+      // the UI hides it locally too.
       if (change?.op === 'delete') {
         writeRows.push({ id, deleted: true, deletedAt: change.at, updatedAt: change.at })
         localById.delete(id)
@@ -276,12 +246,10 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
       continue
     }
 
-    // Build the remote doc (real Automerge if .bin, synthesized from .json
-    // otherwise so the merge can still happen on a common substrate).
-    const remoteDoc = bytes ? await loadDoc(bytes) : await createDoc('task', json)
+    const remoteDoc = await loadDoc(bytes)
 
     // Local doc: load if we have bytes, else seed from the local row so the
-    // merge has something to merge into. Pre-migration rows lack `_doc`.
+    // merge has something to merge into. Pre-Phase-C rows lack `_doc`.
     const localBytes = await getTaskDocBytes(id)
     let mergedDoc
     if (localBytes) {
@@ -605,17 +573,6 @@ export async function pushTasks() {
     // Blind upload — no pre-merge read. Other devices' edits get folded in
     // on the next pull via Automerge.merge.
     await writeEntityBinFile(ids.tasksFolderId, id, bytes)
-
-    // Dual-write the legacy .json so a pre-Phase-C build on another device
-    // keeps seeing fresh data through the dual-write window. Strip the
-    // Automerge bytes from the row before serializing.
-    try {
-      await writeEntityFile(ids.tasksFolderId, id, local)
-    } catch (e) {
-      // Dual-write failures are non-fatal — .bin is authoritative for new
-      // clients. Log and move on.
-      console.warn(`[sync] dual-write tasks/${id}.json failed:`, e.message || e)
-    }
 
     changes.push({
       type: 'task',

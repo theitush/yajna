@@ -1,17 +1,18 @@
 /**
  * Phase C tasks migration: convert tasks/<id>.json (Phase B per-entity files)
- * into tasks/<id>.bin (Automerge binary docs). Dual-write window: this
- * migration creates the .bin files but leaves the .json files in place so an
- * old build on a second device keeps working. The push path also keeps
- * writing .json. A later cleanup session drops both.
+ * into tasks/<id>.bin (Automerge binary docs) and delete the .json originals.
+ * Hard cutover — no dual-write window. User has a separate backup; the
+ * pre-Phase-B `_backup_pre_entities.json` at the root still bundles the
+ * original task array, so this migration is recoverable.
  *
  * Gating: meta.automerge_tasks_v1. Idempotent — re-runs skip any .bin already
- * present and only set the flag once every source .json has a matching .bin.
+ * present and re-try any .json delete that failed previously. Flag set only
+ * after every .json has both a peer .bin and a successful delete.
  *
  * Also seeds the local IDB row's `_doc` field so the first push doesn't have
  * to fetch its own freshly-uploaded bytes back.
  */
-import { getDriveFileIds, listFolder, readJsonFile, writeEntityBinFile, findFile } from './drive'
+import { getDriveFileIds, listFolder, readJsonFile, writeEntityBinFile, findFile, deleteDriveFile } from './drive'
 import { getMeta, putMeta, putTaskDocBytes } from './db'
 import { createDoc, saveDoc } from './automergeDoc'
 
@@ -64,59 +65,68 @@ export async function migrateTasksToAutomergeIfNeeded() {
     return { skipped: true, reason: 'fresh install' }
   }
 
-  // Convert any .json without a matching .bin. Small batch to be polite to
-  // Drive — uploads are heavier than reads.
-  const toConvert = []
-  for (const [id, fileId] of jsonByName) {
-    if (!binIds.has(id)) toConvert.push({ id, fileId })
-  }
-
-  let written = 0
+  // Per-id work: ensure .bin exists, then delete .json. Both steps are
+  // idempotent — an id whose .bin already exists skips straight to delete,
+  // and deleteDriveFile swallows 404 so a previously-deleted .json is fine.
+  // Small batch to be polite to Drive — uploads are heavier than reads.
+  let converted = 0
+  let deleted = 0
   let failed = 0
+  const ids2 = new Set([...jsonByName.keys(), ...binIds])
+  const work = Array.from(ids2)
   const batchSize = 5
-  for (let i = 0; i < toConvert.length; i += batchSize) {
-    const slice = toConvert.slice(i, i + batchSize)
-    await Promise.all(slice.map(async ({ id, fileId }) => {
+  for (let i = 0; i < work.length; i += batchSize) {
+    const slice = work.slice(i, i + batchSize)
+    await Promise.all(slice.map(async (id) => {
+      const jsonFileId = jsonByName.get(id)
+      const hasBin = binIds.has(id)
       try {
-        const json = await readJsonFile(fileId)
-        if (!json || typeof json !== 'object') { failed++; return }
-        const doc = await createDoc('task', json)
-        const bytes = await saveDoc(doc)
-        await writeEntityBinFile(ids.tasksFolderId, id, bytes)
-        // Seed local IDB if the row exists, so the first edit doesn't kick
-        // off a re-download to materialize the doc.
-        await putTaskDocBytes(id, bytes).catch(() => {})
-        written++
+        if (!hasBin) {
+          if (!jsonFileId) { failed++; return } // shouldn't happen — id came from one of the sets
+          const json = await readJsonFile(jsonFileId)
+          if (!json || typeof json !== 'object') { failed++; return }
+          const doc = await createDoc('task', json)
+          const bytes = await saveDoc(doc)
+          await writeEntityBinFile(ids.tasksFolderId, id, bytes)
+          await putTaskDocBytes(id, bytes).catch(() => {})
+          converted++
+        }
+        if (jsonFileId) {
+          await deleteDriveFile(jsonFileId)
+          deleted++
+        }
       } catch (e) {
-        log(`convert failed for ${id}:`, e.message || e)
+        log(`work failed for ${id}:`, e.message || e)
         failed++
       }
     }))
   }
-  log(`converted ${written}/${toConvert.length} (${failed} failed)`)
+  log(`converted ${converted}, deleted ${deleted} .json (${failed} failed)`)
 
   if (failed > 0) {
-    log('partial: some converts failed; flag NOT set — will retry next boot')
-    return { ok: false, written, failed }
+    log('partial: some operations failed; flag NOT set — will retry next boot')
+    return { ok: false, converted, deleted, failed }
   }
 
-  // Verify every .json now has a peer .bin. (Re-list because batches that
-  // succeeded above won't be in our cached binIds set.)
+  // Verify: every id has a .bin, and zero .json remain.
   const { jsonByName: jsonAfter, binIds: binAfter } = await indexTasksFolder(ids.tasksFolderId)
-  for (const id of jsonAfter.keys()) {
-    if (!binAfter.has(id)) {
-      log(`verify failed: ${id}.bin still missing; flag NOT set`)
-      return { ok: false, missing: id }
-    }
+  if (jsonAfter.size > 0) {
+    log(`verify failed: ${jsonAfter.size} .json still present; flag NOT set`)
+    return { ok: false, remainingJson: jsonAfter.size }
+  }
+  if (binAfter.size < ids2.size) {
+    log(`verify failed: expected ≥${ids2.size} .bin, found ${binAfter.size}; flag NOT set`)
+    return { ok: false, expectedBin: ids2.size, foundBin: binAfter.size }
   }
 
   await putMeta(MIGRATION_FLAG, {
     completedAt: nowIso(),
-    converted: written,
-    totalJson: jsonAfter.size,
+    converted,
+    deleted,
+    totalBin: binAfter.size,
   })
   log(`done in ${(performance.now() - t0).toFixed(0)}ms`)
-  return { ok: true, written }
+  return { ok: true, converted, deleted }
 }
 
 /**
