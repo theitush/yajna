@@ -99,7 +99,7 @@ export default function TodayPage() {
               transition: 'color 0.15s',
             }}
           >
-            Tasks
+            Todos
           </button>
         </div>
 

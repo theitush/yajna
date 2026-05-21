@@ -109,6 +109,11 @@ export async function getAllTasksRaw() {
   return db.getAll(STORE_TASKS)
 }
 
+export async function getTask(id) {
+  const db = await getDB()
+  return db.get(STORE_TASKS, id)
+}
+
 export async function putTask(task, opts) {
   const db = await getDB()
   await db.put(STORE_TASKS, task)

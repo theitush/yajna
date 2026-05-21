@@ -491,6 +491,13 @@ export async function pushTasks() {
     const winner = remote
       ? mergeById([local], [remote])[0]
       : local
+    // If remote won the merge, the entity file already contains `winner` —
+    // re-uploading would just bump modifiedTime, fan out a no-op manifest
+    // entry, and race with newer writes from other devices. Skip.
+    if (remote && winner === remote) {
+      pushedIds.push(id)
+      continue
+    }
     await writeEntityFile(ids.tasksFolderId, id, winner)
     changes.push({
       type: 'task',
@@ -536,6 +543,10 @@ export async function pushNotes() {
     const winner = remote
       ? mergeById([local], [remote], { mergeBody: true })[0]
       : local
+    if (remote && winner === remote) {
+      pushedIds.push(id)
+      continue
+    }
     await writeEntityFile(ids.notesFolderId, id, winner)
     changes.push({
       type: 'note',

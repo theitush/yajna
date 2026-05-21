@@ -3,7 +3,7 @@ import { v4 as uuid } from 'uuid'
 import { today, dayKey, isVisibleToday } from '../lib/dates'
 import { MODE_OFFLINE } from '../lib/constants'
 import {
-  getTasks, putTask, putTasks,
+  getTasks, putTask, putTasks, getTask,
   getNotes, putNote, putNotes,
   getJournal, putJournal, getAllJournals, getConfig, putConfig,
   getAllTasksRaw, getAllNotesRaw, getAllAudio,
@@ -114,8 +114,13 @@ const useAppStore = create((set, get) => ({
     return task
   },
   updateTask: async (id, updates) => {
-    const tasks = get().tasks
-    const task = tasks.find(t => t.id === id)
+    // Base the merge on IDB, not the store. The store can lag behind a sync
+    // poll by a tick; using a stale store snapshot here would re-pin stale
+    // fields (status, doneDate, …) on top of the user's `updates` and push
+    // them back to Drive, clobbering edits from the other device.
+    const fromDb = await getTask(id)
+    const fallback = get().tasks.find(t => t.id === id)
+    const task = fromDb || fallback
     if (!task) return
     const updated = { ...task, ...updates, updatedAt: new Date().toISOString() }
     await putTask(updated)
@@ -204,12 +209,18 @@ const useAppStore = create((set, get) => ({
   reorderTasks: (orderedIds) => {
     const tasks = get().tasks
     const now = new Date().toISOString()
+    const changed = []
     const updated = tasks.map(t => {
       const idx = orderedIds.indexOf(t.id)
-      return idx === -1 ? t : { ...t, order: idx, updatedAt: now }
+      if (idx === -1) return t
+      if (t.order === idx) return t
+      const next = { ...t, order: idx, updatedAt: now }
+      changed.push(next)
+      return next
     })
+    if (changed.length === 0) return
     set({ tasks: updated })
-    putTasks(updated).then(() => {
+    putTasks(changed).then(() => {
       if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
     }).catch(console.error)
   },
@@ -359,15 +370,17 @@ const useAppStore = create((set, get) => ({
     if (key === t && config.autoDismissCompletedNextDay && config.autoDismissCompletedLastRunDate !== t) {
       const now = new Date().toISOString()
       const currentTasks = get().tasks
+      const changed = []
       const updatedTasks = currentTasks.map(task => {
         if (task.status === 'done' && task.doneDate && task.doneDate < t) {
-          return { ...task, status: 'dismissed', dismissedDate: t, updatedAt: now }
+          const next = { ...task, status: 'dismissed', dismissedDate: t, updatedAt: now }
+          changed.push(next)
+          return next
         }
         return task
       })
-      const hasTaskChanges = updatedTasks.some((task, i) => task !== currentTasks[i])
-      if (hasTaskChanges) {
-        await putTasks(updatedTasks)
+      if (changed.length > 0) {
+        await putTasks(changed)
         set({ tasks: updatedTasks })
         get().bumpReviewVersion()
         if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
