@@ -229,11 +229,18 @@ export function compactManifest(manifest) {
  */
 export function diffManifest(manifest, localLastSeq) {
   if (!manifest || !Array.isArray(manifest.changes)) return { changes: [] }
-  const minSeq = manifest.changes.length ? (manifest.changes[0].seq || 0) : (manifest.seq || 0)
+  const headSeq = manifest.seq || 0
+  // Fresh device: never synced before, so the manifest (capped + compacted)
+  // cannot describe our full history. Force cold-start enumeration unless the
+  // remote is also at seq 0 (truly empty account, nothing to pull).
+  if (localLastSeq === 0 && headSeq > 0) {
+    return { gap: true, headSeq }
+  }
+  const minSeq = manifest.changes.length ? (manifest.changes[0].seq || 0) : headSeq
   // Ring wrapped: we missed entries older than what's still in the log.
   // Caller falls back to cold-start enumeration.
   if (localLastSeq > 0 && minSeq > localLastSeq + 1) {
-    return { gap: true, headSeq: manifest.seq || 0 }
+    return { gap: true, headSeq }
   }
   const seen = new Map()
   for (const c of manifest.changes) {
