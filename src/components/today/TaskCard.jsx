@@ -51,6 +51,54 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
     }
   }, [expanded, editExplanation, editFeedback, editTags])
 
+  // Keep the expanded card visible above the mobile keyboard / within the viewport.
+  // Firefox Android doesn't honor `interactive-widget=resizes-content`, so we scroll
+  // the focused field above visualViewport.height ourselves on focus and on viewport resize.
+  useEffect(() => {
+    if (!expanded && !editingTitle) return
+    const ensureVisible = () => {
+      const card = cardRef.current
+      if (!card) return
+      const rect = card.getBoundingClientRect()
+      const vv = window.visualViewport
+      const viewTop = vv?.offsetTop ?? 0
+      const viewBottom = viewTop + (vv?.height ?? window.innerHeight)
+      const margin = 12
+      const offBottom = rect.bottom > viewBottom - margin
+      const offTop = rect.top < viewTop + margin
+      if (!offBottom && !offTop) return
+      // Walk up to find a scrollable ancestor (TasksPanel uses overflowY:auto).
+      let scroller = card.parentElement
+      while (scroller && scroller !== document.body) {
+        const cs = getComputedStyle(scroller)
+        if (/auto|scroll/.test(cs.overflowY)) break
+        scroller = scroller.parentElement
+      }
+      const targetCenter = viewTop + (vv?.height ?? window.innerHeight) / 2
+      const cardCenter = rect.top + rect.height / 2
+      const delta = cardCenter - targetCenter
+      if (scroller && scroller !== document.body) {
+        scroller.scrollBy({ top: delta, behavior: 'smooth' })
+      } else {
+        window.scrollBy({ top: delta, behavior: 'smooth' })
+      }
+    }
+    // Multiple attempts: immediate, after focus settles, and after the keyboard animation.
+    const timers = [50, 250, 500, 800].map(ms => setTimeout(ensureVisible, ms))
+    const onFocusIn = () => {
+      timers.push(setTimeout(ensureVisible, 50))
+      timers.push(setTimeout(ensureVisible, 400))
+    }
+    const card = cardRef.current
+    card?.addEventListener('focusin', onFocusIn)
+    window.visualViewport?.addEventListener('resize', ensureVisible)
+    return () => {
+      timers.forEach(clearTimeout)
+      card?.removeEventListener('focusin', onFocusIn)
+      window.visualViewport?.removeEventListener('resize', ensureVisible)
+    }
+  }, [expanded, editingTitle])
+
   useEffect(() => {
     if (defaultExpanded) setExpanded(true)
     if (defaultEditingTitle) setEditingTitle(true)
