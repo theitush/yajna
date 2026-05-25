@@ -6,6 +6,42 @@ export function today() {
 }
 
 /**
+ * Format a Date as YYYY-MM-DD in the given IANA timezone.
+ * en-CA gives ISO-shaped output (e.g. "2026-05-25").
+ */
+function formatDateInZone(date, zone) {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: zone,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(date)
+  } catch {
+    return date.toISOString().slice(0, 10)
+  }
+}
+
+/**
+ * The "journal day" in effect right now, honoring a configured timezone and
+ * day-rollover hour. With rollover at 04:00, the hours 00:00–03:59 still
+ * belong to the previous calendar day so late-night entries don't jump ahead.
+ *
+ * cfg shape: { dayRolloverZone?: string, dayRolloverHour?: number 0–23 }
+ * Missing or invalid config falls back to literal local today().
+ */
+export function currentJournalDay(cfg) {
+  const zone = cfg?.dayRolloverZone
+  const hour = Number.isFinite(cfg?.dayRolloverHour) ? cfg.dayRolloverHour : 0
+  const now = new Date()
+  if (!zone) {
+    if (!hour) return today()
+    const shifted = new Date(now.getTime() - hour * 3600_000)
+    return formatDateInZone(shifted, Intl.DateTimeFormat().resolvedOptions().timeZone)
+  }
+  const shifted = new Date(now.getTime() - hour * 3600_000)
+  return formatDateInZone(shifted, zone)
+}
+
+/**
  * Normalizes a date input (Date or string) to a YYYY-MM-DD day key.
  * Falls back to today's date when no input is provided.
  */

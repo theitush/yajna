@@ -7,7 +7,6 @@ import { migrateDriveJournalsIfNeeded } from './services/journalMigration'
 import { getMeta, putMeta } from './services/db'
 import { requestStoragePersistence } from './services/storage'
 import { GOOGLE_CLIENT_ID, MODE_DRIVE, MODE_OFFLINE, MODE_KEY } from './lib/constants'
-import { today } from './lib/dates'
 
 import LoginScreen from './components/auth/LoginScreen'
 import Sidebar from './components/layout/Sidebar'
@@ -75,7 +74,7 @@ export default function App() {
           await putMeta(MODE_KEY, MODE_DRIVE)
           setMode(MODE_DRIVE)
           await bootOffline()
-          await loadJournal(today())
+          await loadJournal()
           setAuthenticated(true)
 
           // Finish Drive setup in background
@@ -92,7 +91,7 @@ export default function App() {
               await migrateDriveJournalsIfNeeded().catch(e => console.warn('journal migration failed (will retry next boot):', e))
               const work = priorityWorkForRoute(window.location.hash)
               const priorityTasks = [runInitialSync({ priorityBuckets: work.buckets })]
-              if (work.journal) priorityTasks.push(loadJournal(today()))
+              if (work.journal) priorityTasks.push(loadJournal())
               await Promise.all(priorityTasks)
             } catch (e) {
               console.error('Background Drive init after redirect failed:', e)
@@ -114,7 +113,7 @@ export default function App() {
         if (savedMode === MODE_OFFLINE) {
           setMode(MODE_OFFLINE)
           await bootOffline()
-          await loadJournal(today())
+          await loadJournal()
           setAuthenticated(true)
           return
         }
@@ -123,7 +122,7 @@ export default function App() {
           // Show the app immediately from local data
           setMode(MODE_DRIVE)
           await bootOffline()
-          await loadJournal(today())
+          await loadJournal()
           setAuthenticated(true)
 
           // Connect to Drive in the background — app is already usable
@@ -145,7 +144,7 @@ export default function App() {
                 await migrateDriveJournalsIfNeeded().catch(e => console.warn('journal migration failed (will retry next boot):', e)); t = lap('journal migration', t)
                 const work = priorityWorkForRoute(window.location.hash)
                 const priorityTasks = [runInitialSync({ priorityBuckets: work.buckets })]
-                if (work.journal) priorityTasks.push(loadJournal(today()))
+                if (work.journal) priorityTasks.push(loadJournal())
                 await Promise.all(priorityTasks); t = lap('priority sync', t)
                 lap('TOTAL boot gate', tBoot)
                 return
@@ -161,7 +160,7 @@ export default function App() {
                   await initDriveStructure()
                   const work = priorityWorkForRoute(window.location.hash)
                   const priorityTasks = [runInitialSync({ priorityBuckets: work.buckets })]
-                  if (work.journal) priorityTasks.push(loadJournal(today()))
+                  if (work.journal) priorityTasks.push(loadJournal())
                   await Promise.all(priorityTasks)
                   return
                 }
@@ -267,7 +266,7 @@ export default function App() {
     await requestStoragePersistence()
 
     await bootOffline()
-    await loadJournal(today())
+    await loadJournal()
     setAuthenticated(true)
   }
 

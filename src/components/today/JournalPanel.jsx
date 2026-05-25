@@ -9,7 +9,7 @@ import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { DOMSerializer } from '@tiptap/pm/model'
 import { useEffect, useCallback, useRef } from 'react'
 import useAppStore from '../../store/useAppStore'
-import { today, formatDate } from '../../lib/dates'
+import { formatDate, currentJournalDay } from '../../lib/dates'
 import EditorToolbar from '../editor/EditorToolbar'
 import { RTLExtension } from '../editor/RTLExtension'
 import { AudioNode } from '../editor/AudioNode'
@@ -53,9 +53,10 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
   const currentDay = useAppStore(s => s.currentDay)
   const updateJournalEntry = useAppStore(s => s.updateJournalEntry)
   const loadJournal = useAppStore(s => s.loadJournal)
+  const config = useAppStore(s => s.config)
   const getTags = useAppStore.getState().getAllTags
   const saveTimeout = useRef(null)
-  const targetDate = date || today()
+  const targetDate = date || currentJournalDay(config)
 
   useEffect(() => {
     loadJournal(targetDate)

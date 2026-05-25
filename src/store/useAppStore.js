@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
-import { today, dayKey, isVisibleToday } from '../lib/dates'
+import { today, dayKey, isVisibleToday, currentJournalDay } from '../lib/dates'
+import { detectBrowserTimezone } from '../lib/timezones'
 import { MODE_OFFLINE } from '../lib/constants'
 import {
   getTasks, putTask, putTasks, getTask,
@@ -350,7 +351,7 @@ const useAppStore = create((set, get) => ({
     })
   },
   loadJournal: async (date) => {
-    const key = dayKey(date)
+    const key = date ? dayKey(date) : currentJournalDay(get().config)
     let doc = await getJournal(key)
     if (!doc) {
       const now = new Date().toISOString()
@@ -363,8 +364,24 @@ const useAppStore = create((set, get) => ({
         updatedAt: new Date(0).toISOString(),
       }
     }
-    const t = today()
-    const config = get().config || {}
+    let config = get().config || {}
+
+    // First-device seeding: if no rollover preference has ever been written,
+    // adopt this device's timezone with 04:00 as the boundary. Drive sync
+    // will propagate the chosen defaults to subsequent devices.
+    if (config.dayRolloverZone == null && config.dayRolloverHour == null) {
+      const seeded = {
+        ...config,
+        dayRolloverZone: detectBrowserTimezone(),
+        dayRolloverHour: 4,
+      }
+      await putConfig(seeded)
+      set({ config: seeded })
+      if (get().mode !== MODE_OFFLINE) withRetry(pushConfig)()
+      config = seeded
+    }
+
+    const t = currentJournalDay(config)
 
     // Daily rollover maintenance (only when loading today).
     if (key === t && config.autoDismissCompletedNextDay && config.autoDismissCompletedLastRunDate !== t) {

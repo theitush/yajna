@@ -5,6 +5,9 @@ import { getStorageEstimate, getStoragePersistence, requestStoragePersistence, e
 import { getMeta, putMeta } from '../services/db'
 import { MODE_OFFLINE, MODE_DRIVE, MODE_KEY } from '../lib/constants'
 import { GROQ_MODELS, DEFAULT_GROQ_MODEL } from '../services/transcribe'
+import { detectBrowserTimezone, timezoneLabel } from '../lib/timezones'
+import { currentJournalDay } from '../lib/dates'
+import TimezonePicker from '../components/TimezonePicker'
 
 const sectionHeadStyle = {
   fontSize: '11px', fontWeight: 500, color: 'var(--text-tertiary)',
@@ -86,7 +89,10 @@ export default function SettingsPage() {
   const [groqKey, setGroqKey] = useState('')
   const [groqModel, setGroqModel] = useState(DEFAULT_GROQ_MODEL)
   const [autoDismissCompletedNextDay, setAutoDismissCompletedNextDay] = useState(false)
+  const [dayRolloverZone, setDayRolloverZone] = useState(detectBrowserTimezone())
+  const [dayRolloverHour, setDayRolloverHour] = useState(4)
   const [saved, setSaved] = useState(false)
+  const [nowTick, setNowTick] = useState(0)
   const [storageInfo, setStorageInfo] = useState(null)
   const [persistence, setPersistence] = useState(null)
   const [persistRequesting, setPersistRequesting] = useState(false)
@@ -95,7 +101,15 @@ export default function SettingsPage() {
     setGroqKey(config?.groqApiKey || '')
     setGroqModel(config?.groqModel || DEFAULT_GROQ_MODEL)
     setAutoDismissCompletedNextDay(config?.autoDismissCompletedNextDay === true)
+    if (config?.dayRolloverZone) setDayRolloverZone(config.dayRolloverZone)
+    if (Number.isFinite(config?.dayRolloverHour)) setDayRolloverHour(config.dayRolloverHour)
   }, [config])
+
+  // Tick once a minute so the "right now" preview stays fresh.
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(n => n + 1), 60_000)
+    return () => clearInterval(id)
+  }, [])
 
   useEffect(() => {
     async function loadStorage() {
@@ -110,7 +124,13 @@ export default function SettingsPage() {
   }, [])
 
   const handleSave = async () => {
-    await updateConfig({ groqApiKey: groqKey, groqModel, autoDismissCompletedNextDay })
+    await updateConfig({
+      groqApiKey: groqKey,
+      groqModel,
+      autoDismissCompletedNextDay,
+      dayRolloverZone,
+      dayRolloverHour,
+    })
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
@@ -293,6 +313,59 @@ export default function SettingsPage() {
             </div>
           </section>
         )}
+
+        {/* Day rollover */}
+        <section>
+          <h2 style={sectionHeadStyle}>Day rollover</h2>
+          <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px', lineHeight: 1.5 }}>
+            When a new journal entry is created — i.e. when the day passes.
+            Late-night writing before the rollover stays on the previous day.
+          </p>
+
+          <label style={{ display: 'block', marginBottom: '12px' }}>
+            <span style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>
+              Timezone
+            </span>
+            <TimezonePicker
+              value={dayRolloverZone}
+              onChange={setDayRolloverZone}
+              inputStyle={inputStyle}
+            />
+          </label>
+
+          <label style={{ display: 'block', marginBottom: '12px' }}>
+            <span style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>
+              New day starts at
+            </span>
+            <select
+              value={dayRolloverHour}
+              onChange={e => setDayRolloverHour(Number(e.target.value))}
+              style={{ ...inputStyle, cursor: 'pointer' }}
+            >
+              {Array.from({ length: 24 }, (_, h) => (
+                <option key={h} value={h}>
+                  {String(h).padStart(2, '0')}:00
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
+            {(() => {
+              void nowTick
+              const now = new Date()
+              let local = ''
+              try {
+                local = new Intl.DateTimeFormat('en-GB', {
+                  timeZone: dayRolloverZone,
+                  hour: '2-digit', minute: '2-digit', hour12: false,
+                }).format(now)
+              } catch { /* unsupported zone */ }
+              const journalDay = currentJournalDay({ dayRolloverZone, dayRolloverHour })
+              return `Right now in ${timezoneLabel(dayRolloverZone)}: ${local}. Journal day: ${journalDay}.`
+            })()}
+          </p>
+        </section>
 
         {/* Voice */}
         <section>
