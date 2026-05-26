@@ -332,6 +332,183 @@ export function materializeNoteRow(doc) {
   return out
 }
 
+// Journals reuse the note-block shape (id, html, deleted, updatedAt) — same
+// reconcile rules apply (id-keyed update, tombstone-in-place, append new).
+const JOURNAL_BLOCK_FIELDS = NOTE_BLOCK_FIELDS
+// Top-level journal fields kept distinct from blocks/blockComments so the
+// generic copy loop doesn't try to overwrite the structured children.
+const JOURNAL_NON_FIELDS = new Set(['_doc', 'blocks', 'blockComments'])
+// Per-comment fields. Comments are append-mostly (one entry per blockId in
+// practice today, but the schema allows a list). LWW per field via Automerge.
+const COMMENT_FIELDS = new Set(['id', 'text', 'createdAt', 'updatedAt'])
+
+function shapeJournalFields(source) {
+  const out = {}
+  for (const [k, v] of Object.entries(source || {})) {
+    if (JOURNAL_NON_FIELDS.has(k)) continue
+    out[k] = cloneForAutomerge(v)
+  }
+  if (source?.date && !out.date) out.date = source.date
+  if (!out.createdAt) out.createdAt = new Date().toISOString()
+  if (!out.updatedAt) out.updatedAt = out.createdAt
+  out.blocks = Array.isArray(source?.blocks) ? source.blocks.map(cloneBlock) : []
+  // blockComments: { [blockId]: [{ id, text, createdAt, updatedAt }, ...] }
+  const bc = {}
+  const srcBc = source?.blockComments || {}
+  for (const [bid, list] of Object.entries(srcBc)) {
+    if (!Array.isArray(list)) continue
+    bc[bid] = list.map(cloneComment)
+  }
+  out.blockComments = bc
+  return out
+}
+
+function cloneComment(c) {
+  return {
+    id: c?.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `c_${Math.random().toString(36).slice(2)}`),
+    text: c?.text || '',
+    createdAt: c?.createdAt || new Date().toISOString(),
+    updatedAt: c?.updatedAt || c?.createdAt || new Date().toISOString(),
+  }
+}
+
+/**
+ * Apply a journal day row into its Automerge doc. Blocks are reconciled the
+ * same way as notes (id-keyed update / tombstone / append; reorder only when
+ * source order disagrees with doc order of the live subset). blockComments is
+ * reconciled per blockId: matching comment ids → field-level update; new ids
+ * → appended; ids in doc but not in source are LEFT ALONE (we don't tombstone
+ * comments — users effectively never delete them, and dropping them would let
+ * stale source overwrite a comment another device just added).
+ */
+export async function applyJournalFields(doc, source) {
+  const Automerge = await getAutomerge()
+  const fields = shapeJournalFields(source)
+  return Automerge.change(doc, (d) => {
+    // Top-level fields (everything except blocks + blockComments).
+    for (const k of Object.keys(d)) {
+      if (k === 'blocks' || k === 'blockComments') continue
+      if (!(k in fields)) delete d[k]
+    }
+    for (const [k, v] of Object.entries(fields)) {
+      if (k === 'blocks' || k === 'blockComments') continue
+      if (!shallowEqual(d[k], v)) d[k] = v
+    }
+
+    // Blocks: same shape as applyNoteFields.
+    if (!Array.isArray(d.blocks)) d.blocks = []
+    const srcBlocks = fields.blocks
+    const srcById = new Map(srcBlocks.map((b) => [b.id, b]))
+    const docIds = new Set()
+
+    for (let i = 0; i < d.blocks.length; i++) {
+      const cur = d.blocks[i]
+      if (!cur || !cur.id) continue
+      docIds.add(cur.id)
+      const src = srcById.get(cur.id)
+      if (!src) {
+        if (!cur.deleted) {
+          cur.deleted = true
+          cur.updatedAt = src?.updatedAt || new Date().toISOString()
+        }
+        continue
+      }
+      for (const k of JOURNAL_BLOCK_FIELDS) {
+        if (!shallowEqual(cur[k], src[k])) cur[k] = src[k]
+      }
+    }
+    for (const src of srcBlocks) {
+      if (docIds.has(src.id)) continue
+      const fresh = {}
+      for (const k of JOURNAL_BLOCK_FIELDS) fresh[k] = src[k]
+      d.blocks.push(fresh)
+    }
+    const liveSrcOrder = srcBlocks.filter((b) => !b.deleted).map((b) => b.id)
+    const liveDocPositions = []
+    for (let i = 0; i < d.blocks.length; i++) {
+      if (!d.blocks[i].deleted) liveDocPositions.push(i)
+    }
+    let orderMatches = liveSrcOrder.length === liveDocPositions.length
+    if (orderMatches) {
+      for (let i = 0; i < liveSrcOrder.length; i++) {
+        if (d.blocks[liveDocPositions[i]].id !== liveSrcOrder[i]) { orderMatches = false; break }
+      }
+    }
+    if (!orderMatches) {
+      for (let i = liveDocPositions.length - 1; i >= 0; i--) {
+        d.blocks.deleteAt(liveDocPositions[i])
+      }
+      for (let i = 0; i < liveSrcOrder.length; i++) {
+        d.blocks.insertAt(i, pickBlockFields(srcById.get(liveSrcOrder[i]) || {}))
+      }
+    }
+
+    // blockComments: per-blockId reconcile. The source is authoritative for
+    // any blockId it mentions — for that blockId we update matching comment
+    // ids and append new ones, but never drop ids the source doesn't list
+    // (a stale source must not erase a comment another device just made).
+    // Blocks in the doc map but not in the source map are left untouched.
+    if (!d.blockComments || typeof d.blockComments !== 'object') d.blockComments = {}
+    const srcBc = fields.blockComments
+    for (const [bid, srcList] of Object.entries(srcBc)) {
+      if (!Array.isArray(d.blockComments[bid])) d.blockComments[bid] = []
+      const docList = d.blockComments[bid]
+      const docIdSet = new Set()
+      for (let i = 0; i < docList.length; i++) {
+        const cur = docList[i]
+        if (cur?.id) docIdSet.add(cur.id)
+      }
+      const srcById2 = new Map(srcList.map((c) => [c.id, c]))
+      for (let i = 0; i < docList.length; i++) {
+        const cur = docList[i]
+        if (!cur?.id) continue
+        const src = srcById2.get(cur.id)
+        if (!src) continue
+        for (const k of COMMENT_FIELDS) {
+          if (!shallowEqual(cur[k], src[k])) cur[k] = src[k]
+        }
+      }
+      for (const src of srcList) {
+        if (docIdSet.has(src.id)) continue
+        const fresh = {}
+        for (const k of COMMENT_FIELDS) fresh[k] = src[k]
+        docList.push(fresh)
+      }
+    }
+  })
+}
+
+/**
+ * Materialize a plain journal row from an Automerge journal doc.
+ */
+export function materializeJournalRow(doc) {
+  if (!doc) return null
+  const out = {}
+  for (const [k, v] of Object.entries(doc)) {
+    if (k === 'blocks' || k === 'blockComments') continue
+    out[k] = plainCopy(v)
+  }
+  out.blocks = Array.isArray(doc.blocks)
+    ? doc.blocks.map((b) => {
+        const o = {}
+        for (const k of JOURNAL_BLOCK_FIELDS) o[k] = plainCopy(b[k])
+        return o
+      })
+    : []
+  const bc = {}
+  const srcBc = doc.blockComments || {}
+  for (const [bid, list] of Object.entries(srcBc)) {
+    if (!Array.isArray(list)) continue
+    bc[bid] = list.map((c) => {
+      const o = {}
+      for (const k of COMMENT_FIELDS) o[k] = plainCopy(c[k])
+      return o
+    })
+  }
+  out.blockComments = bc
+  return out
+}
+
 /**
  * Materialize a plain row from a task doc. Strips Automerge proxies so the
  * UI/IDB get plain JSON-serializable objects.

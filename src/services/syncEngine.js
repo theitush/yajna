@@ -13,13 +13,16 @@ import {
   listFolder, readEntityFilesBatched,
 } from './drive'
 import {
-  putConfig, putJournal,
-  getAllAudio, putAudio, getJournal,
+  putConfig,
+  getAllAudio, putAudio,
 } from './db'
 import { getStoredToken, trySilentRefresh, storeToken, setAccessToken, isAuthError, withAuthRetry } from './auth'
-import { mergeDayDoc, resolveTaskDocs, mergeTaskDocs, resolveNoteDocs, mergeNoteDocs } from './sync'
+import {
+  resolveTaskDocs, mergeTaskDocs,
+  resolveNoteDocs, mergeNoteDocs,
+  resolveJournalDocs, mergeJournalDocs,
+} from './sync'
 import { readManifest, diffManifest, getLocalLastSeq, setLocalLastSeq } from './manifest'
-import { dayKey } from '../lib/dates'
 
 const DEFAULT_POLL_INTERVAL = 1000  // 1 second default
 const RETRY_BASE_MS = 2000         // retry backoff starts at 2s
@@ -47,8 +50,6 @@ let pushesInFlight = 0
 // When true, the next pollRemote skips the modifiedTime hash check and
 // fetches directly.
 let forceNextPoll = true
-// date (YYYY-MM-DD) → Drive fileId for the currently-loaded day's journal.
-const journalFileIdCache = new Map()
 
 export function notifyLocalWrite() {
   writeGeneration++
@@ -218,15 +219,11 @@ async function pollRemote(storeSetter) {
     }
 
     let hash = null
-    let journalFileId = null
     const forced = forceNextPoll
     if (forced) {
       forceNextPoll = false
-      journalFileId = await getJournalFileIdForCurrentDay(ids)
     } else {
-      const res = await getRemoteHash(ids)
-      hash = res.hash
-      journalFileId = res.journalFileId
+      hash = await getRemoteHash(ids)
       if (hash === lastRemoteHash) return
     }
 
@@ -235,7 +232,7 @@ async function pollRemote(storeSetter) {
     // 1. Manifest diff — what entity ids changed since we last polled?
     const head = await readManifest(ids.rootId)
     const localLastSeq = await getLocalLastSeq()
-    let changedByType = { task: new Map(), note: new Map(), audio: new Map() }
+    let changedByType = { task: new Map(), note: new Map(), audio: new Map(), journal: new Map() }
     let coldStart = false
     let headSeq = 0
     if (!head) {
@@ -260,11 +257,12 @@ async function pollRemote(storeSetter) {
     const remoteConfig = await readJsonFile(ids.configFileId).catch(() => ({}))
 
     // 3. Fetch the per-entity files that changed (or all, on cold start).
-    //    Tasks + notes: Phase C — Automerge .bin via resolve*Docs helpers.
+    //    Tasks + notes + journals: Phase C — Automerge .bin via resolve*Docs.
     //    Audio: Phase B per-id .json (own cutover session lands later).
     let taskDocs = []
     let noteDocs = []
     let audioDocs = []
+    let journalDocs = []
     {
       const fetchChangedJson = async (folderId, bucket) => {
         const ids2 = Array.from(bucket.keys())
@@ -284,14 +282,16 @@ async function pollRemote(storeSetter) {
             return readEntityFilesBatched(ids.audioMetaFolderId, entries)
           })()
         : fetchChangedJson(ids.audioMetaFolderId, changedByType.audio)
-      const [n, a, t] = await Promise.all([
+      const [n, a, t, j] = await Promise.all([
         resolveNoteDocs(ids.notesFolderId, coldStart, changedByType.note),
         audioPromise,
         resolveTaskDocs(ids.tasksFolderId, coldStart, changedByType.task),
+        resolveJournalDocs(ids.journalsFolderId, coldStart, changedByType.journal),
       ])
       noteDocs = n
       audioDocs = a
       taskDocs = t
+      journalDocs = j
     }
 
     // A local write raced with our pull — discard, the user's edit is fresher.
@@ -300,11 +300,12 @@ async function pollRemote(storeSetter) {
       return
     }
 
-    // 4. Merge tasks + notes via Automerge. Both helpers persist merged rows
-    // + bytes back to IDB internally (via put*WithDoc), so we just need the
-    // resulting lists for the store update below.
+    // 4. Merge tasks + notes + journals via Automerge. Helpers persist merged
+    // rows + bytes back to IDB internally (via put*WithDoc), so we just need
+    // the resulting lists for the store update below.
     const mergedTasks = await mergeTaskDocs(taskDocs, changedByType.task)
     const mergedNotes = await mergeNoteDocs(noteDocs, changedByType.note)
+    const mergedJournals = await mergeJournalDocs(journalDocs, changedByType.journal)
 
     // 5. Persist config (tasks + notes already persisted).
     await putConfig(remoteConfig || {})
@@ -403,16 +404,15 @@ async function pollRemote(storeSetter) {
       } catch { /* ignore */ }
     }
 
-    // 8. Pull the currently-loaded day's journal — block-level merge.
+    // 8. If the currently-loaded day's journal was among the manifest changes
+    //    (or this was a cold start), push the freshly merged row into the
+    //    store so the open day re-renders. mergeJournalDocs has already
+    //    persisted to IDB; we just need to refresh `currentDay`.
     let updatedDay = undefined
-    if (journalFileId) {
-      const remoteDoc = await readJsonFile(journalFileId)
-      if (remoteDoc?.date) {
-        const localDoc = await getJournal(remoteDoc.date)
-        const mergedDoc = localDoc ? mergeDayDoc(localDoc, remoteDoc) : remoteDoc
-        await putJournal(mergedDoc)
-        updatedDay = mergedDoc
-      }
+    const currentDate = _storeGetter ? _storeGetter()?.currentDay?.date : null
+    if (currentDate) {
+      const hit = mergedJournals.find(d => d?.date === currentDate)
+      if (hit) updatedDay = hit
     }
 
     if (writeGeneration !== startGen || pushesInFlight > 0) {
@@ -443,7 +443,7 @@ async function pollRemote(storeSetter) {
 
     if (forced) {
       try {
-        lastRemoteHash = (await getRemoteHash(ids)).hash
+        lastRemoteHash = await getRemoteHash(ids)
       } catch {
         // best-effort
       }
@@ -466,39 +466,20 @@ async function pollRemote(storeSetter) {
   }
 }
 
-async function getJournalFileIdForCurrentDay(ids) {
-  if (!ids?.journalsFolderId || !_storeGetter) return null
-  const date = _storeGetter()?.currentDay?.date
-  if (!date) return null
-  const key = dayKey(date)
-  if (journalFileIdCache.has(key)) return journalFileIdCache.get(key)
-  try {
-    const fid = await findFile(ids.journalsFolderId, `${key}.json`)
-    if (fid) journalFileIdCache.set(key, fid)
-    return fid
-  } catch (e) {
-    if (isAuthError(e)) throw e
-    return null
-  }
-}
-
 /**
- * Cheap "did anything change?" probe: modifiedTime of manifest.json,
- * config.json, and today's journal file. Manifest covers tasks/notes/audio.
+ * Cheap "did anything change?" probe: modifiedTime of manifest.json + config.json.
+ * Manifest covers tasks/notes/audio/journals — every entity push appends a
+ * manifest entry, so the manifest's modifiedTime catches all of them.
  */
 async function getRemoteHash(ids) {
   const token = window.gapi?.client?.getToken()?.access_token
-  if (!token) return { hash: null, journalFileId: null }
+  if (!token) return null
 
   const manifestFileId = await findFile(ids.rootId, 'manifest.json').catch(() => null)
   const fileIds = []
   if (manifestFileId) fileIds.push(manifestFileId)
   if (ids.configFileId) fileIds.push(ids.configFileId)
-
-  const journalFileId = await getJournalFileIdForCurrentDay(ids)
-  if (journalFileId) fileIds.push(journalFileId)
-
-  if (!fileIds.length) return { hash: null, journalFileId }
+  if (!fileIds.length) return null
 
   const times = await Promise.all(
     fileIds.map(async (fid) => {
@@ -514,7 +495,7 @@ async function getRemoteHash(ids) {
       }
     })
   )
-  return { hash: times.join('|'), journalFileId }
+  return times.join('|')
 }
 
 function scheduleRetry(pushFn) {
@@ -587,8 +568,8 @@ async function executePush(pushFn) {
     setStatus({ state: 'synced' })
     try {
       const ids = await getDriveFileIds()
-      if (ids) lastRemoteHash = (await getRemoteHash(ids)).hash
-    } catch {}
+      if (ids) lastRemoteHash = await getRemoteHash(ids)
+    } catch { /* best-effort hash refresh */ }
   } catch (e) {
     console.warn('Push failed:', e.message || e)
     if (isAuthError(e)) {

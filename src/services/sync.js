@@ -9,93 +9,27 @@ import {
   getDirty, clearDirty, putAudio, getAllAudio,
   getTaskDocBytes, putTaskWithDoc,
   getNoteDocBytes, putNoteWithDoc,
+  getJournalDocBytes, putJournalWithDoc, getAllJournals,
 } from './db'
 import {
   getDriveFileIds, readJsonFile, writeJsonFile,
-  findFile, writeJsonFile as driveWrite,
-  getFileRevisions, getStoredRevisions, setStoredRevisions,
   readEntityFilesBatched, listFolder,
-  writeEntityBinFile, readEntityBinFile, readEntityBinFilesBatched,
+  writeEntityBinFile, readEntityBinFilesBatched,
 } from './drive'
 import { appendChanges, getDeviceId, readManifest, diffManifest, getLocalLastSeq, setLocalLastSeq } from './manifest'
 import { migrateDriveEntitiesIfNeeded } from './entitiesMigration'
 import { migrateTasksToAutomergeIfNeeded } from './tasksAutomergeMigration'
 import { migrateNotesToAutomergeIfNeeded } from './notesAutomergeMigration'
+import { migrateJournalsToAutomergeIfNeeded } from './journalsAutomergeMigration'
 import {
   createDoc, loadDoc, saveDoc, mergeDoc,
   applyTaskFields, materializeTaskRow,
   applyNoteFields, materializeNoteRow,
+  applyJournalFields, materializeJournalRow,
 } from './automergeDoc'
-import { mergeBlocks, htmlToBlocks, purgeOldBlockTombstones } from '../lib/blocks'
 import { dayKey } from '../lib/dates'
 
-const BLOCK_TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000
-
 const LAST_SYNC_KEY = 'last_sync'
-
-/**
- * Merge two per-day journal docs. Blocks merge at the block level;
- * reviewedAt: newer wins. blockComments merge per blockId by updatedAt.
- */
-export function mergeDayDoc(localDoc, remoteDoc) {
-  if (!localDoc) return remoteDoc
-  if (!remoteDoc) return localDoc
-  const localBlocks = Array.isArray(localDoc.blocks) && localDoc.blocks.length
-    ? localDoc.blocks
-    : htmlToBlocks(localDoc.content || '')
-  const remoteBlocks = Array.isArray(remoteDoc.blocks) && remoteDoc.blocks.length
-    ? remoteDoc.blocks
-    : htmlToBlocks(remoteDoc.content || '')
-  const cutoff = new Date(Date.now() - BLOCK_TOMBSTONE_TTL_MS).toISOString()
-  const blocks = purgeOldBlockTombstones(mergeBlocks(localBlocks, remoteBlocks), cutoff)
-
-  const localUpd = toMs(localDoc.updatedAt)
-  const remoteUpd = toMs(remoteDoc.updatedAt)
-  const updatedAt = localUpd >= remoteUpd
-    ? (localDoc.updatedAt || remoteDoc.updatedAt)
-    : (remoteDoc.updatedAt || localDoc.updatedAt)
-
-  // reviewedAt: newer wins
-  const localRev = toMs(localDoc.reviewedAt)
-  const remoteRev = toMs(remoteDoc.reviewedAt)
-  let reviewedAt = null
-  if (localRev || remoteRev) {
-    reviewedAt = localRev >= remoteRev ? localDoc.reviewedAt : remoteDoc.reviewedAt
-  }
-
-  // blockComments: union of blockIds; per blockId, newer comment by updatedAt wins.
-  const blockComments = { ...(remoteDoc.blockComments || {}) }
-  for (const [bid, localList] of Object.entries(localDoc.blockComments || {})) {
-    const remoteList = blockComments[bid]
-    if (!remoteList) { blockComments[bid] = localList; continue }
-    const local0 = Array.isArray(localList) ? localList[0] : null
-    const remote0 = Array.isArray(remoteList) ? remoteList[0] : null
-    if (!local0) continue
-    if (!remote0) { blockComments[bid] = localList; continue }
-    const lt = toMs(local0.updatedAt || local0.createdAt)
-    const rt = toMs(remote0.updatedAt || remote0.createdAt)
-    blockComments[bid] = lt >= rt ? localList : remoteList
-  }
-
-  const createdAt = localDoc.createdAt && remoteDoc.createdAt
-    ? (localDoc.createdAt <= remoteDoc.createdAt ? localDoc.createdAt : remoteDoc.createdAt)
-    : (localDoc.createdAt || remoteDoc.createdAt)
-
-  return {
-    date: localDoc.date || remoteDoc.date,
-    blocks,
-    reviewedAt: reviewedAt || null,
-    blockComments,
-    createdAt: createdAt || updatedAt,
-    updatedAt,
-  }
-}
-
-function toMs(iso) {
-  if (!iso) return 0
-  const t = new Date(iso).getTime()
-  return isFinite(t) ? t : 0
-}
 
 /**
  * Phase B staged merge. Runs `migrateDriveEntitiesIfNeeded` (idempotent), then
@@ -137,7 +71,7 @@ export async function mergeWithDrive() {
 async function inspectManifest(rootId) {
   const head = await readManifest(rootId)
   const localLastSeq = await getLocalLastSeq()
-  const changedByType = { task: new Map(), note: new Map(), audio: new Map() }
+  const changedByType = { task: new Map(), note: new Map(), audio: new Map(), journal: new Map() }
   if (!head) return { coldStart: true, headSeq: 0, changedByType, localLastSeq }
   const headSeq = head.manifest.seq || 0
   const diff = diffManifest(head.manifest, localLastSeq)
@@ -331,6 +265,87 @@ export async function mergeNoteDocs(noteDocs, changedMap) {
   return Array.from(localById.values())
 }
 
+/**
+ * Phase C journal pull. On cold start we enumerate the whole journals/ folder
+ * (every day this user has ever recorded) so the local IDB matches Drive.
+ * Steady state pulls only the dates the manifest says changed.
+ *
+ * Journal id is the date string (YYYY-MM-DD).
+ */
+export async function resolveJournalDocs(folderId, coldStart, changedMap) {
+  let entries = []
+  if (coldStart) {
+    const files = await listFolder(folderId)
+    entries = files
+      .map(f => {
+        const m = /^(.+)\.bin$/.exec(f.name || '')
+        if (!m || m[1].startsWith('_')) return null
+        return { id: m[1], fileId: f.id }
+      })
+      .filter(Boolean)
+  } else {
+    entries = Array.from(changedMap.keys()).map(id => ({ id, fileId: undefined }))
+  }
+
+  if (!entries.length) return []
+  return readEntityBinFilesBatched(folderId, entries)
+}
+
+/**
+ * Merge journal `.bin` docs into IDB. Same shape as mergeTaskDocs/mergeNoteDocs.
+ * Returns the merged rows (currently unused by callers, but kept for symmetry).
+ */
+export async function mergeJournalDocs(journalDocs, changedMap) {
+  const local = await getAllJournals()
+  const localByDate = new Map(local.map(d => [d.date, d]))
+  const writeRows = []
+  const writeDocBytes = new Map()
+  for (const { id, bytes } of journalDocs) {
+    const l = localByDate.get(id)
+    const change = changedMap?.get?.(id)
+    if (!bytes) {
+      // A journal "delete" isn't really a user-facing concept today, but if a
+      // manifest entry says delete and the .bin is gone, treat it as a soft
+      // delete so the local row reflects reality. Currently no UI surfaces it.
+      if (change?.op === 'delete' && l) {
+        writeRows.push({ ...l, deleted: true, deletedAt: change.at, updatedAt: change.at })
+        localByDate.delete(id)
+      }
+      continue
+    }
+
+    const remoteDoc = await loadDoc(bytes)
+    const localBytes = await getJournalDocBytes(id)
+    let mergedDoc
+    if (localBytes) {
+      const localDoc = await loadDoc(localBytes)
+      mergedDoc = await mergeDoc(localDoc, remoteDoc)
+    } else if (l) {
+      const seedDoc = await createDoc('journal', l)
+      mergedDoc = await mergeDoc(seedDoc, remoteDoc)
+    } else {
+      mergedDoc = remoteDoc
+    }
+
+    const mergedBytes = await saveDoc(mergedDoc)
+    const mergedRow = materializeJournalRow(mergedDoc)
+    if (!mergedRow.date) mergedRow.date = id
+    writeRows.push(mergedRow)
+    writeDocBytes.set(id, mergedBytes)
+    localByDate.set(id, mergedRow)
+  }
+
+  for (const row of writeRows) {
+    const bytes = writeDocBytes.get(row.date)
+    if (bytes) {
+      await putJournalWithDoc(row, bytes, { fromSync: true })
+    } else {
+      await putJournal(row, { fromSync: true })
+    }
+  }
+  return Array.from(localByDate.values())
+}
+
 async function mergeAudioDocs(audioDocs, changedMap) {
   // We don't return a list to the store — the audio UI hydrates from IDB on
   // demand. Apply writes here so transcripts/tombstones land before Stage 2
@@ -438,6 +453,18 @@ async function mergeWithDriveImpl(resolvers, onProgress = null) {
     console.warn('[sync] automerge notes migration failed:', e.message || e)
   }
 
+  // Phase C journals migration: journals/<date>.json → <date>.bin (Automerge).
+  // Same shape as tasks/notes — idempotent, flag-gated, hard cutover. Falls in
+  // line with the cold-start full-folder pull below so a fresh device picks up
+  // every day's journal, not just the day the user happens to open.
+  try {
+    const tMig = performance.now()
+    await migrateJournalsToAutomergeIfNeeded()
+    mark('automerge journals migration', tMig)
+  } catch (e) {
+    console.warn('[sync] automerge journals migration failed:', e.message || e)
+  }
+
   // Re-fetch ids after migration in case it rewrote drive_files (legacy ids
   // cleared post-migration).
   const idsAfterMig = await getDriveFileIds()
@@ -445,6 +472,7 @@ async function mergeWithDriveImpl(resolvers, onProgress = null) {
   const tasksFolderId = idsAfterMig.tasksFolderId
   const notesFolderId = idsAfterMig.notesFolderId
   const audioMetaFolderId = idsAfterMig.audioMetaFolderId
+  const journalsFolderId = idsAfterMig.journalsFolderId
 
   // Inspect manifest once; reuse across stages.
   const tManifest = performance.now()
@@ -510,7 +538,28 @@ async function mergeWithDriveImpl(resolvers, onProgress = null) {
     resolvers.notes(null); throw err
   })
 
-  const [mergedConfig] = await Promise.all([stage1, stage2, stage3])
+  // -- Stage 4: journals --
+  // Pulls every journal day on cold start (the missing-old-journals fix) and
+  // only the changed dates from the manifest in steady state. Runs in parallel
+  // with stage 3; doesn't block any UI-visible bucket (Today's day is already
+  // loaded on demand by App.jsx → loadJournal). Once this stage finishes the
+  // Sidebar day picker, Search, and tag pool see all historical days.
+  const stage4 = (async () => {
+    await stage2.catch(() => {})
+    const tStage = performance.now()
+    const journalProgress = onProgress
+      ? (cur, total) => onProgress({ phase: 'cold-start-progress', label: 'journals', current: cur, total })
+      : null
+    const journalDocs = await resolveJournalDocs(journalsFolderId, inspection.coldStart, inspection.changedByType.journal)
+    if (journalProgress && inspection.coldStart) journalProgress(journalDocs.length, journalDocs.length)
+    await mergeJournalDocs(journalDocs, inspection.changedByType.journal)
+    mark(`stage4 journals (cold=${inspection.coldStart}, ${journalDocs.length}j)`, tStage)
+    return journalDocs.length
+  })().catch(err => {
+    console.warn('[sync] stage4 journals failed:', err?.message || err)
+  })
+
+  const [mergedConfig] = await Promise.all([stage1, stage2, stage3, stage4])
   if (inspection.coldStart && onProgress) {
     onProgress({ phase: 'cold-start-done' })
   }
@@ -688,38 +737,51 @@ export async function pushConfig() {
 }
 
 /**
- * Push a per-day journal doc to Drive. Merges with remote first so concurrent
- * edits from other devices aren't lost.
+ * Push a per-day journal doc to Drive (Phase C — Automerge). Mirrors
+ * pushTasks/pushNotes: load-or-create the local Automerge doc, apply the row's
+ * fields into it, blind-upload `journals/<date>.bin`, append a manifest entry.
+ * No pre-merge read — Automerge's merge picks up other devices' concurrent
+ * edits on the next pull.
  */
 export async function pushJournal(dayDoc) {
   const ids = await getDriveFileIds()
-  if (!ids || !dayDoc?.date) return null
+  if (!ids?.journalsFolderId || !dayDoc?.date) return null
   const date = dayKey(dayDoc.date)
-  const filename = `${date}.json`
-  const existingId = await findFile(ids.journalsFolderId, filename)
-  let merged = dayDoc
-  if (existingId) {
-    const remote = await readJsonFile(existingId)
-    if (remote) merged = mergeDayDoc(dayDoc, remote)
-  }
-  await putJournal(merged)
-  await driveWrite(ids.journalsFolderId, filename, merged, existingId)
+  const source = { ...dayDoc, date }
+
+  const existingBytes = await getJournalDocBytes(date)
+  let doc = existingBytes ? await loadDoc(existingBytes) : await createDoc('journal', source)
+  doc = await applyJournalFields(doc, source)
+  const bytes = await saveDoc(doc)
+  const merged = materializeJournalRow(doc)
+  if (!merged.date) merged.date = date
+
+  // Persist locally before upload so a mid-push crash can't leave the remote
+  // ahead of the local doc.
+  await putJournalWithDoc(merged, bytes, { fromSync: true })
+
+  await writeEntityBinFile(ids.journalsFolderId, date, bytes)
+
+  const deviceId = await getDeviceId()
+  await appendChanges(ids.rootId, [{
+    type: 'journal',
+    id: date,
+    op: 'upsert',
+    at: new Date().toISOString(),
+    deviceId,
+  }]).catch(() => {})
+
+  // Resolved successfully — drop from the per-day dirty set (the markDirty
+  // call inside putJournal on the user-edit path adds an entry here).
+  await clearDirty('journal', [date]).catch(() => {})
   return merged
 }
 
 /**
- * Pull a single day's journal from Drive into IndexedDB.
+ * Back-compat: callers used to distinguish "merge then push" from "push". With
+ * Automerge that distinction collapses — pushJournal *is* the merge-and-push.
  */
-export async function pullJournal(date) {
-  const ids = await getDriveFileIds()
-  if (!ids) return null
-  const filename = `${dayKey(date)}.json`
-  const fileId = await findFile(ids.journalsFolderId, filename)
-  if (!fileId) return null
-  const doc = await readJsonFile(fileId)
-  if (doc) await putJournal(doc)
-  return doc
-}
+export const mergeAndPushJournal = pushJournal
 
 /**
  * Initial sync on connect: merge local data with Drive, then push merged result.
@@ -733,78 +795,4 @@ export async function initialSync() {
  */
 export function initialSyncStreaming() {
   return mergeWithDriveStreaming()
-}
-
-/**
- * Merge a single day's journal doc with Drive and push merged result.
- * Uses headRevisionId to skip the read when remote is unchanged since last
- * seen, and skips the upload when the merged doc equals what's on Drive.
- */
-export async function mergeAndPushJournal(dayDoc) {
-  const t0 = performance.now()
-  const mark = (label, from) => console.log(`[journal-sync] ${label}: ${(performance.now() - from).toFixed(0)}ms`)
-
-  const ids = await getDriveFileIds()
-  if (!ids || !dayDoc?.date) return dayDoc
-  const date = dayKey(dayDoc.date)
-  const filename = `${date}.json`
-
-  const tFind = performance.now()
-  const existingId = await findFile(ids.journalsFolderId, filename)
-  mark('findFile', tFind)
-
-  if (!existingId) {
-    await driveWrite(ids.journalsFolderId, filename, dayDoc, null)
-    mark('TOTAL (new file)', t0)
-    return dayDoc
-  }
-
-  const tRev = performance.now()
-  const [revs, storedRevs] = await Promise.all([
-    getFileRevisions([existingId]),
-    getStoredRevisions(),
-  ])
-  mark('rev check', tRev)
-  const currentRev = revs[existingId]
-  const lastSeen = storedRevs[existingId]
-  const remoteUnchanged = currentRev && lastSeen === currentRev
-
-  let merged = dayDoc
-  let remote = null
-  if (!remoteUnchanged) {
-    const tRead = performance.now()
-    remote = await readJsonFile(existingId)
-    mark('readJsonFile', tRead)
-    if (remote) merged = mergeDayDoc(dayDoc, remote)
-  }
-
-  const needsWrite = remote
-    ? !dayDocsEqual(merged, remote)
-    : !remoteUnchanged
-
-  if (needsWrite) {
-    const tWrite = performance.now()
-    await driveWrite(ids.journalsFolderId, filename, merged, existingId)
-    mark('driveWrite', tWrite)
-    const fresh = await getFileRevisions([existingId])
-    setStoredRevisions({ ...storedRevs, ...fresh }).catch(() => {})
-  } else if (currentRev && lastSeen !== currentRev) {
-    setStoredRevisions({ ...storedRevs, [existingId]: currentRev }).catch(() => {})
-  }
-
-  await putJournal(merged)
-  mark('TOTAL mergeAndPushJournal', t0)
-  return merged
-}
-
-/**
- * Cheap equality for per-day journal docs.
- */
-function dayDocsEqual(a, b) {
-  if (a === b) return true
-  if (!a || !b) return false
-  if (a.date !== b.date) return false
-  if ((a.updatedAt || '') !== (b.updatedAt || '')) return false
-  if ((a.reviewedAt || '') !== (b.reviewedAt || '')) return false
-  return true
 }

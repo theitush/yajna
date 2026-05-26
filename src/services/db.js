@@ -299,19 +299,52 @@ export async function purgeTombstones(cutoffIso) {
 
 // Journals: per-day docs keyed by 'date' (YYYY-MM-DD).
 // Shape: { date, blocks, reviewedAt, blockComments, createdAt, updatedAt }
+// Phase C: rows also carry `_doc: Uint8Array` (Automerge bytes) inline. Reads
+// strip it so UI/store don't see it.
 export async function getJournal(date) {
   const db = await getDB()
-  return db.get(STORE_JOURNALS, date)
+  return stripDoc(await db.get(STORE_JOURNALS, date))
 }
 
-export async function putJournal(dayDoc) {
+export async function putJournal(dayDoc, opts) {
+  if (!dayDoc?.date) return
   const db = await getDB()
-  return db.put(STORE_JOURNALS, dayDoc)
+  // Preserve any `_doc` bytes already on the row — UI write paths read journals
+  // via stripDoc and pass back rows without `_doc`. Mirrors putTask/putNote.
+  let next = dayDoc
+  if (!(dayDoc._doc instanceof Uint8Array)) {
+    const existing = await db.get(STORE_JOURNALS, dayDoc.date)
+    if (existing?._doc instanceof Uint8Array) next = { ...dayDoc, _doc: existing._doc }
+  }
+  await db.put(STORE_JOURNALS, next)
+  if (!opts?.fromSync) await markDirty('journal', dayDoc.date)
 }
 
 export async function getAllJournals() {
   const db = await getDB()
-  return db.getAll(STORE_JOURNALS)
+  const all = await db.getAll(STORE_JOURNALS)
+  return all.map(stripDoc)
+}
+
+export async function getJournalDocBytes(date) {
+  const db = await getDB()
+  const row = await db.get(STORE_JOURNALS, date)
+  return row?._doc instanceof Uint8Array ? row._doc : null
+}
+
+export async function putJournalDocBytes(date, bytes) {
+  if (!date || !(bytes instanceof Uint8Array)) return
+  const db = await getDB()
+  const existing = await db.get(STORE_JOURNALS, date)
+  await db.put(STORE_JOURNALS, { ...(existing || { date }), _doc: bytes })
+}
+
+export async function putJournalWithDoc(dayDoc, bytes, opts) {
+  if (!dayDoc?.date) return
+  const db = await getDB()
+  const next = bytes instanceof Uint8Array ? { ...dayDoc, _doc: bytes } : dayDoc
+  await db.put(STORE_JOURNALS, next)
+  if (!opts?.fromSync) await markDirty('journal', dayDoc.date)
 }
 
 // Config
