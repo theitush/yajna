@@ -409,17 +409,31 @@ const useAppStore = create((set, get) => ({
       if (get().mode !== MODE_OFFLINE) withRetry(pushConfig)()
     }
 
-    if (get().mode !== MODE_OFFLINE) {
-      const merged = await mergeAndPushJournal(doc).catch(() => null)
-      if (merged) doc = merged
-    }
-
-    await putJournal(doc)
+    // Show the locally-stored doc immediately so the editor doesn't flash empty
+    // while we wait on a network round-trip. The merge below will update
+    // currentDay again if Drive had newer content.
     set({ currentDay: doc })
     if (doc.reviewedAt) {
       const nextReviews = { ...get().reviews, [doc.date]: doc.reviewedAt }
       set({ reviews: nextReviews })
     }
+
+    if (get().mode !== MODE_OFFLINE) {
+      const merged = await mergeAndPushJournal(doc).catch(() => null)
+      if (merged) {
+        doc = merged
+        await putJournal(doc)
+        // Only overwrite currentDay if the user hasn't navigated away meanwhile.
+        if (get().currentDay?.date === doc.date) set({ currentDay: doc })
+        if (doc.reviewedAt) {
+          const nextReviews = { ...get().reviews, [doc.date]: doc.reviewedAt }
+          set({ reviews: nextReviews })
+        }
+        return doc
+      }
+    }
+
+    await putJournal(doc)
     return doc
   },
   updateJournalEntry: async (date, payload) => {
