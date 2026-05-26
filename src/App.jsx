@@ -93,6 +93,11 @@ export default function App() {
               const priorityTasks = [runInitialSync({ priorityBuckets: work.buckets })]
               if (work.journal) priorityTasks.push(loadJournal())
               await Promise.all(priorityTasks)
+              // After the merge lands, refresh today's journal from IDB so
+              // currentDay reflects whatever Stage 4 pulled. The initial
+              // loadJournal ran before Drive folder ids existed and only saw
+              // the empty local stub.
+              await loadJournal()
             } catch (e) {
               console.error('Background Drive init after redirect failed:', e)
               if (isAuthError(e)) {
@@ -359,14 +364,21 @@ export default function App() {
             </Routes>
           </main>
         </div>
-        {blockingInitialSync && (
+        {(blockingInitialSync || coldPull?.active) && (
           <div
+            // Cold-start ONLY: eat clicks until the full pull (every stage,
+            // including journals) is done so the user can't edit empty stubs
+            // before the real remote data lands. Warm sync overlays stay
+            // pass-through — the user can keep working.
+            onClickCapture={coldPull?.active ? (e => { e.stopPropagation(); e.preventDefault() }) : undefined}
             style={{
               position: 'fixed',
               inset: 0,
               zIndex: 10000,
               background: 'rgba(0,0,0,0.35)',
               backdropFilter: 'blur(2px)',
+              cursor: coldPull?.active ? 'wait' : 'default',
+              pointerEvents: coldPull?.active ? 'auto' : 'none',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -378,7 +390,7 @@ export default function App() {
                 <>
                   <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.95)', fontWeight: 500 }}>First-time setup on this device</div>
                   <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.75)', lineHeight: 1.5 }}>
-                    Pulling everything from Drive. This can take a few minutes — leave the app open.
+                    Pulling everything from Drive — this can take a few minutes. The app is locked until it's done so your edits don't conflict with what's being downloaded. Leave the app open.
                   </div>
                   <ColdPullProgress progress={coldPull.progress} />
                 </>
