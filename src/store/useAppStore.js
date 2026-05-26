@@ -539,16 +539,6 @@ const useAppStore = create((set, get) => ({
     if (get().mode !== MODE_OFFLINE) withRetry(() => pushJournal(updated))()
   },
 
-  syncAllJournals: async () => {
-    if (get().mode === MODE_OFFLINE) return
-    const docs = await getAllJournals()
-    if (!docs?.length) return
-    // Merge each local day with Drive. With per-day files this is N file ops
-    // — fine for typical usage but worth batching once Phase B's manifest
-    // ships.
-    await Promise.all(docs.map(doc => mergeAndPushJournal(doc)))
-    get().bumpReviewVersion()
-  },
   // Audio (local-first, lazy Drive sync)
   saveAudioBlob: async (blob, duration = 0) => {
     const id = uuid()

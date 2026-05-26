@@ -359,7 +359,6 @@ export default function ReviewPage() {
   const addTaskReviewComment = useAppStore(s => s.addTaskReviewComment)
   const setJournalEntryReviewed = useAppStore(s => s.setJournalEntryReviewed)
   const addJournalBlockComment = useAppStore(s => s.addJournalBlockComment)
-  const syncAllJournals = useAppStore(s => s.syncAllJournals)
   const [searchParams] = useSearchParams()
   const urlDate = searchParams.get('date')
   const highlightBlock = useHighlightTarget('block')
@@ -392,10 +391,6 @@ export default function ReviewPage() {
     }, 100)
     return () => clearTimeout(t)
   }, [highlightBlock, selectedDate])
-
-  useEffect(() => {
-    syncAllJournals().catch(console.error)
-  }, [syncAllJournals])
 
   useEffect(() => {
     let active = true
