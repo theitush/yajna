@@ -195,7 +195,8 @@ export default function App() {
         }
       } catch (e) {
         console.error('Bootstrap error', e)
-        setInitError('Something went wrong loading the app.')
+        const detail = e?.message || String(e)
+        setInitError(`Something went wrong loading the app: ${detail}`)
       } finally {
         setInitializing(false)
       }

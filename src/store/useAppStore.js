@@ -410,7 +410,8 @@ const useAppStore = create((set, get) => ({
     }
 
     if (get().mode !== MODE_OFFLINE) {
-      doc = await mergeAndPushJournal(doc).catch(() => doc)
+      const merged = await mergeAndPushJournal(doc).catch(() => null)
+      if (merged) doc = merged
     }
 
     await putJournal(doc)

@@ -744,8 +744,16 @@ export async function pushConfig() {
  * edits on the next pull.
  */
 export async function pushJournal(dayDoc) {
+  if (!dayDoc?.date) {
+    console.warn('pushJournal: skipped — dayDoc has no date', dayDoc)
+    return null
+  }
   const ids = await getDriveFileIds()
-  if (!ids?.journalsFolderId || !dayDoc?.date) return null
+  if (!ids?.journalsFolderId) {
+    // Drive folder not initialized yet (e.g. called before initDriveStructure
+    // during cold-start). Caller must treat null as "skipped, keep local doc".
+    return null
+  }
   const date = dayKey(dayDoc.date)
   const source = { ...dayDoc, date }
 
