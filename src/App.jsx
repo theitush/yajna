@@ -246,10 +246,12 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!blockingInitialSync) return
+    // Only steal focus during a cold pull, where edits would clobber an
+    // empty stub. Warm syncs let the user keep typing.
+    if (!coldPull?.active) return
     const el = document.activeElement
     if (el && typeof el.blur === 'function') el.blur()
-  }, [blockingInitialSync])
+  }, [coldPull?.active])
 
   const handleLogin = async () => {
     setLoginLoading(true)
@@ -364,7 +366,7 @@ export default function App() {
             </Routes>
           </main>
         </div>
-        {(blockingInitialSync || coldPull?.active) && (
+        {coldPull?.active && (
           <div
             // Cold-start ONLY: eat clicks until the full pull (every stage,
             // including journals) is done so the user can't edit empty stubs
