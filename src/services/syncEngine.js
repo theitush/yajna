@@ -97,6 +97,22 @@ function handleVisibility() {
   if (!running) return
   if (document.visibilityState === 'hidden') return
   if (!navigator.onLine) return
+  // Firefox (esp. mobile) freezes backgrounded tabs, so a push that was in
+  // flight when the user navigated away can stall indefinitely. When the tab
+  // comes back, flush any parked push before polling — otherwise device 2
+  // won't see device 1's changes until device 1 makes another edit.
+  if (pendingPush) {
+    clearTimeout(retryTimer)
+    clearInterval(countdownTimer)
+    retryTimer = null
+    countdownTimer = null
+    retryCount = 0
+    retryStartTime = 0
+    setStatus({ state: 'syncing' })
+    const fn = pendingPush
+    pendingPush = null
+    executePush(fn)
+  }
   forceNextPoll = true
   pollRemote(_storeSetter)
 }

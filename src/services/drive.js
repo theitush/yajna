@@ -18,6 +18,25 @@ function withTimeout(promise, ms = API_TIMEOUT_MS) {
 }
 
 /**
+ * fetch wrapper that aborts the request on timeout. Plain Promise.race leaves
+ * the underlying request running, which is no help when Firefox has frozen the
+ * tab mid-upload — we need AbortController to actually free the slot and let
+ * the retry path take over.
+ */
+async function fetchWithTimeout(url, init = {}, ms = API_TIMEOUT_MS) {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), ms)
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal })
+  } catch (e) {
+    if (e?.name === 'AbortError') throw new Error('Drive fetch timed out')
+    throw e
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
  * Wrap a gapi request thunk in both auth retry and timeout. The thunk is
  * re-invoked on retry so the second attempt picks up the refreshed token
  * via gapi.client.setToken (and the multipart fetch helpers below re-read
@@ -140,7 +159,7 @@ export async function writeJsonFile(parentId, name, data, existingFileId = null)
     const token = window.gapi.client.getToken()?.access_token
 
     if (existingFileId) {
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart`,
         {
           method: 'PATCH',
@@ -151,7 +170,7 @@ export async function writeJsonFile(parentId, name, data, existingFileId = null)
       await ensureFetchOk(res, 'Drive patch failed')
       return existingFileId
     }
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
       {
         method: 'POST',
@@ -179,13 +198,14 @@ export async function uploadAudioFile(parentId, name, blob) {
     form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }))
     form.append('media', blob)
     const token = window.gapi.client.getToken()?.access_token
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
       {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: form,
-      }
+      },
+      60_000
     )
     await ensureFetchOk(res, 'Audio upload failed')
     return res.json()
@@ -212,9 +232,10 @@ export async function deleteDriveFile(fileId) {
 export async function downloadFileBlob(fileId) {
   return withAuthRetry(async () => {
     const token = window.gapi.client.getToken()?.access_token
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
-      { headers: { Authorization: `Bearer ${token}` } }
+      { headers: { Authorization: `Bearer ${token}` } },
+      60_000
     )
     await ensureFetchOk(res, 'Drive download failed')
     return res.blob()
@@ -405,7 +426,7 @@ export async function readEntityFilesBatched(folderId, entries, batchSize = 20, 
 export async function readBinaryFile(fileId) {
   return withAuthRetry(async () => {
     const token = window.gapi.client.getToken()?.access_token
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
       { headers: { Authorization: `Bearer ${token}` } }
     )
@@ -429,14 +450,14 @@ export async function writeBinaryFile(parentId, name, bytes, existingFileId = nu
     form.append('media', blob)
     const token = window.gapi.client.getToken()?.access_token
     if (existingFileId) {
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart`,
         { method: 'PATCH', headers: { Authorization: `Bearer ${token}` }, body: form }
       )
       await ensureFetchOk(res, 'Drive binary patch failed')
       return existingFileId
     }
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
       { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form }
     )
