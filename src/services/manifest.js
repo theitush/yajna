@@ -25,6 +25,7 @@
 import { getMeta, putMeta } from './db'
 import { readJsonFile, findFile } from './drive'
 import { withAuthRetry } from './auth'
+import { logSync } from './syncLog'
 
 const MANIFEST_FILENAME = 'manifest.json'
 const MAX_ENTRIES = 500
@@ -187,15 +188,15 @@ export async function appendChanges(rootId, entries) {
     if (next.changes.length > MAX_ENTRIES) next = compactManifest(next)
     const res = await writeManifestWithIfMatch(fileId, next, headRevisionId)
     if (res.ok) {
-      console.debug('[sync-debug] manifest append OK', { attempt, seq: next.seq, entries: entries.map(e => `${e.type}:${e.id}`) })
+      logSync('manifest append OK', { attempt, seq: next.seq, entries: entries.map(e => `${e.type}:${e.id}`) })
       return next
     }
-    console.debug('[sync-debug] manifest append 412 conflict, retrying', { attempt })
+    logSync('manifest append 412 conflict, retrying', { attempt })
     // 412 — another device appended between read and write. Re-read and retry.
   }
   // Out of retries. Don't throw — manifest is a hint; the entity file is
   // already written. Next push or compaction sweep will heal the log.
-  console.warn('[sync-debug] manifest append GAVE UP after retries — manifest.modifiedTime NOT bumped, other devices will not see this change until next push', { entries: entries.map(e => `${e.type}:${e.id}`) })
+  logSync('manifest append GAVE UP after retries — manifest.modifiedTime NOT bumped, other devices will not see this change until next push', { entries: entries.map(e => `${e.type}:${e.id}`) })
 }
 
 /**
