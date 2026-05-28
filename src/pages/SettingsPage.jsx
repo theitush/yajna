@@ -3,6 +3,7 @@ import useAppStore, { stopSyncEngine, setPollInterval } from '../store/useAppSto
 import { signOut } from '../services/auth'
 import { getStorageEstimate, getStoragePersistence, requestStoragePersistence, exportData } from '../services/storage'
 import { getMeta, putMeta } from '../services/db'
+import { flushSyncLogToDrive } from '../services/syncLog'
 import { MODE_OFFLINE, MODE_DRIVE, MODE_KEY } from '../lib/constants'
 import { GROQ_MODELS, DEFAULT_GROQ_MODEL } from '../services/transcribe'
 import { detectBrowserTimezone, timezoneLabel } from '../lib/timezones'
@@ -96,6 +97,7 @@ export default function SettingsPage() {
   const [storageInfo, setStorageInfo] = useState(null)
   const [persistence, setPersistence] = useState(null)
   const [persistRequesting, setPersistRequesting] = useState(false)
+  const [syncLogStatus, setSyncLogStatus] = useState(null)
 
   useEffect(() => {
     setGroqKey(config?.groqApiKey || '')
@@ -152,6 +154,18 @@ export default function SettingsPage() {
   const handleExport = () => {
     const journals = currentDay ? [currentDay] : []
     exportData(tasks, notes, journals)
+  }
+
+  const handleFlushSyncLog = async () => {
+    setSyncLogStatus('saving')
+    try {
+      const name = await flushSyncLogToDrive()
+      setSyncLogStatus(`Saved to Drive: ${name}`)
+      setTimeout(() => setSyncLogStatus(null), 6000)
+    } catch (e) {
+      setSyncLogStatus(`Failed: ${e.message || e}`)
+      setTimeout(() => setSyncLogStatus(null), 6000)
+    }
   }
 
   const handleConnectDrive = async () => {
@@ -230,6 +244,28 @@ export default function SettingsPage() {
             <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '6px' }}>
               How often to check for changes from other devices.
             </p>
+          </section>
+        )}
+
+        {/* Sync diagnostics (Drive mode only) */}
+        {!isOffline && (
+          <section>
+            <h2 style={sectionHeadStyle}>Sync diagnostics</h2>
+            <button onClick={handleFlushSyncLog} style={btnSecondaryStyle}>
+              Export sync log to Drive
+              <span style={{ display: 'block', fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                Saves this device's recent sync trace to a file in your Drive folder
+                so it can be inspected from another device.
+              </span>
+            </button>
+            {syncLogStatus && (
+              <p style={{
+                fontSize: '12px', marginTop: '8px',
+                color: syncLogStatus.startsWith('Failed') ? '#FCA5A5' : 'var(--green-400)',
+              }}>
+                {syncLogStatus === 'saving' ? 'Saving…' : syncLogStatus}
+              </p>
+            )}
           </section>
         )}
 

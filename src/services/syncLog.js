@@ -11,6 +11,7 @@
  * This is a temporary debug aid — remove once the staleness root cause is fixed.
  */
 import { getMeta, putMeta } from './db'
+import { getDriveFileIds, findFile, writeJsonFile } from './drive'
 
 const LOG_KEY = 'sync_debug_log'
 const MAX_ENTRIES = 300
@@ -59,6 +60,30 @@ export async function getSyncLog() {
   return buffer.slice()
 }
 
+/**
+ * Write this device's sync log to Drive as `_debug_synclog_<deviceId>.json` in
+ * the app root folder, so it can be read from any device (e.g. desktop devtools
+ * inspecting the mobile device's trace). Overwrites the previous dump.
+ * Returns the filename written, or throws.
+ */
+export async function flushSyncLogToDrive() {
+  const ids = await getDriveFileIds()
+  if (!ids?.rootId) throw new Error('Drive not connected')
+  const deviceId = (await getMeta('device_id')) || 'unknown'
+  const name = `_debug_synclog_${deviceId}.json`
+  const log = await getSyncLog()
+  const payload = {
+    deviceId,
+    flushedAt: new Date().toISOString(),
+    userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : null,
+    entryCount: log.length,
+    entries: log,
+  }
+  const existing = await findFile(ids.rootId, name).catch(() => null)
+  await writeJsonFile(ids.rootId, name, payload, existing || null)
+  return name
+}
+
 export async function clearSyncLog() {
   buffer = []
   hydrated = true
@@ -73,4 +98,5 @@ if (typeof window !== 'undefined') {
     return log
   }
   window.clearSyncLog = clearSyncLog
+  window.flushSyncLogToDrive = flushSyncLogToDrive
 }
