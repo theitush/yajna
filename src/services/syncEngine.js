@@ -240,7 +240,11 @@ async function pollRemote(storeSetter) {
       forceNextPoll = false
     } else {
       hash = await getRemoteHash(ids)
-      if (hash === lastRemoteHash) return
+      if (hash === lastRemoteHash) {
+        console.debug('[sync-debug] poll short-circuit: remote hash unchanged', { hash })
+        return
+      }
+      console.debug('[sync-debug] poll proceeding: remote hash changed', { hash, prev: lastRemoteHash })
     }
 
     setStatus({ state: 'syncing' })
@@ -268,6 +272,10 @@ async function pollRemote(storeSetter) {
         }
       }
     }
+    console.debug('[sync-debug] manifest diff', {
+      headSeq, localLastSeq, coldStart,
+      changed: Object.fromEntries(Object.entries(changedByType).map(([t, m]) => [t, [...m.keys()]])),
+    })
 
     // 2. Config (still a single file — small, no per-entity model for config).
     const remoteConfig = await readJsonFile(ids.configFileId).catch(() => ({}))
@@ -312,6 +320,10 @@ async function pollRemote(storeSetter) {
 
     // A local write raced with our pull — discard, the user's edit is fresher.
     if (writeGeneration !== startGen || pushesInFlight > 0) {
+      console.debug('[sync-debug] poll result DISCARDED by writeGeneration guard', {
+        startGen, writeGeneration, pushesInFlight,
+        wouldHaveMerged: Object.fromEntries(Object.entries(changedByType).map(([t, m]) => [t, [...m.keys()]])),
+      })
       setStatus({ state: 'synced' })
       return
     }
