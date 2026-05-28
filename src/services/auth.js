@@ -90,32 +90,48 @@ export function startAuthRedirect() {
   window.location.assign(`${AUTH_WORKER_URL}/login?redirect=${redirect}`)
 }
 
+let silentRefreshInFlight = null
+
 /**
  * Try to renew the access token silently via the Worker's /refresh endpoint.
  * Returns { token, expiresIn } on success, or null on auth failure (401).
  * Throws on network/server error so the caller can distinguish and retry.
+ *
+ * Coalesced: Google rotates the refresh token on use, so two concurrent
+ * /refresh calls would replay the same (now-consumed) token and the loser
+ * gets a 401 that triggers signOut(). This happens on wake-from-sleep when
+ * the visibility handler and the sync poll both fire at once. All callers
+ * share a single in-flight request so the blob is only ever rotated once.
  */
 export async function trySilentRefresh() {
-  const refresh_blob = await getRefreshBlob()
-  if (!refresh_blob) return null
+  if (silentRefreshInFlight) return silentRefreshInFlight
+  silentRefreshInFlight = (async () => {
+    const refresh_blob = await getRefreshBlob()
+    if (!refresh_blob) return null
 
-  const res = await fetch(`${AUTH_WORKER_URL}/refresh`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refresh_blob }),
-  })
+    const res = await fetch(`${AUTH_WORKER_URL}/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_blob }),
+    })
 
-  if (!res.ok) {
-    if (res.status === 401) {
-      await signOut() // Refresh token revoked or invalid
-      return null
+    if (!res.ok) {
+      if (res.status === 401) {
+        await signOut() // Refresh token revoked or invalid
+        return null
+      }
+      throw new Error(`Refresh failed: ${res.status}`)
     }
-    throw new Error(`Refresh failed: ${res.status}`)
-  }
 
-  const data = await res.json()
-  await storeRefreshBlob(data.refresh_blob) // Persist rotated blob
-  return { token: data.access_token, expiresIn: data.expires_in }
+    const data = await res.json()
+    await storeRefreshBlob(data.refresh_blob) // Persist rotated blob
+    return { token: data.access_token, expiresIn: data.expires_in }
+  })()
+  try {
+    return await silentRefreshInFlight
+  } finally {
+    silentRefreshInFlight = null
+  }
 }
 
 /**
