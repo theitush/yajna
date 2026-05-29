@@ -98,7 +98,26 @@ export default function RecordFab({ editor }) {
 
     setSaving(true)
     try {
-      const id = await saveAudioBlob(blob, duration)
+      // Stamp the driveFileId onto the node once the upload resolves so the
+      // doc reference is self-sufficient (no separate metadata file). Until
+      // then the node still works locally via the IDB blob.
+      const stampDriveFileId = (audioId, driveFileId) => {
+        if (!editor || !driveFileId) return
+        let pos = null
+        editor.state.doc.descendants((n, p) => {
+          if (n.type.name === 'audio' && n.attrs.audioId === audioId) { pos = p; return false }
+        })
+        if (pos == null) return
+        editor.chain().command(({ tr }) => {
+          const cur = tr.doc.nodeAt(pos)
+          if (!cur || cur.type.name !== 'audio') return false
+          tr.setNodeMarkup(pos, undefined, { ...cur.attrs, driveFileId })
+          return true
+        }).run()
+      }
+      const { id, mimeType, createdAt } = await saveAudioBlob(
+        blob, duration, (driveFileId) => stampDriveFileId(id, driveFileId)
+      )
       if (editor) {
         // If a node (e.g. another audio) is selected, collapse to its end so
         // we insert AFTER it instead of replacing it.
@@ -106,7 +125,7 @@ export default function RecordFab({ editor }) {
         if (sel && typeof sel.to === 'number' && sel.from !== sel.to) {
           editor.commands.setTextSelection(sel.to)
         }
-        editor.chain().focus().insertAudio({ audioId: id, duration, createdAt: new Date().toISOString(), autoTranscribe: true }).run()
+        editor.chain().focus().insertAudio({ audioId: id, duration, mimeType, createdAt, autoTranscribe: true }).run()
       }
     } catch (e) {
       console.error(e)

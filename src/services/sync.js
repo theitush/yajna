@@ -21,6 +21,7 @@ import { migrateDriveEntitiesIfNeeded } from './entitiesMigration'
 import { migrateTasksToAutomergeIfNeeded } from './tasksAutomergeMigration'
 import { migrateNotesToAutomergeIfNeeded } from './notesAutomergeMigration'
 import { migrateJournalsToAutomergeIfNeeded } from './journalsAutomergeMigration'
+import { migrateAudioInlineIfNeeded } from './audioInlineMigration'
 import {
   createDoc, loadDoc, saveDoc, mergeDoc,
   applyTaskFields, materializeTaskRow,
@@ -476,6 +477,17 @@ async function mergeWithDriveImpl(resolvers, onProgress = null) {
     mark('automerge journals migration', tMig)
   } catch (e) {
     console.warn('[sync] automerge journals migration failed:', e.message || e)
+  }
+
+  // Inline audio metadata into the doc nodes that reference it (and recover
+  // orphaned blobs whose meta was lost). Runs after notes+journals are in .bin
+  // form since it rewrites those docs in place. Idempotent + flag-gated.
+  try {
+    const tMig = performance.now()
+    await migrateAudioInlineIfNeeded()
+    mark('audio inline migration', tMig)
+  } catch (e) {
+    console.warn('[sync] audio inline migration failed:', e.message || e)
   }
 
   // Re-fetch ids after migration in case it rewrote drive_files (legacy ids

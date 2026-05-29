@@ -7,6 +7,7 @@ import Highlight from '@tiptap/extension-highlight'
 import TextAlign from '@tiptap/extension-text-align'
 import useAppStore from '../store/useAppStore'
 import { AudioNode } from '../components/editor/AudioNode'
+import { audioBlockHtml } from '../services/audio'
 import { BlockIdExtension } from '../components/editor/BlockIdExtension'
 import { RTLExtension } from '../components/editor/RTLExtension'
 import { HeadingNoShortcut } from '../components/editor/HeadingNoShortcut'
@@ -221,7 +222,7 @@ function AudioTrashCard({ audio, onPurge, onRestore, getAudioReferenceCount }) {
     return () => { cancelled = true }
   }, [confirm, audio.id, getAudioReferenceCount])
 
-  const html = `<div data-audio-id="${audio.id}" data-duration="${audio.duration || 0}"></div>`
+  const html = audioBlockHtml(audio)
   const editor = useEditor({
     extensions: [
       StarterKit.configure({ heading: false, bulletList: false, orderedList: false, listItem: false, taskList: false, taskItem: false }),

@@ -293,7 +293,6 @@ function formatTime(s) {
 function AudioNodeView({ node, editor, getPos, extension }) {
   const audioId = node.attrs.audioId
   const getAudioRecord = useAppStore(s => s.getAudioRecord)
-  const saveAudioTranscript = useAppStore(s => s.saveAudioTranscript)
   const trashAudio = useAppStore(s => s.trashAudio)
   const readOnly = !!extension?.options?.readOnly
   const config = useAppStore(s => s.config)
@@ -305,14 +304,18 @@ function AudioNodeView({ node, editor, getPos, extension }) {
   const [status, setStatus] = useState('idle') // idle | loading | ready | error
   const [error, setError] = useState(null)
   const [expanded, setExpanded] = useState(true)
-  const [transcript, setTranscript] = useState('')
-  const [segments, setSegments] = useState(null)
-  const [transcriptModel, setTranscriptModel] = useState(null)
+  // Metadata now lives on the node — seed transcript state from attrs so it
+  // renders immediately, with no IDB/Drive round-trip.
+  const [transcript, setTranscript] = useState(node.attrs.transcript || '')
+  const [segments, setSegments] = useState(
+    Array.isArray(node.attrs.transcriptSegments) ? node.attrs.transcriptSegments : null
+  )
+  const [transcriptModel, setTranscriptModel] = useState(node.attrs.transcriptModel || null)
   const [transcribing, setTranscribing] = useState(false)
   const [transcriptError, setTranscriptError] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmRetranscribe, setConfirmRetranscribe] = useState(false)
-  const [draftTranscript, setDraftTranscript] = useState('')
+  const [draftTranscript, setDraftTranscript] = useState(node.attrs.transcript || '')
   // Bumped whenever transcript state is replaced from outside the editor
   // (re-transcribe, hydrate from DB). Used as a `key` on the inner editor so
   // it remounts and rebuilds its DOM — without this, re-transcribing the same
@@ -327,11 +330,36 @@ function AudioNodeView({ node, editor, getPos, extension }) {
   // previously dropped edits silently.
   const transcriptSaveTimer = useRef(null)
 
+  // Write attrs back onto THIS audio node. The mutated journal/note doc then
+  // syncs through the normal Automerge path — no separate audio/meta file.
+  const setSelfAttrs = (patch) => {
+    if (readOnly || !editor || typeof getPos !== 'function') return
+    const pos = getPos()
+    if (pos == null) return
+    try {
+      editor.chain().command(({ tr }) => {
+        const cur = tr.doc.nodeAt(pos)
+        if (!cur || cur.type.name !== 'audio') return false
+        tr.setNodeMarkup(pos, undefined, { ...cur.attrs, ...patch })
+        return true
+      }).run()
+    } catch { /* ignore */ }
+  }
+
+  const saveTranscriptToNode = (text, segs, model) => {
+    setSelfAttrs({
+      transcript: text || '',
+      transcriptSegments: Array.isArray(segs) ? segs : null,
+      transcriptModel: model ?? transcriptModel ?? null,
+      transcribedAt: new Date().toISOString(),
+    })
+  }
+
   const scheduleTranscriptSave = (text, segs) => {
     if (transcriptSaveTimer.current) clearTimeout(transcriptSaveTimer.current)
     transcriptSaveTimer.current = setTimeout(() => {
       transcriptSaveTimer.current = null
-      saveAudioTranscript(audioId, text, transcriptModel, segs ?? null)
+      saveTranscriptToNode(text, segs, transcriptModel)
     }, 600)
   }
   useEffect(() => () => {
@@ -339,7 +367,7 @@ function AudioNodeView({ node, editor, getPos, extension }) {
       clearTimeout(transcriptSaveTimer.current)
       // Flush on unmount so unmounting the node-view (route change, etc)
       // doesn't lose pending edits.
-      saveAudioTranscript(audioId, transcript, transcriptModel, Array.isArray(segments) ? segments : null)
+      saveTranscriptToNode(transcript, Array.isArray(segments) ? segments : null, transcriptModel)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -348,7 +376,14 @@ function AudioNodeView({ node, editor, getPos, extension }) {
     setStatus('loading')
     setError(null)
     try {
-      const rec = await getAudioRecord(audioId)
+      // Hand the node's own driveFileId/mimeType to the loader so it can lazy-
+      // download the blob without consulting a separate audio/meta file.
+      const rec = await getAudioRecord(audioId, {
+        driveFileId: node.attrs.driveFileId || null,
+        mimeType: node.attrs.mimeType || null,
+        duration: node.attrs.duration || 0,
+        createdAt: node.attrs.createdAt || null,
+      })
       if (!rec?.blob) {
         setStatus('error')
         setError('Audio not found')
@@ -358,16 +393,17 @@ function AudioNodeView({ node, editor, getPos, extension }) {
       const url = URL.createObjectURL(rec.blob)
       setObjectUrl(url)
       setStatus('ready')
-      if (rec.duration) setDuration(rec.duration)
-      // Only hydrate transcript state if we don't already have one in memory —
-      // loadBlob can be called mid-edit (e.g. clicking another segment seeks,
-      // which may lazy-load the blob), and we must not clobber pending edits.
-      if (rec.transcript && !transcript) {
+      if (rec.duration && !duration) setDuration(rec.duration)
+      // Legacy fallback: pre-migration clips may still carry their transcript in
+      // IDB rather than on the node. Only hydrate if the node has none and we're
+      // not mid-edit.
+      if (!node.attrs.transcript && rec.transcript && !transcript) {
         setTranscript(rec.transcript)
         setDraftTranscript(rec.transcript)
         setTranscriptModel(rec.transcriptModel || null)
         setSegments(Array.isArray(rec.transcriptSegments) ? rec.transcriptSegments : null)
         setTranscriptVersion(v => v + 1)
+        saveTranscriptToNode(rec.transcript, rec.transcriptSegments || null, rec.transcriptModel || null)
       }
       return url
     } catch (e) {
@@ -411,7 +447,7 @@ function AudioNodeView({ node, editor, getPos, extension }) {
       const result = await transcribeWithGroq({ blob, apiKey, model })
       const text = typeof result === 'string' ? result : (result?.text || '')
       const segs = typeof result === 'object' && Array.isArray(result?.segments) ? result.segments : null
-      await saveAudioTranscript(audioId, text, model, segs)
+      saveTranscriptToNode(text, segs, model)
       setTranscript(text)
       setDraftTranscript(text)
       setTranscriptModel(model)
@@ -457,64 +493,50 @@ function AudioNodeView({ node, editor, getPos, extension }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [node.attrs.autoTranscribe])
 
-  // Hydrate transcript on mount so the (default-expanded) panel shows it
-  // immediately, without forcing the audio blob to be decoded.
+  // Legacy hydrate: pre-migration clips kept createdAt/transcript only in IDB.
+  // Backfill them onto the node so chronological tinting + transcript display
+  // work and the data converges to the node-attr model. New clips already carry
+  // everything on the node, so this is a no-op for them.
   useEffect(() => {
     let cancelled = false
+    if (node.attrs.createdAt && node.attrs.transcript) return
     ;(async () => {
       if (!audioId) return
       try {
-        const rec = await getAudioRecord(audioId)
+        const rec = await getAudioRecord(audioId, {
+          driveFileId: node.attrs.driveFileId || null,
+          mimeType: node.attrs.mimeType || null,
+        }, { metaOnly: true })
         if (cancelled || !rec) return
-        // Backfill createdAt onto the node attr for legacy clips so chronological
-        // tinting works without re-reading IDB on every render.
-        if (rec.createdAt && !node.attrs.createdAt && editor && typeof getPos === 'function') {
-          const pos = getPos()
-          if (pos != null && !readOnly) {
-            try {
-              editor.chain().command(({ tr }) => {
-                tr.setNodeMarkup(pos, undefined, { ...node.attrs, createdAt: rec.createdAt })
-                return true
-              }).run()
-            } catch { /* ignore */ }
-          }
-        }
-        if (transcript) return
+        if (rec.createdAt && !node.attrs.createdAt) setSelfAttrs({ createdAt: rec.createdAt })
         if (rec.duration && !duration) setDuration(rec.duration)
-        if (rec.transcript) {
+        if (!node.attrs.transcript && rec.transcript && !transcript) {
           setTranscript(rec.transcript)
           setDraftTranscript(rec.transcript)
           setTranscriptModel(rec.transcriptModel || null)
           setSegments(Array.isArray(rec.transcriptSegments) ? rec.transcriptSegments : null)
+          saveTranscriptToNode(rec.transcript, rec.transcriptSegments || null, rec.transcriptModel || null)
         }
       } catch { /* ignore */ }
     })()
     return () => { cancelled = true }
   }, [audioId])
 
-  // Pick up transcripts that arrive from Drive after this view has mounted —
-  // without this the user has to refresh to see remotely-transcribed text.
-  // Skip if there's a pending local edit we haven't flushed yet.
+  // Pick up transcripts/segments that arrive via doc sync (remote device
+  // transcribed it). The node re-renders with new attrs; sync our local edit
+  // state to match unless we have a pending local edit not yet flushed.
   useEffect(() => {
-    if (!audioId) return
-    const onAudioUpdated = async (e) => {
-      const ids = e?.detail?.ids
-      if (!Array.isArray(ids) || !ids.includes(audioId)) return
-      if (transcriptSaveTimer.current) return
-      try {
-        const rec = await getAudioRecord(audioId)
-        if (!rec || !rec.transcript) return
-        if (rec.transcript === transcript) return
-        setTranscript(rec.transcript)
-        setDraftTranscript(rec.transcript)
-        setTranscriptModel(rec.transcriptModel || null)
-        setSegments(Array.isArray(rec.transcriptSegments) ? rec.transcriptSegments : null)
-        setTranscriptVersion(v => v + 1)
-      } catch { /* ignore */ }
+    if (transcriptSaveTimer.current) return
+    const incoming = node.attrs.transcript || ''
+    if (incoming && incoming !== transcript) {
+      setTranscript(incoming)
+      setDraftTranscript(incoming)
+      setTranscriptModel(node.attrs.transcriptModel || null)
+      setSegments(Array.isArray(node.attrs.transcriptSegments) ? node.attrs.transcriptSegments : null)
+      setTranscriptVersion(v => v + 1)
     }
-    window.addEventListener('yajna:audio-updated', onAudioUpdated)
-    return () => window.removeEventListener('yajna:audio-updated', onAudioUpdated)
-  }, [audioId, transcript, getAudioRecord])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node.attrs.transcript])
 
   useEffect(() => {
     if (!editor) return
@@ -997,7 +1019,7 @@ function AudioNodeView({ node, editor, getPos, extension }) {
                    clearTimeout(transcriptSaveTimer.current)
                    transcriptSaveTimer.current = null
                  }
-                 saveAudioTranscript(audioId, joined, transcriptModel, updated)
+                 saveTranscriptToNode(joined, updated, transcriptModel)
                } else {
                  scheduleTranscriptSave(joined, updated)
                }
@@ -1017,7 +1039,7 @@ function AudioNodeView({ node, editor, getPos, extension }) {
                    clearTimeout(transcriptSaveTimer.current)
                    transcriptSaveTimer.current = null
                  }
-                 saveAudioTranscript(audioId, text, transcriptModel, null)
+                 saveTranscriptToNode(text, null, transcriptModel)
                } else {
                  scheduleTranscriptSave(text, null)
                }
@@ -1079,6 +1101,17 @@ export const AudioNode = Node.create({
       audioId: { default: null },
       duration: { default: 0 },
       createdAt: { default: null },
+      // Audio metadata now lives in the document node itself (not a separate
+      // audio/meta/<id>.json). The blob still lives in IDB/Drive as <id>.<ext>;
+      // these attrs make the reference self-sufficient so a synced doc can
+      // resolve and play audio without a side-channel metadata file.
+      driveFileId: { default: null },
+      mimeType: { default: null },
+      transcript: { default: '' },
+      transcriptModel: { default: null },
+      transcribedAt: { default: null },
+      // Array of { start, end, text }. Stored JSON-encoded in a data attr.
+      transcriptSegments: { default: null },
       // Set to true on freshly recorded clips so the node-view kicks off
       // transcription automatically. Cleared on first attempt so re-renders
       // don't retry forever (errors surface inline in the panel).
@@ -1090,21 +1123,46 @@ export const AudioNode = Node.create({
     return [
       {
         tag: 'div[data-audio-id]',
-        getAttrs: (el) => ({
-          audioId: el.getAttribute('data-audio-id'),
-          duration: parseFloat(el.getAttribute('data-duration')) || 0,
-          createdAt: el.getAttribute('data-created-at') || null,
-        }),
+        getAttrs: (el) => {
+          let segments = null
+          const rawSegs = el.getAttribute('data-transcript-segments')
+          if (rawSegs) {
+            try {
+              const parsed = JSON.parse(rawSegs)
+              if (Array.isArray(parsed)) segments = parsed
+            } catch { /* ignore malformed */ }
+          }
+          return {
+            audioId: el.getAttribute('data-audio-id'),
+            duration: parseFloat(el.getAttribute('data-duration')) || 0,
+            createdAt: el.getAttribute('data-created-at') || null,
+            driveFileId: el.getAttribute('data-drive-file-id') || null,
+            mimeType: el.getAttribute('data-mime-type') || null,
+            transcript: el.getAttribute('data-transcript') || '',
+            transcriptModel: el.getAttribute('data-transcript-model') || null,
+            transcribedAt: el.getAttribute('data-transcribed-at') || null,
+            transcriptSegments: segments,
+          }
+        },
       },
     ]
   },
 
   renderHTML({ HTMLAttributes, node }) {
+    const a = node.attrs
     const attrs = {
-      'data-audio-id': node.attrs.audioId,
-      'data-duration': String(node.attrs.duration || 0),
+      'data-audio-id': a.audioId,
+      'data-duration': String(a.duration || 0),
     }
-    if (node.attrs.createdAt) attrs['data-created-at'] = node.attrs.createdAt
+    if (a.createdAt) attrs['data-created-at'] = a.createdAt
+    if (a.driveFileId) attrs['data-drive-file-id'] = a.driveFileId
+    if (a.mimeType) attrs['data-mime-type'] = a.mimeType
+    if (a.transcript) attrs['data-transcript'] = a.transcript
+    if (a.transcriptModel) attrs['data-transcript-model'] = a.transcriptModel
+    if (a.transcribedAt) attrs['data-transcribed-at'] = a.transcribedAt
+    if (Array.isArray(a.transcriptSegments) && a.transcriptSegments.length) {
+      attrs['data-transcript-segments'] = JSON.stringify(a.transcriptSegments)
+    }
     return ['div', mergeAttributes(HTMLAttributes, attrs)]
   },
 

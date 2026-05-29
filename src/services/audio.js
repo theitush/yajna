@@ -10,7 +10,7 @@
 import { putAudio, getAudio, getAllAudio, deleteAudio as dbDeleteAudio } from './db'
 import {
   getDriveFileIds, uploadAudioFile, downloadFileBlob, deleteDriveFile,
-  readJsonFile, writeJsonFile, writeEntityFile, readEntityFile, listFolder,
+  readJsonFile, writeEntityFile, readEntityFile, listFolder,
 } from './drive'
 import { appendChanges, getDeviceId } from './manifest'
 import { withAuthRetry } from './auth'
@@ -102,97 +102,84 @@ function toIndexEntry(rec) {
  */
 export async function pushAudio(id) {
   const ids = await getDriveFileIds()
-  if (!ids || !ids.audioFolderId) return
+  if (!ids || !ids.audioFolderId) return null
   const rec = await getAudio(id)
-  if (!rec || !rec.blob) return
-  if (rec.driveFileId) return // already uploaded
+  if (!rec || !rec.blob) return null
+  if (rec.driveFileId) return rec.driveFileId // already uploaded
 
   const ext = (rec.mimeType || 'audio/webm').split('/')[1]?.split(';')[0] || 'webm'
   const filename = `${id}.${ext}`
   const uploaded = await uploadAudioFile(ids.audioFolderId, filename, rec.blob)
-  if (!uploaded?.id) return
+  if (!uploaded?.id) return null
 
-  const updated = { ...rec, driveFileId: uploaded.id, uploadedAt: new Date().toISOString() }
-  await putAudio(updated)
-  // Re-read after write: transcription may have landed while upload was in flight.
-  const latest = await getAudio(id)
-
-  // Update audio.json index (merge with remote so concurrent uploads don't clobber)
-  await upsertAudioMeta(ids, toIndexEntry(latest || updated))
-}
-
-/**
- * Push an updated audio metadata record (e.g. after transcription) into audio.json.
- * The local IDB record must already be saved. No-op when offline.
- */
-export async function pushAudioMetadata(id) {
-  const ids = await getDriveFileIds()
-  if (!ids || !ids.audioFolderId) return
-  const rec = await getAudio(id)
-  if (!rec) return
-
-  await upsertAudioMeta(ids, toIndexEntry(rec))
+  // Stamp the driveFileId onto the local blob record so re-uploads short-circuit
+  // and offline→online reconciliation (pushPendingAudio) knows it's done. The
+  // document node carries the driveFileId for cross-device resolution; this IDB
+  // copy is just local bookkeeping.
+  await putAudio({ ...rec, driveFileId: uploaded.id, uploadedAt: new Date().toISOString() })
+  return uploaded.id
 }
 
 /**
  * Ensure a local blob exists for this audio id. If the blob is missing locally
  * but the Drive index has it, lazy-download it now. Returns the record or null.
  */
-export async function ensureAudioLocal(id) {
+export async function ensureAudioLocal(id, hints = null, opts = null) {
+  const metaOnly = !!opts?.metaOnly
   const local = await getAudio(id)
-  if (local?.blob) return local
+  if (local?.blob && !metaOnly) return local
 
   const ids = await getDriveFileIds()
   if (!ids) {
     logSync('audio ensure: no drive ids', { id })
     return local || null
   }
-  logSync('audio ensure: start', {
-    id,
-    hasLocal: !!local,
-    localDriveFileId: local?.driveFileId || null,
-    localHasTranscript: !!local?.transcript,
-    audioMetaFolderId: ids.audioMetaFolderId || null,
-    audioIndexFileId: ids.audioIndexFileId || null,
-  })
 
-  // Look up driveFileId — prefer local record, fall back to remote index
-  let driveFileId = local?.driveFileId
-  let mimeType = local?.mimeType || 'audio/webm'
-  let createdAt = local?.createdAt
+  // driveFileId resolution order:
+  //   1. caller hint (the document node — the new source of truth)
+  //   2. local IDB record (origin device, or already-downloaded)
+  //   3. legacy audio/meta/<id>.json (pre-migration clips not yet backfilled)
+  //   4. surviving audio/<id>.<ext> blob by name (orphan recovery)
+  let driveFileId = hints?.driveFileId || local?.driveFileId || null
+  let mimeType = hints?.mimeType || local?.mimeType || 'audio/webm'
+  let createdAt = hints?.createdAt || local?.createdAt || null
   let transcript = local?.transcript || null
   let transcriptModel = local?.transcriptModel || null
   let transcribedAt = local?.transcribedAt || null
   let transcriptSegments = local?.transcriptSegments || null
+
   if (!driveFileId) {
-    // Phase B: per-id meta file. Falls back to legacy audio.json during the
-    // brief migration window (entitiesMigration deletes audio.json only after
-    // every per-id write succeeds).
     let entry = null
     if (ids.audioMetaFolderId) {
       entry = await readEntityFile(ids.audioMetaFolderId, id)
-      logSync('audio ensure: meta file lookup', {
-        id, found: !!entry, hasDriveFileId: !!entry?.driveFileId, hasTranscript: !!entry?.transcript,
-      })
     }
     if (!entry && ids.audioIndexFileId) {
       const remoteIndex = await readJsonFile(ids.audioIndexFileId).catch(() => [])
       entry = Array.isArray(remoteIndex) ? remoteIndex.find(e => e.id === id) : null
-      logSync('audio ensure: legacy index fallback', {
-        id, indexLen: Array.isArray(remoteIndex) ? remoteIndex.length : -1, found: !!entry,
-      })
     }
-    if (!entry?.driveFileId) {
-      logSync('audio ensure: give up (no driveFileId)', { id })
-      return local || null
+    if (entry?.driveFileId) {
+      driveFileId = entry.driveFileId
+      mimeType = entry.mimeType || mimeType
+      createdAt = createdAt || entry.createdAt || null
+      transcript = transcript || entry.transcript || null
+      transcriptModel = transcriptModel || entry.transcriptModel || null
+      transcribedAt = transcribedAt || entry.transcribedAt || null
+      transcriptSegments = transcriptSegments || entry.transcriptSegments || null
+    } else {
+      // Last resort: the blob may exist under audio/<id>.<ext> with no meta.
+      driveFileId = await findAudioBlobFileId(ids.audioFolderId, id)
     }
-    driveFileId = entry.driveFileId
-    mimeType = entry.mimeType || mimeType
-    createdAt = entry.createdAt || new Date().toISOString()
-    transcript = transcript || entry.transcript || null
-    transcriptModel = transcriptModel || entry.transcriptModel || null
-    transcribedAt = transcribedAt || entry.transcribedAt || null
-    transcriptSegments = transcriptSegments || entry.transcriptSegments || null
+  }
+
+  if (!driveFileId) {
+    logSync('audio ensure: give up (no driveFileId)', { id, hadHint: !!hints?.driveFileId })
+    return local || null
+  }
+
+  // metaOnly: caller just wants legacy transcript/createdAt for backfill — don't
+  // pay for a blob download.
+  if (metaOnly) {
+    return { id, mimeType, duration: local?.duration || 0, createdAt, driveFileId, transcript, transcriptModel, transcribedAt, transcriptSegments }
   }
 
   let blob
@@ -215,6 +202,22 @@ export async function ensureAudioLocal(id) {
   }
   await putAudio(record)
   return record
+}
+
+/**
+ * Find the Drive fileId of an audio blob named `<id>.<ext>` in audio/. Returns
+ * null if none exists. Used as a recovery fallback when a node has no
+ * driveFileId and no meta file survives.
+ */
+async function findAudioBlobFileId(audioFolderId, id) {
+  if (!audioFolderId) return null
+  try {
+    const files = await listFolder(audioFolderId)
+    const m = files.find(f => new RegExp(`^${id}\\.(webm|ogg|mp3|m4a|mp4|wav|aac)$`, 'i').test(f.name || ''))
+    return m?.id || null
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -359,6 +362,31 @@ export async function repairOrphanAudioMeta({ apply = false } = {}) {
   }
   console.log('[audio-repair] APPLIED —', result)
   return result
+}
+
+/**
+ * Serialize an audio record into the document-node HTML form. Single source of
+ * truth for the `<div data-audio-id ...>` shape so restore/trash paths stay in
+ * sync with AudioNode's renderHTML. Carries the full node-attr metadata so the
+ * reference is self-sufficient (no audio/meta side file).
+ */
+export function audioBlockHtml(rec) {
+  if (!rec?.id) return ''
+  const esc = (s) => String(s)
+    .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  let out = `<div data-audio-id="${esc(rec.id)}" data-duration="${rec.duration || 0}"`
+  if (rec.createdAt) out += ` data-created-at="${esc(rec.createdAt)}"`
+  if (rec.driveFileId) out += ` data-drive-file-id="${esc(rec.driveFileId)}"`
+  if (rec.mimeType) out += ` data-mime-type="${esc(rec.mimeType)}"`
+  if (rec.transcript) out += ` data-transcript="${esc(rec.transcript)}"`
+  if (rec.transcriptModel) out += ` data-transcript-model="${esc(rec.transcriptModel)}"`
+  if (rec.transcribedAt) out += ` data-transcribed-at="${esc(rec.transcribedAt)}"`
+  if (Array.isArray(rec.transcriptSegments) && rec.transcriptSegments.length) {
+    out += ` data-transcript-segments="${esc(JSON.stringify(rec.transcriptSegments))}"`
+  }
+  out += '></div>'
+  return out
 }
 
 /**

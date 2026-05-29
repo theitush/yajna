@@ -12,7 +12,7 @@ import {
 import { extractHashtags } from '../lib/hashtags'
 import { pushTasks, pushNotes, pushJournal, pushConfig, initialSyncStreaming, mergeAndPushJournal } from '../services/sync'
 import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, getSyncStatus, retryNow, setPollInterval } from '../services/syncEngine'
-import { pushAudio, pushAudioMetadata, pushPendingAudio, ensureAudioLocal, softDeleteAudio, restoreAudio, hardDeleteAudio, collectAudioIdsFromBlocks } from '../services/audio'
+import { pushAudio, pushPendingAudio, ensureAudioLocal, softDeleteAudio, restoreAudio, hardDeleteAudio, collectAudioIdsFromBlocks, audioBlockHtml } from '../services/audio'
 import { putAudio, getAudio } from '../services/db'
 import { withAuthRetry } from '../services/auth'
 import { stampBlocks, stampBlocksFromDoc, blocksToHtml } from '../lib/blocks'
@@ -539,41 +539,34 @@ const useAppStore = create((set, get) => ({
     if (get().mode !== MODE_OFFLINE) withRetry(() => pushJournal(updated))()
   },
 
-  // Audio (local-first, lazy Drive sync)
-  saveAudioBlob: async (blob, duration = 0) => {
+  // Audio (local-first, lazy Drive sync). Metadata (driveFileId, transcript,
+  // etc.) lives on the document node — see AudioNode.jsx. IDB holds the blob
+  // (the only thing that can't live in the CRDT). saveAudioBlob writes the blob
+  // and kicks off the Drive upload; once the upload resolves we hand the
+  // resulting driveFileId back via onUploaded so the caller can stamp it onto
+  // the freshly-inserted node, making the doc reference self-sufficient.
+  saveAudioBlob: async (blob, duration = 0, onUploaded = null) => {
     const id = uuid()
-    const record = {
-      id,
-      blob,
-      mimeType: blob.type || 'audio/webm',
-      duration,
-      createdAt: new Date().toISOString(),
-    }
-    await putAudio(record)
+    const mimeType = blob.type || 'audio/webm'
+    const createdAt = new Date().toISOString()
+    await putAudio({ id, blob, mimeType, duration, createdAt })
     if (get().mode !== MODE_OFFLINE) {
-      withRetry(() => pushAudio(id))()
+      ;(async () => {
+        try {
+          const driveFileId = await pushAudio(id)
+          if (driveFileId && typeof onUploaded === 'function') onUploaded(driveFileId)
+        } catch (e) {
+          console.warn('audio upload failed (pushPendingAudio will retry)', e)
+        }
+      })()
     }
-    return id
+    return { id, mimeType, createdAt }
   },
-  getAudioRecord: async (id) => {
+  // hints: { driveFileId, mimeType, duration, createdAt } from the node.
+  // opts.metaOnly: skip the blob download (used for legacy-transcript backfill).
+  getAudioRecord: async (id, hints = null, opts = null) => {
     if (get().mode === MODE_OFFLINE) return getAudio(id)
-    return ensureAudioLocal(id)
-  },
-  saveAudioTranscript: async (id, transcript, model, segments) => {
-    const rec = await getAudio(id)
-    if (!rec) return null
-    const updated = {
-      ...rec,
-      transcript,
-      transcriptModel: model || rec.transcriptModel || null,
-      transcribedAt: new Date().toISOString(),
-      transcriptSegments: segments === undefined ? (rec.transcriptSegments || null) : segments,
-    }
-    await putAudio(updated)
-    if (get().mode !== MODE_OFFLINE) {
-      withRetry(() => pushAudioMetadata(id))()
-    }
-    return updated
+    return ensureAudioLocal(id, hints, opts)
   },
 
   // Trash: soft-deleted tasks, notes, and audio (raw reads; UI filters further).
@@ -640,7 +633,7 @@ const useAppStore = create((set, get) => ({
     }
 
     const now = new Date().toISOString()
-    const audioHtml = `<div data-audio-id="${rec.id}" data-duration="${rec.duration || 0}"></div>`
+    const audioHtml = audioBlockHtml(rec)
     const newBlock = { id: uuid(), html: audioHtml, updatedAt: now }
     const sourceLabel = rec.sourceTitle || (rec.sourceType === 'journal' ? 'journal entry' : 'note')
 
