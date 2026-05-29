@@ -14,6 +14,7 @@ import {
 } from './drive'
 import { appendChanges, getDeviceId } from './manifest'
 import { withAuthRetry } from './auth'
+import { logSync } from './syncLog'
 
 /**
  * Phase B: per-id audio metadata. Each upsert merges with the remote file
@@ -142,7 +143,18 @@ export async function ensureAudioLocal(id) {
   if (local?.blob) return local
 
   const ids = await getDriveFileIds()
-  if (!ids) return local || null
+  if (!ids) {
+    logSync('audio ensure: no drive ids', { id })
+    return local || null
+  }
+  logSync('audio ensure: start', {
+    id,
+    hasLocal: !!local,
+    localDriveFileId: local?.driveFileId || null,
+    localHasTranscript: !!local?.transcript,
+    audioMetaFolderId: ids.audioMetaFolderId || null,
+    audioIndexFileId: ids.audioIndexFileId || null,
+  })
 
   // Look up driveFileId — prefer local record, fall back to remote index
   let driveFileId = local?.driveFileId
@@ -159,12 +171,21 @@ export async function ensureAudioLocal(id) {
     let entry = null
     if (ids.audioMetaFolderId) {
       entry = await readEntityFile(ids.audioMetaFolderId, id)
+      logSync('audio ensure: meta file lookup', {
+        id, found: !!entry, hasDriveFileId: !!entry?.driveFileId, hasTranscript: !!entry?.transcript,
+      })
     }
     if (!entry && ids.audioIndexFileId) {
       const remoteIndex = await readJsonFile(ids.audioIndexFileId).catch(() => [])
       entry = Array.isArray(remoteIndex) ? remoteIndex.find(e => e.id === id) : null
+      logSync('audio ensure: legacy index fallback', {
+        id, indexLen: Array.isArray(remoteIndex) ? remoteIndex.length : -1, found: !!entry,
+      })
     }
-    if (!entry?.driveFileId) return local || null
+    if (!entry?.driveFileId) {
+      logSync('audio ensure: give up (no driveFileId)', { id })
+      return local || null
+    }
     driveFileId = entry.driveFileId
     mimeType = entry.mimeType || mimeType
     createdAt = entry.createdAt || new Date().toISOString()

@@ -10,8 +10,8 @@
  *
  * This is a temporary debug aid — remove once the staleness root cause is fixed.
  */
-import { getMeta, putMeta } from './db'
-import { getDriveFileIds, findFile, writeJsonFile } from './drive'
+import { getMeta, putMeta, getAllAudio } from './db'
+import { getDriveFileIds, findFile, writeJsonFile, listFolder } from './drive'
 
 const LOG_KEY = 'sync_debug_log'
 const MAX_ENTRIES = 3000
@@ -99,4 +99,42 @@ if (typeof window !== 'undefined') {
   }
   window.clearSyncLog = clearSyncLog
   window.flushSyncLogToDrive = flushSyncLogToDrive
+
+  // Audio diagnostic: cross-reference local IDB audio records against the Drive
+  // audio/ blob folder and audio/meta/ per-id metadata folder. Tells us in one
+  // shot whether "audio not found" is a missing-on-Drive vs missing-locally
+  // problem. Temporary debug aid.
+  window.auditAudio = async () => {
+    const ids = await getDriveFileIds()
+    const local = await getAllAudio()
+    const blobFiles = ids?.audioFolderId ? await listFolder(ids.audioFolderId) : []
+    const metaFiles = ids?.audioMetaFolderId ? await listFolder(ids.audioMetaFolderId) : []
+    const metaIds = new Set(metaFiles
+      .map(f => /^(.+)\.json$/.exec(f.name || '')?.[1])
+      .filter(x => x && !x.startsWith('_')))
+    const blobNames = new Set(blobFiles.map(f => f.name).filter(n => n && n !== 'meta'))
+    const report = local.map(a => ({
+      id: a.id,
+      localHasBlob: !!a.blob,
+      localHasTranscript: !!a.transcript,
+      localDriveFileId: a.driveFileId || null,
+      deleted: !!a.deleted,
+      metaOnDrive: metaIds.has(a.id),
+      blobOnDriveById: a.driveFileId ? blobFiles.some(f => f.id === a.driveFileId) : null,
+    }))
+    const summary = {
+      audioMetaFolderId: ids?.audioMetaFolderId || null,
+      audioIndexFileId: ids?.audioIndexFileId || null,
+      localCount: local.length,
+      driveBlobFileCount: blobNames.size,
+      driveMetaFileCount: metaIds.size,
+      localMissingBlob: report.filter(r => !r.localHasBlob).length,
+      localMissingMetaOnDrive: report.filter(r => !r.metaOnDrive).length,
+    }
+    console.log('=== AUDIO AUDIT SUMMARY ===')
+    console.table([summary])
+    console.log('=== PER-AUDIO ===')
+    console.table(report)
+    return { summary, report }
+  }
 }
