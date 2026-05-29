@@ -14,7 +14,7 @@ import { getMeta, putMeta } from './db'
 import { getDriveFileIds, findFile, writeJsonFile } from './drive'
 
 const LOG_KEY = 'sync_debug_log'
-const MAX_ENTRIES = 300
+const MAX_ENTRIES = 3000
 
 // In-memory mirror so rapid 1s-poll appends don't serialize a full IDB
 // read-modify-write each time. Hydrated lazily from IDB on first use.

@@ -51,6 +51,8 @@ let pushesInFlight = 0
 // When true, the next pollRemote skips the modifiedTime hash check and
 // fetches directly.
 let forceNextPoll = true
+// Suppresses repeated steady-state "hash unchanged" debug log spam.
+let _shortCircuitLogged = false
 
 export function notifyLocalWrite() {
   writeGeneration++
@@ -242,9 +244,15 @@ async function pollRemote(storeSetter) {
     } else {
       hash = await getRemoteHash(ids)
       if (hash === lastRemoteHash) {
-        logSync('poll short-circuit: remote hash unchanged', { hash })
+        // Don't log the steady-state no-op every second — it floods the ring
+        // buffer. Only log the first short-circuit after a real change.
+        if (!_shortCircuitLogged) {
+          logSync('poll short-circuit: remote hash unchanged (further repeats suppressed)', { hash })
+          _shortCircuitLogged = true
+        }
         return
       }
+      _shortCircuitLogged = false
       logSync('poll proceeding: remote hash changed', { hash, prev: lastRemoteHash })
     }
 
@@ -467,6 +475,11 @@ async function pollRemote(storeSetter) {
     // head as-is — we just enumerated every entity file, so anything older is
     // covered by the per-id merges above.
     if (headSeq > localLastSeq) {
+      logSync('localLastSeq advance', {
+        from: localLastSeq, to: headSeq, coldStart,
+        mergedJournals: mergedJournals.map(d => d?.date),
+        fetchedJournalIds: [...changedByType.journal.keys()],
+      })
       await setLocalLastSeq(headSeq)
     }
 

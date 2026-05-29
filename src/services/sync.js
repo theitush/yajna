@@ -28,6 +28,7 @@ import {
   applyJournalFields, materializeJournalRow,
 } from './automergeDoc'
 import { dayKey } from '../lib/dates'
+import { logSync } from './syncLog'
 
 const LAST_SYNC_KEY = 'last_sync'
 
@@ -330,6 +331,18 @@ export async function mergeJournalDocs(journalDocs, changedMap) {
     const mergedBytes = await saveDoc(mergedDoc)
     const mergedRow = materializeJournalRow(mergedDoc)
     if (!mergedRow.date) mergedRow.date = id
+    try {
+      const blockCount = (r) => Array.isArray(r?.blocks) ? r.blocks.filter(b => !b?.deleted).length : 0
+      logSync('mergeJournalDocs result', {
+        id,
+        seededFrom: localBytes ? 'localDoc' : (l ? 'localRowSeed' : 'remoteOnly'),
+        localBlocks: blockCount(l),
+        mergedBlocks: blockCount(mergedRow),
+        localUpdatedAt: l?.updatedAt || null,
+        mergedUpdatedAt: mergedRow?.updatedAt || null,
+        changedOp: change?.op || null,
+      })
+    } catch { /* logging best-effort */ }
     writeRows.push(mergedRow)
     writeDocBytes.set(id, mergedBytes)
     localByDate.set(id, mergedRow)
