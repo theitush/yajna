@@ -10,7 +10,7 @@
 import { putAudio, getAudio, getAllAudio, deleteAudio as dbDeleteAudio } from './db'
 import {
   getDriveFileIds, uploadAudioFile, downloadFileBlob, deleteDriveFile,
-  readJsonFile, writeJsonFile, writeEntityFile, readEntityFile,
+  readJsonFile, writeJsonFile, writeEntityFile, readEntityFile, listFolder,
 } from './drive'
 import { appendChanges, getDeviceId } from './manifest'
 import { withAuthRetry } from './auth'
@@ -285,6 +285,83 @@ export async function hardDeleteAudio(id) {
 }
 
 /**
+ * One-shot repair: reconstruct missing `audio/meta/<id>.json` files from the
+ * surviving `audio/<id>.<ext>` blobs on Drive.
+ *
+ * Context: some pre-migration audios lost their metadata (the entities
+ * migration didn't carry their `audio.json` entry into `audio/meta/`), but the
+ * blob files in `audio/` are intact. Their filenames are `<id>.<ext>`, so we can
+ * map filename → id and re-point a fresh meta entry at the existing blob's
+ * Drive fileId. Transcripts for these are unrecoverable (they lived only in the
+ * lost meta) but playback is restored.
+ *
+ * Pass { apply: true } to actually write. Default is a dry run that reports what
+ * it would do. Temporary recovery aid.
+ */
+export async function repairOrphanAudioMeta({ apply = false } = {}) {
+  const ids = await getDriveFileIds()
+  if (!ids?.audioFolderId || !ids?.audioMetaFolderId) {
+    return { error: 'Drive folders not provisioned' }
+  }
+  const [blobFiles, metaFiles] = await Promise.all([
+    listFolder(ids.audioFolderId),
+    listFolder(ids.audioMetaFolderId),
+  ])
+  const metaIds = new Set(
+    metaFiles
+      .map(f => /^(.+)\.json$/.exec(f.name || '')?.[1])
+      .filter(x => x && !x.startsWith('_'))
+  )
+  // Blobs in audio/ are named `<id>.<ext>`. Skip the nested `meta` folder and
+  // any non-blob entries.
+  const orphans = []
+  for (const f of blobFiles) {
+    const m = /^(.+)\.(webm|ogg|mp3|m4a|mp4|wav|aac)$/i.exec(f.name || '')
+    if (!m) continue
+    const id = m[1]
+    if (id.startsWith('_')) continue
+    if (metaIds.has(id)) continue
+    orphans.push({ id, ext: m[2].toLowerCase(), driveFileId: f.id })
+  }
+
+  const result = { totalBlobs: blobFiles.length, existingMeta: metaIds.size, orphans: orphans.length, repaired: 0, failed: [], apply }
+  if (!apply) {
+    console.log('[audio-repair] DRY RUN —', result)
+    console.table(orphans)
+    return { ...result, orphanList: orphans }
+  }
+
+  const extToMime = { webm: 'audio/webm', ogg: 'audio/ogg', mp3: 'audio/mpeg', m4a: 'audio/mp4', mp4: 'audio/mp4', wav: 'audio/wav', aac: 'audio/aac' }
+  for (const o of orphans) {
+    const entry = {
+      id: o.id,
+      driveFileId: o.driveFileId,
+      mimeType: extToMime[o.ext] || 'audio/webm',
+      duration: 0,
+      createdAt: new Date().toISOString(),
+      transcript: null,
+      transcriptModel: null,
+      transcribedAt: null,
+      transcriptSegments: null,
+      deleted: false,
+      deletedAt: null,
+      sourceType: null,
+      sourceId: null,
+      sourceTitle: null,
+      recoveredAt: new Date().toISOString(),
+    }
+    try {
+      await upsertAudioMeta(ids, entry)
+      result.repaired++
+    } catch (e) {
+      result.failed.push({ id: o.id, error: e.message || String(e) })
+    }
+  }
+  console.log('[audio-repair] APPLIED —', result)
+  return result
+}
+
+/**
  * Collect all audio ids referenced by a note or journal-entry HTML blob list.
  */
 export function collectAudioIdsFromBlocks(blocks) {
@@ -318,4 +395,10 @@ export async function pushPendingAudio() {
       }
     }
   }
+}
+
+if (typeof window !== 'undefined') {
+  // Recovery aid: window.repairOrphanAudioMeta()        -> dry run
+  //               window.repairOrphanAudioMeta(true)    -> apply
+  window.repairOrphanAudioMeta = (apply = false) => repairOrphanAudioMeta({ apply })
 }
