@@ -417,20 +417,20 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
       {!expanded && !confirmDelete && (task.explanation || task.feedback || task.tags) && (
         <button onClick={openExpanded} style={{ width: '100%', textAlign: 'start', padding: '0 16px 12px', paddingLeft: '50px', background: 'none', border: 'none', cursor: 'pointer' }}>
           {task.explanation && (
-            <p dir="auto" style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', textAlign: 'start' }}>
+            <p dir="auto" style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5, whiteSpace: 'pre-wrap', textAlign: 'start' }}>
               {renderWithHashtags(task.explanation)}
             </p>
           )}
           {task.feedback && (
             <>
               <hr style={{ border: 'none', borderTop: '1px solid var(--border-light)', margin: '6px 0 4px' }} />
-              <p dir="auto" style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', textAlign: 'start' }}>
+              <p dir="auto" style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5, whiteSpace: 'pre-wrap', textAlign: 'start' }}>
                 {renderWithHashtags(task.feedback)}
               </p>
             </>
           )}
           {task.tags && (
-            <p dir="auto" style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', textAlign: 'start', marginTop: '4px' }}>
+            <p dir="auto" style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5, whiteSpace: 'pre-wrap', textAlign: 'start', marginTop: '4px' }}>
               {renderWithHashtags(task.tags)}
             </p>
           )}
