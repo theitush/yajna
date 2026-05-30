@@ -258,18 +258,19 @@ export async function initDriveStructure() {
   // *FileId keys may be null, which is expected.
   if (cached && cached.rootId && cached.journalsFolderId && cached.audioFolderId &&
       cached.notesFolderId && cached.tasksFolderId && cached.audioMetaFolderId &&
-      cached.configFileId) {
+      cached.configFolderId && cached.configFileId) {
     lap('cache hit', t0)
     return cached
   }
 
   let t = performance.now()
   const rootId = await getOrCreateAppFolder(); t = lap('getOrCreateAppFolder', t)
-  const [journalsFolderId, audioFolderId, notesFolderId, tasksFolderId] = await Promise.all([
+  const [journalsFolderId, audioFolderId, notesFolderId, tasksFolderId, configFolderId] = await Promise.all([
     getOrCreateSubfolder(rootId, 'journals'),
     getOrCreateSubfolder(rootId, 'audio'),
     getOrCreateSubfolder(rootId, 'notes'),
     getOrCreateSubfolder(rootId, 'tasks'),
+    getOrCreateSubfolder(rootId, 'config'),
   ]); t = lap('subfolders', t)
   // audio/meta lives under audio/ so audio blobs and metadata share a parent.
   const audioMetaFolderId = await getOrCreateSubfolder(audioFolderId, 'meta')
@@ -305,7 +306,7 @@ export async function initDriveStructure() {
   ]); t = lap('ensureFiles', t)
 
   const ids = {
-    rootId, journalsFolderId, audioFolderId, notesFolderId, tasksFolderId, audioMetaFolderId,
+    rootId, journalsFolderId, audioFolderId, notesFolderId, tasksFolderId, audioMetaFolderId, configFolderId,
     tasksFileId, notesFileId, configFileId, audioIndexFileId,
   }
   await putMeta(FILES_KEY, ids)

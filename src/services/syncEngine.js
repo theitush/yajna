@@ -9,11 +9,10 @@
  *   { state: 'waiting', retryIn: <seconds remaining> }
  */
 import {
-  getDriveFileIds, readJsonFile, findFile,
+  getDriveFileIds, findFile,
   listFolder, readEntityFilesBatched,
 } from './drive'
 import {
-  putConfig,
   getAllAudio, putAudio,
 } from './db'
 import { getStoredToken, trySilentRefresh, storeToken, setAccessToken, isAuthError, withAuthRetry } from './auth'
@@ -21,6 +20,7 @@ import {
   resolveTaskDocs, mergeTaskDocs,
   resolveNoteDocs, mergeNoteDocs,
   resolveJournalDocs, mergeJournalDocs,
+  resolveConfigDoc, mergeConfigDoc,
 } from './sync'
 import { readManifest, diffManifest, getLocalLastSeq, setLocalLastSeq } from './manifest'
 import { logSync } from './syncLog'
@@ -261,7 +261,7 @@ async function pollRemote(storeSetter) {
     // 1. Manifest diff — what entity ids changed since we last polled?
     const head = await readManifest(ids.rootId)
     const localLastSeq = await getLocalLastSeq()
-    let changedByType = { task: new Map(), note: new Map(), audio: new Map(), journal: new Map() }
+    let changedByType = { task: new Map(), note: new Map(), audio: new Map(), journal: new Map(), config: new Map() }
     let coldStart = false
     let headSeq = 0
     if (!head) {
@@ -286,8 +286,10 @@ async function pollRemote(storeSetter) {
       changed: Object.fromEntries(Object.entries(changedByType).map(([t, m]) => [t, [...m.keys()]])),
     })
 
-    // 2. Config (still a single file — small, no per-entity model for config).
-    const remoteConfig = await readJsonFile(ids.configFileId).catch(() => ({}))
+    // 2. Config is now a per-entity Automerge doc (config/config.bin). Only
+    //    fetch it when the manifest flagged it (or on cold start) — no more
+    //    blind every-poll read that clobbered freshly-saved local settings.
+    const configDoc = await resolveConfigDoc(ids.configFolderId, coldStart, changedByType.config)
 
     // 3. Fetch the per-entity files that changed (or all, on cold start).
     //    Tasks + notes + journals: Phase C — Automerge .bin via resolve*Docs.
@@ -344,8 +346,9 @@ async function pollRemote(storeSetter) {
     const mergedNotes = await mergeNoteDocs(noteDocs, changedByType.note)
     const mergedJournals = await mergeJournalDocs(journalDocs, changedByType.journal)
 
-    // 5. Persist config (tasks + notes already persisted).
-    await putConfig(remoteConfig || {})
+    // 5. Merge config (Automerge singleton). mergeConfigDoc persists the merged
+    //    row + bytes to IDB; returns null when there was nothing to merge.
+    const mergedConfig = await mergeConfigDoc(configDoc)
 
     // 7. Reconcile audio metadata (per-id files now).
     const audioTranscriptUpdates = []
@@ -463,7 +466,11 @@ async function pollRemote(storeSetter) {
       const update = {
         tasks: visibleTasks,
         notes: visibleNotes,
-        config: remoteConfig || {},
+      }
+      // Only push config into the store when it actually merged this poll —
+      // otherwise leave the in-memory config (and any unsaved local edit) alone.
+      if (mergedConfig) {
+        update.config = mergedConfig
       }
       if (updatedDay !== undefined) {
         update.currentDay = updatedDay
@@ -509,9 +516,10 @@ async function pollRemote(storeSetter) {
 }
 
 /**
- * Cheap "did anything change?" probe: modifiedTime of manifest.json + config.json.
- * Manifest covers tasks/notes/audio/journals — every entity push appends a
- * manifest entry, so the manifest's modifiedTime catches all of them.
+ * Cheap "did anything change?" probe: modifiedTime of manifest.json.
+ * The manifest covers tasks/notes/audio/journals/config — every entity push
+ * (config included, now that it's an Automerge doc) appends a manifest entry,
+ * so the manifest's modifiedTime catches all of them.
  */
 async function getRemoteHash(ids) {
   const token = window.gapi?.client?.getToken()?.access_token
@@ -520,7 +528,6 @@ async function getRemoteHash(ids) {
   const manifestFileId = await findFile(ids.rootId, 'manifest.json').catch(() => null)
   const fileIds = []
   if (manifestFileId) fileIds.push(manifestFileId)
-  if (ids.configFileId) fileIds.push(ids.configFileId)
   if (!fileIds.length) return null
 
   const times = await Promise.all(

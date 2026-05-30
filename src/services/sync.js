@@ -10,9 +10,10 @@ import {
   getTaskDocBytes, putTaskWithDoc,
   getNoteDocBytes, putNoteWithDoc,
   getJournalDocBytes, putJournalWithDoc, getAllJournals,
+  getConfigDocBytes, putConfigWithDoc,
 } from './db'
 import {
-  getDriveFileIds, readJsonFile, writeJsonFile,
+  getDriveFileIds, readJsonFile,
   readEntityFilesBatched, listFolder,
   writeEntityBinFile, readEntityBinFilesBatched, readEntityBinFile,
 } from './drive'
@@ -21,12 +22,14 @@ import { migrateDriveEntitiesIfNeeded } from './entitiesMigration'
 import { migrateTasksToAutomergeIfNeeded } from './tasksAutomergeMigration'
 import { migrateNotesToAutomergeIfNeeded } from './notesAutomergeMigration'
 import { migrateJournalsToAutomergeIfNeeded } from './journalsAutomergeMigration'
+import { migrateConfigToAutomergeIfNeeded } from './configAutomergeMigration'
 import { migrateAudioInlineIfNeeded } from './audioInlineMigration'
 import {
   createDoc, loadDoc, saveDoc, mergeDoc, sharesAncestry,
   applyTaskFields, materializeTaskRow,
   applyNoteFields, materializeNoteRow,
   applyJournalFields, materializeJournalRow,
+  applyConfigFields, materializeConfigRow,
 } from './automergeDoc'
 import { dayKey } from '../lib/dates'
 import { logSync } from './syncLog'
@@ -86,7 +89,7 @@ export async function mergeWithDrive() {
 async function inspectManifest(rootId) {
   const head = await readManifest(rootId)
   const localLastSeq = await getLocalLastSeq()
-  const changedByType = { task: new Map(), note: new Map(), audio: new Map(), journal: new Map() }
+  const changedByType = { task: new Map(), note: new Map(), audio: new Map(), journal: new Map(), config: new Map() }
   if (!head) return { coldStart: true, headSeq: 0, changedByType, localLastSeq }
   const headSeq = head.manifest.seq || 0
   const diff = diffManifest(head.manifest, localLastSeq)
@@ -147,6 +150,50 @@ export async function resolveTaskDocs(folderId, coldStart, changedMap) {
 
   if (!entries.length) return []
   return readEntityBinFilesBatched(folderId, entries)
+}
+
+/**
+ * Resolve the config singleton's Automerge doc. Config has one fixed id
+ * ("config"), so this is just: fetch config/config.bin when cold-starting or
+ * when the manifest flagged config changed. Returns `{ id, bytes }` or null
+ * (no .bin yet / nothing changed).
+ */
+export async function resolveConfigDoc(folderId, coldStart, changedMap) {
+  if (!folderId) return null
+  if (!coldStart && !(changedMap && changedMap.size)) return null
+  const bytes = await readEntityBinFile(folderId, 'config').catch(() => null)
+  return { id: 'config', bytes }
+}
+
+/**
+ * Merge the remote config doc into the local one (singleton). Mirrors
+ * mergeTaskDocs for a single id: shared-ancestry → Automerge.merge; disjoint
+ * roots → newer-by-updatedAt (ties to remote); no local bytes → adopt remote
+ * and re-apply the local row on top. Persists merged row + bytes and returns
+ * the materialized config row, or null if there was nothing to merge.
+ */
+export async function mergeConfigDoc(configDoc) {
+  if (!configDoc || !configDoc.bytes) return null
+  const remoteDoc = await loadDoc(configDoc.bytes)
+  const localBytes = await getConfigDocBytes()
+  const localRow = await getConfig()
+  let mergedDoc
+  if (localBytes) {
+    const localDoc = await loadDoc(localBytes)
+    if (await sharesAncestry(localDoc, remoteDoc)) {
+      mergedDoc = await mergeDoc(localDoc, remoteDoc)
+    } else {
+      mergedDoc = newerDoc(localDoc, remoteDoc, materializeConfigRow)
+    }
+  } else if (localRow && Object.keys(localRow).length) {
+    mergedDoc = await applyConfigFields(remoteDoc, localRow)
+  } else {
+    mergedDoc = remoteDoc
+  }
+  const mergedBytes = await saveDoc(mergedDoc)
+  const mergedRow = materializeConfigRow(mergedDoc)
+  await putConfigWithDoc(mergedRow, mergedBytes, { fromSync: true })
+  return mergedRow
 }
 
 export async function mergeTaskDocs(taskDocs, changedMap) {
@@ -518,6 +565,17 @@ async function mergeWithDriveImpl(resolvers, onProgress = null) {
     console.warn('[sync] automerge journals migration failed:', e.message || e)
   }
 
+  // Config migration: config.json → config/config.bin (Automerge singleton).
+  // Idempotent; flag-gated. Needs the manifest (Phase B) to exist so the config
+  // change is discoverable by other devices.
+  try {
+    const tMig = performance.now()
+    await migrateConfigToAutomergeIfNeeded()
+    mark('automerge config migration', tMig)
+  } catch (e) {
+    console.warn('[sync] automerge config migration failed:', e.message || e)
+  }
+
   // Inline audio metadata into the doc nodes that reference it (and recover
   // orphaned blobs whose meta was lost). Runs after notes+journals are in .bin
   // form since it rewrites those docs in place. Idempotent + flag-gated.
@@ -537,6 +595,7 @@ async function mergeWithDriveImpl(resolvers, onProgress = null) {
   const notesFolderId = idsAfterMig.notesFolderId
   const audioMetaFolderId = idsAfterMig.audioMetaFolderId
   const journalsFolderId = idsAfterMig.journalsFolderId
+  const configFolderId = idsAfterMig.configFolderId
 
   // Inspect manifest once; reuse across stages.
   const tManifest = performance.now()
@@ -549,10 +608,12 @@ async function mergeWithDriveImpl(resolvers, onProgress = null) {
   // -- Stage 1: config + today's journal (cheap, unblocks Today UI) --
   const stage1 = (async () => {
     const tCfg = performance.now()
-    const remoteConfig = await readJsonFile(idsAfterMig.configFileId).catch(() => ({}))
-    const localCfg = await getConfig()
-    const mergedConfig = { ...(localCfg || {}), ...(remoteConfig || {}) }
-    await putConfig(mergedConfig)
+    // Config is now a per-entity Automerge doc (config/config.bin). Fetch +
+    // merge it through the same path as tasks: shared-ancestry merge, else
+    // recency heal, else adopt remote. Falls back to the local row if the .bin
+    // isn't there yet (pre-migration peer, or write in flight).
+    const configDoc = await resolveConfigDoc(configFolderId, inspection.coldStart, inspection.changedByType.config)
+    const mergedConfig = (await mergeConfigDoc(configDoc)) || (await getConfig()) || {}
     mark('config', tCfg)
     resolvers.config(mergedConfig)
     // `today` resolves alongside config — App.jsx's loadJournal() handles the
@@ -807,13 +868,45 @@ export async function pushNotes() {
 }
 
 /**
- * Push config to Drive
+ * Push config to Drive (Automerge singleton). Mirrors pushTasks for the single
+ * "config" id: drain the dirty flag, base the doc on our own bytes → else the
+ * remote .bin root → else createDoc, apply the row's fields, blind-upload
+ * config/config.bin, append a manifest entry. No pre-merge read — other
+ * devices' concurrent setting edits fold in on the next pull via Automerge.
+ *
+ * Caller is expected to be wrapped in `withRetry` from syncEngine.
  */
 export async function pushConfig() {
   const ids = await getDriveFileIds()
-  if (!ids) return
-  const config = await getConfig()
-  await writeJsonFile(ids.rootId, 'config.json', config, ids.configFileId)
+  if (!ids?.configFolderId) return null
+  const dirty = await getDirty('config')
+  if (!dirty.config) return null
+
+  const local = await getConfig()
+  const existingBytes = await getConfigDocBytes()
+  let doc
+  if (existingBytes) {
+    doc = await loadDoc(existingBytes)
+  } else {
+    const remoteBytes = await readEntityBinFile(ids.configFolderId, 'config').catch(() => null)
+    doc = remoteBytes ? await loadDoc(remoteBytes) : await createDoc('config', local || {})
+  }
+  doc = await applyConfigFields(doc, local || {})
+  const bytes = await saveDoc(doc)
+
+  // Persist bytes locally before upload so a mid-push crash can't leave the
+  // remote ahead of the local doc.
+  await putConfigWithDoc(local || {}, bytes, { fromSync: true })
+
+  await writeEntityBinFile(ids.configFolderId, 'config', bytes)
+
+  // Clear dirty before the manifest append (same rationale as pushTasks).
+  await clearDirty('config', ['config'])
+  await appendChanges(ids.rootId, [{
+    type: 'config', id: 'config', op: 'upsert',
+    at: new Date().toISOString(), deviceId: await getDeviceId(),
+  }])
+  return 1
 }
 
 /**

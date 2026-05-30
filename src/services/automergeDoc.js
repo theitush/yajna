@@ -22,7 +22,7 @@ function getAutomerge() {
   return automergePromise
 }
 
-const ENTITY_TYPES = new Set(['task', 'note', 'journal', 'audio'])
+const ENTITY_TYPES = new Set(['task', 'note', 'journal', 'audio', 'config'])
 
 function assertType(type) {
   if (!ENTITY_TYPES.has(type)) {
@@ -34,6 +34,9 @@ function assertType(type) {
 // Automerge document. `_doc` is the Automerge bytes themselves (would create
 // a self-reference); everything else is a real persisted field.
 const TASK_NON_FIELDS = new Set(['_doc'])
+// Config is a flat key/value map (singleton entity). `_doc` is the only
+// non-business field; everything else is a real setting.
+const CONFIG_NON_FIELDS = new Set(['_doc'])
 const NOTE_NON_FIELDS = new Set(['_doc', 'body'])
 // Per-block fields. `id` is the stable identifier (already used by mergeBlocks
 // as the join key); we keep it as a plain string inside Automerge so we can
@@ -41,6 +44,22 @@ const NOTE_NON_FIELDS = new Set(['_doc', 'body'])
 // block matches what mergeBlocks did. `order` is dropped (Automerge.List
 // position is the ordering source of truth post-Phase-C).
 const NOTE_BLOCK_FIELDS = new Set(['id', 'html', 'deleted', 'updatedAt'])
+
+/**
+ * Build the JSON shape for the config singleton's Automerge doc. Pass-through
+ * of every setting key (groqApiKey, groqModel, syncInterval, dayRollover*, …);
+ * the schema isn't fixed so new settings flow through without code changes.
+ * `updatedAt` is stamped so disjoint-root docs can be resolved by recency.
+ */
+function shapeConfigFields(source) {
+  const out = {}
+  for (const [k, v] of Object.entries(source || {})) {
+    if (CONFIG_NON_FIELDS.has(k)) continue
+    out[k] = cloneForAutomerge(v)
+  }
+  if (!out.updatedAt) out.updatedAt = new Date().toISOString()
+  return out
+}
 
 function shapeTaskFields(source) {
   // Pass-through copy of all task fields except internals. Tasks have been
@@ -78,6 +97,8 @@ function initialShape(type, seed) {
   switch (type) {
     case 'task':
       return shapeTaskFields(seed)
+    case 'config':
+      return shapeConfigFields(seed)
     case 'note':
       return shapeNoteFields(seed)
     case 'journal':
@@ -536,6 +557,41 @@ export function materializeJournalRow(doc) {
  * UI/IDB get plain JSON-serializable objects.
  */
 export function materializeTaskRow(doc) {
+  if (!doc) return null
+  const out = {}
+  for (const [k, v] of Object.entries(doc)) {
+    out[k] = plainCopy(v)
+  }
+  return out
+}
+
+/**
+ * Apply the config row's fields into its Automerge doc inside a single change.
+ * Mirrors applyTaskFields: removes keys no longer present in the source (so a
+ * cleared setting propagates), assigns changed keys. `updatedAt` is bumped when
+ * anything actually changed so the disjoint-root heal (newerDoc) has a clock.
+ */
+export async function applyConfigFields(doc, source) {
+  const Automerge = await getAutomerge()
+  const fields = shapeConfigFields(source)
+  return Automerge.change(doc, (d) => {
+    let changed = false
+    for (const k of Object.keys(d)) {
+      if (k === 'updatedAt') continue
+      if (!(k in fields)) { delete d[k]; changed = true }
+    }
+    for (const [k, v] of Object.entries(fields)) {
+      if (k === 'updatedAt') continue
+      if (!shallowEqual(d[k], v)) { d[k] = v; changed = true }
+    }
+    if (changed || !d.updatedAt) d.updatedAt = new Date().toISOString()
+  })
+}
+
+/**
+ * Materialize a plain config row from a config Automerge doc.
+ */
+export function materializeConfigRow(doc) {
   if (!doc) return null
   const out = {}
   for (const [k, v] of Object.entries(doc)) {

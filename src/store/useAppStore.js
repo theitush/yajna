@@ -6,7 +6,7 @@ import { MODE_OFFLINE } from '../lib/constants'
 import {
   getTasks, putTask, putTasks, getTask,
   getNotes, putNote, putNotes,
-  getJournal, putJournal, getAllJournals, getConfig, putConfig,
+  getJournal, putJournal, getAllJournals, getConfig, putConfigWithDoc,
   getAllTasksRaw, getAllNotesRaw, getAllAudio,
 } from '../services/db'
 import { extractHashtags } from '../lib/hashtags'
@@ -375,7 +375,7 @@ const useAppStore = create((set, get) => ({
         dayRolloverZone: detectBrowserTimezone(),
         dayRolloverHour: 4,
       }
-      await putConfig(seeded)
+      await putConfigWithDoc(seeded, null)
       set({ config: seeded })
       if (get().mode !== MODE_OFFLINE) withRetry(pushConfig)()
       config = seeded
@@ -404,7 +404,7 @@ const useAppStore = create((set, get) => ({
       }
 
       const nextConfig = { ...config, autoDismissCompletedLastRunDate: t }
-      await putConfig(nextConfig)
+      await putConfigWithDoc(nextConfig, null)
       set({ config: nextConfig })
       if (get().mode !== MODE_OFFLINE) withRetry(pushConfig)()
     }
@@ -743,7 +743,11 @@ const useAppStore = create((set, get) => ({
   },
   updateConfig: async (updates) => {
     const config = { ...get().config, ...updates }
-    await putConfig(config)
+    // putConfigWithDoc marks the config entity dirty (offline → just local).
+    // pushConfig (wrapped in withRetry) drains the dirty flag and ships the
+    // Automerge doc; the write-generation bump guards against an in-flight poll
+    // clobbering this edit.
+    await putConfigWithDoc(config, null)
     set({ config })
     if (get().mode !== MODE_OFFLINE) withRetry(pushConfig)()
   },

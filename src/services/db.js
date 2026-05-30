@@ -358,6 +358,22 @@ export async function putConfig(config) {
   return db.put(STORE_CONFIG, config, 'config')
 }
 
+// Config Automerge doc bytes. The config store is keyed out-of-line (single
+// 'config' record), so the doc bytes ride in meta rather than on the row like
+// tasks/notes do. `config` is a singleton entity — its dirty id is 'config'.
+export async function getConfigDocBytes() {
+  const db = await getDB()
+  const bytes = await db.get(STORE_META, 'config_doc')
+  return bytes instanceof Uint8Array ? bytes : null
+}
+
+export async function putConfigWithDoc(config, bytes, opts) {
+  const db = await getDB()
+  await db.put(STORE_CONFIG, config, 'config')
+  if (bytes instanceof Uint8Array) await db.put(STORE_META, bytes, 'config_doc')
+  if (!opts?.fromSync) await markDirty('config', 'config')
+}
+
 // Audio: local-first audio blob store. Each record is
 // { id, blob, mimeType, duration, createdAt, driveFileId? }
 export async function putAudio(record, opts) {
