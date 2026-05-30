@@ -169,6 +169,28 @@ export async function mergeDoc(local, remote) {
   return Automerge.merge(local, remote)
 }
 
+/**
+ * True if two docs share at least one change in their history (i.e. they
+ * descend from a common root and `Automerge.merge` will correctly combine
+ * them). Two docs each created independently with `Automerge.from` have
+ * DISJOINT roots — merging them silently drops one side's list/map content.
+ * Callers use this to detect that case and re-base on the remote instead.
+ */
+export async function sharesAncestry(a, b) {
+  const Automerge = await getAutomerge()
+  try {
+    const aHashes = new Set(Automerge.getAllChanges(a).map(c => Automerge.decodeChange(c).hash))
+    for (const c of Automerge.getAllChanges(b)) {
+      if (aHashes.has(Automerge.decodeChange(c).hash)) return true
+    }
+    return false
+  } catch {
+    // If the Automerge build doesn't expose these, assume shared ancestry so we
+    // fall back to the prior (merge-only) behavior rather than over-adopting.
+    return true
+  }
+}
+
 export async function changeDoc(doc, mutator) {
   const Automerge = await getAutomerge()
   return Automerge.change(doc, mutator)
