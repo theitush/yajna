@@ -29,6 +29,7 @@ export default function TasksPanel({ date }) {
   const itemEls = useRef({})
   const offsetRef = useRef({ x: 0, y: 0 })
   const pendingDragRef = useRef(null) // { id, startX, startY } — drag not yet committed
+  const didDragRef = useRef(false) // true if a real drag (not a click) just ended
   const todayTasksRef = useRef([])
   const DRAG_THRESHOLD = 5 // px movement before drag starts
 
@@ -133,11 +134,23 @@ export default function TasksPanel({ date }) {
         top: clientY - offsetRef.current.y,
       } : s)
 
-      // Update which item we're over
+      // Update which item we're over. We include the dragged item itself so
+      // returning the pointer to the original slot snaps the shifts back to
+      // zero (dropping in place) — otherwise overIdRef stays stuck on the last
+      // neighbour and you can never put a card back where it started.
       const id = draggingIdRef.current
-      for (const [tid, el] of Object.entries(itemEls.current)) {
-        if (!el || tid === id) continue
+      const ids = getIds()
+      let overTop = null
+      let overBottom = null
+      for (const tid of ids) {
+        const el = itemEls.current[tid]
+        if (!el) continue
+        // The dragged item's own row is shifted out of the way visually, but
+        // its DOM rect still sits at its original (untransformed) spot — use
+        // that as the "home" hit-zone so coming back resets the order.
         const rect = el.getBoundingClientRect()
+        if (overTop === null || rect.top < overTop) overTop = rect.top
+        if (overBottom === null || rect.bottom > overBottom) overBottom = rect.bottom
         if (clientY >= rect.top && clientY <= rect.bottom) {
           if (tid !== overIdRef.current) {
             overIdRef.current = tid
@@ -146,6 +159,19 @@ export default function TasksPanel({ date }) {
           break
         }
       }
+
+      // Past-the-end rubber-band cue: when the pointer goes above the first
+      // row or below the last, nudge the clone with diminishing returns so the
+      // user gets the "you're at the end" feedback they'd see from native
+      // scroll bounce on desktop (touch can't bounce here — we preventDefault).
+      const RUBBER_MAX = 28
+      let overscroll = 0
+      if (overTop !== null && clientY < overTop) {
+        overscroll = -Math.min(RUBBER_MAX, (overTop - clientY) * 0.35)
+      } else if (overBottom !== null && clientY > overBottom) {
+        overscroll = Math.min(RUBBER_MAX, (clientY - overBottom) * 0.35)
+      }
+      setCloneStyle(s => s ? { ...s, overscroll } : s)
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('touchmove', onMove, { passive: false })
@@ -159,6 +185,10 @@ export default function TasksPanel({ date }) {
     pendingDragRef.current = null
     const from = draggingIdRef.current
     const to = overIdRef.current
+    // A real drag happened (clone existed) — swallow the click the browser
+    // fires next so it doesn't open the card for editing, even when dropped
+    // back in place (from === to).
+    didDragRef.current = !!from
     draggingIdRef.current = null
     overIdRef.current = null
 
@@ -213,6 +243,8 @@ export default function TasksPanel({ date }) {
           opacity: 0.95,
           boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
           borderRadius: '12px',
+          transform: cloneStyle.overscroll ? `translateY(${cloneStyle.overscroll}px)` : 'none',
+          transition: 'transform 0.12s ease-out',
         }}>
           <TaskCard task={draggingTask} />
         </div>
@@ -252,7 +284,19 @@ export default function TasksPanel({ date }) {
         </button>
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <div
+        onClickCapture={(e) => {
+          // Suppress the click that follows a drag (mousedown→move→mouseup on
+          // the same element still fires a native click, which would otherwise
+          // expand the card for editing).
+          if (didDragRef.current) {
+            e.preventDefault()
+            e.stopPropagation()
+            didDragRef.current = false
+          }
+        }}
+        style={{ flex: 1, overflowY: 'auto', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}
+      >
         {todayTasks.length === 0 && (
           <div style={{ textAlign: 'center', padding: '48px 0', color: 'var(--text-tertiary)' }}>
             <p style={{ fontSize: '13px' }}>{isToday ? 'No tasks for today' : 'No tasks for this day'}</p>
