@@ -6,6 +6,12 @@ import TagSelector from '../TagSelector'
 
 const HASHTAG_RE = /(#[\p{L}\p{N}_-]+)/gu
 
+// Grip handle (drag + tap-to-save) is a mobile-only affordance; desktop keeps
+// whole-card dragging and click-outside-to-save as before.
+const isTouchDevice = typeof window !== 'undefined'
+  && typeof window.matchMedia === 'function'
+  && window.matchMedia('(hover: none) and (pointer: coarse)').matches
+
 function renderWithHashtags(text) {
   if (!text) return text
   const parts = text.split(HASHTAG_RE)
@@ -249,6 +255,25 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
     setExpanded(true)
   }
 
+  // The grip both drags (handled by TasksPanel) and, on a plain tap, commits the
+  // current edit and collapses the card — a clear "I'm done" affordance.
+  const gripDownRef = useRef(null)
+  const handleGripPointerDown = (e) => {
+    const p = e.touches ? e.touches[0] : e
+    gripDownRef.current = { x: p.clientX, y: p.clientY }
+  }
+  const handleGripClick = (e) => {
+    e.stopPropagation()
+    const start = gripDownRef.current
+    gripDownRef.current = null
+    // If the pointer moved meaningfully it was a drag, not a tap — leave it alone.
+    if (start) {
+      const p = e.changedTouches ? e.changedTouches[0] : e
+      if (Math.abs(p.clientX - start.x) > 5 || Math.abs(p.clientY - start.y) > 5) return
+    }
+    if (expanded || editingTitle) commitEdits()
+  }
+
   const cardStyle = {
     borderRadius: '12px',
     border: isDone
@@ -286,29 +311,57 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
         }}
         style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '14px 16px', paddingBottom: expanded ? '8px' : '14px' }}
       >
-        {/* Checkmark */}
-        <button
-          onClick={handleCheckmark}
-          tabIndex={-1}
-          style={{
-            width: 22, height: 22,
-            borderRadius: '50%',
-            border: isDone ? 'none' : '2px solid var(--border-mid)',
-            background: isDone ? 'var(--green-500)' : 'transparent',
-            flexShrink: 0,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            cursor: 'pointer',
-            boxShadow: isDone ? '0 0 0 3px rgba(16,185,129,0.2), 0 2px 12px rgba(16,185,129,0.35)' : 'none',
-            transition: 'all 0.2s',
-          }}
-          aria-label={isDone ? 'Mark as active' : 'Mark as done'}
-        >
-          {isDone && (
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="20 6 9 17 4 12" />
-            </svg>
+        {/* (mobile) drag grip to the left of the checkmark, same level */}
+        <div style={{ flexShrink: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '4px' }}>
+          {/* Drag grip (mobile only) — grab to reorder, tap to finish editing */}
+          {isTouchDevice && (
+            <span
+              data-task-drag-handle
+              onPointerDown={handleGripPointerDown}
+              onClick={handleGripClick}
+              title={expanded || editingTitle ? 'Tap to save · drag to move' : 'Drag to move'}
+              aria-label={expanded || editingTitle ? 'Save and close' : 'Drag to reorder'}
+              style={{
+                cursor: 'grab',
+                color: expanded || editingTitle ? 'var(--accent)' : 'var(--text-tertiary)',
+                display: 'flex',
+                alignItems: 'center',
+                padding: '4px 2px',
+                marginLeft: '-4px',
+                touchAction: 'none',
+                transition: 'color 0.15s',
+              }}
+            >
+              <svg width="14" height="16" viewBox="0 0 12 14" fill="currentColor" aria-hidden="true">
+                <circle cx="3" cy="3" r="1.2"/><circle cx="9" cy="3" r="1.2"/>
+                <circle cx="3" cy="7" r="1.2"/><circle cx="9" cy="7" r="1.2"/>
+                <circle cx="3" cy="11" r="1.2"/><circle cx="9" cy="11" r="1.2"/>
+              </svg>
+            </span>
           )}
-        </button>
+          <button
+            onClick={handleCheckmark}
+            tabIndex={-1}
+            style={{
+              width: 22, height: 22,
+              borderRadius: '50%',
+              border: isDone ? 'none' : '2px solid var(--border-mid)',
+              background: isDone ? 'var(--green-500)' : 'transparent',
+              flexShrink: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              cursor: 'pointer',
+              boxShadow: isDone ? '0 0 0 3px rgba(16,185,129,0.2), 0 2px 12px rgba(16,185,129,0.35)' : 'none',
+              transition: 'all 0.2s',
+            }}
+            aria-label={isDone ? 'Mark as active' : 'Mark as done'}
+          >
+            {isDone && (
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            )}
+          </button>
+        </div>
 
         {/* Title */}
         <span
@@ -415,7 +468,7 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
 
       {/* Collapsed preview */}
       {!expanded && !confirmDelete && (task.explanation || task.feedback || task.tags) && (
-        <button onClick={openExpanded} style={{ width: '100%', textAlign: 'start', padding: '0 16px 12px', paddingLeft: '50px', background: 'none', border: 'none', cursor: 'pointer' }}>
+        <button onClick={openExpanded} style={{ width: '100%', textAlign: 'start', padding: '0 16px 12px', background: 'none', border: 'none', cursor: 'pointer' }}>
           {task.explanation && (
             <p dir="auto" style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5, whiteSpace: 'pre-wrap', textAlign: 'start' }}>
               {renderWithHashtags(task.explanation)}
@@ -439,7 +492,7 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
 
       {/* Expanded editable */}
       {expanded && (
-        <div style={{ padding: '0 16px 14px', paddingLeft: '50px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <div style={{ padding: '0 16px 14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
           <textarea
             ref={explanationRef}
             value={editExplanation}

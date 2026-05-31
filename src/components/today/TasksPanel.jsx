@@ -4,6 +4,12 @@ import TaskCard from './TaskCard'
 import { today as todayFn } from '../../lib/dates'
 import { getTaskSnapshotForDate } from '../../lib/review'
 
+// On touch devices we drag only from the grip handle (so the card scrolls
+// freely); on desktop the whole card stays grabbable as before.
+const isTouchDevice = typeof window !== 'undefined'
+  && typeof window.matchMedia === 'function'
+  && window.matchMedia('(hover: none) and (pointer: coarse)').matches
+
 export default function TasksPanel({ date }) {
   const tasks = useAppStore(s => s.tasks)
   const addTask = useAppStore(s => s.addTask)
@@ -71,8 +77,15 @@ export default function TasksPanel({ date }) {
   }, [getIds])
 
   const handleMouseDown = (e, id) => {
-    const tag = e.target.tagName.toLowerCase()
-    if (tag === 'button' || tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return
+    if (isTouchDevice) {
+      // Mobile: only start a drag from the dedicated grip handle so the rest
+      // of the card stays free to scroll / tap-to-edit.
+      if (!e.target.closest('[data-task-drag-handle]')) return
+    } else {
+      // Desktop: whole card is grabbable, except interactive controls.
+      const tag = e.target.tagName.toLowerCase()
+      if (tag === 'button' || tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return
+    }
 
     const el = itemEls.current[id]
     if (!el) return
