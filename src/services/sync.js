@@ -392,6 +392,8 @@ export async function mergeJournalDocs(journalDocs, changedMap) {
     const remoteDoc = await loadDoc(bytes)
     const localBytes = await getJournalDocBytes(id)
     let mergedDoc
+    let _branch = 'remoteOnly'
+    let _shared = null
     if (localBytes) {
       const localDoc = await loadDoc(localBytes)
       // Only Automerge.merge if the docs share ancestry. A pre-fix device may
@@ -401,11 +403,24 @@ export async function mergeJournalDocs(journalDocs, changedMap) {
       // adopt whichever doc was updated last (wholesale — applying one row's
       // fields onto the other would delete the loser's blocks). This heals the
       // stale device: the remote (newer) wins and its content lands locally.
-      if (await sharesAncestry(localDoc, remoteDoc)) {
+      _shared = await sharesAncestry(localDoc, remoteDoc)
+      if (_shared) {
+        _branch = 'merge(shared)'
         mergedDoc = await mergeDoc(localDoc, remoteDoc)
       } else {
+        _branch = 'newerDoc(disjoint)'
         mergedDoc = newerDoc(localDoc, remoteDoc, materializeJournalRow)
       }
+      // [sync-debug] decisive: did the merge actually keep the remote's blocks?
+      try {
+        const bc = (d) => { const r = materializeJournalRow(d); return Array.isArray(r?.blocks) ? r.blocks.filter(b => !b?.deleted).length : 0 }
+        logSync('mergeJournalDocs branch', {
+          id, branch: _branch, shared: _shared,
+          localDocBlocks: bc(localDoc), remoteDocBlocks: bc(remoteDoc), mergedDocBlocks: bc(mergedDoc),
+          localDocUpd: materializeJournalRow(localDoc)?.updatedAt || null,
+          remoteDocUpd: materializeJournalRow(remoteDoc)?.updatedAt || null,
+        })
+      } catch { /* best-effort */ }
     } else if (l) {
       // No local bytes → remote authoritative. Adopt + re-apply local row.
       // Do NOT createDoc()+merge: disjoint roots drop the remote's blocks,
