@@ -945,6 +945,28 @@ export async function pushJournal(dayDoc) {
   const date = dayKey(dayDoc.date)
   const source = { ...dayDoc, date }
 
+  // Guard: never push a brand-new, never-edited EMPTY day. Opening "today" on a
+  // device calls this (loadJournal → mergeAndPushJournal) even when the user has
+  // typed nothing. Uploading an empty fresh-root .bin in that moment is the root
+  // of the "new mobile entry shows blank on laptop" bug: if the laptop opens the
+  // day before the mobile's content has propagated, it mints a disjoint empty
+  // root and uploads it; the mobile's real content can then never merge cleanly.
+  // Instead, when there are no local bytes and the day is empty, pull-only:
+  // adopt the remote .bin if one exists (so the laptop shows what mobile wrote),
+  // else do nothing (no upload, nothing to poison).
+  const hasLocalBytes = await getJournalDocBytes(date)
+  const liveBlocks = Array.isArray(source.blocks) ? source.blocks.filter(b => !b?.deleted).length : 0
+  const isEmptyDay = liveBlocks === 0 && !source.reviewedAt
+  if (!hasLocalBytes && isEmptyDay) {
+    const remoteBytes = await readEntityBinFile(ids.journalsFolderId, date).catch(() => null)
+    if (!remoteBytes) return null
+    const remoteDoc = await loadDoc(remoteBytes)
+    const remoteRow = materializeJournalRow(remoteDoc)
+    if (!remoteRow.date) remoteRow.date = date
+    await putJournalWithDoc(remoteRow, remoteBytes, { fromSync: true })
+    return remoteRow
+  }
+
   // Pick the base doc we apply local fields onto. Priority:
   //   1. our own persisted bytes (shared Automerge ancestry — normal case)
   //   2. the remote .bin if one exists (adopt its root so our upload shares
