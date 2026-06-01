@@ -49,65 +49,6 @@ const HashtagExtension = Extension.create({
   },
 })
 
-/**
- * Incrementally fold sync-merged blocks into a live (actively-edited) editor
- * without a full setContent (which would reset the cursor mid-type).
- *
- * `mergedBlocks` is the day's blocks from the store (already sorted by `order`,
- * may include tombstones). We insert only the LIVE blocks whose id isn't already
- * in the editor, each positioned after the nearest preceding block the editor
- * does have (so order matches the merged sequence), else at the document end.
- *
- * Insertions go through editor.commands so BlockIdExtension stamps/keeps the
- * bid; `emitUpdate: false` avoids re-triggering the save loop. Tombstoned blocks
- * are ignored — the user's own deletes win locally and propagate on their save.
- */
-function reconcileMergedBlocks(editor, mergedBlocks) {
-  const serializer = DOMSerializer.fromSchema(editor.schema)
-  const editorBlocks = docToBlocks(editor.state.doc, serializer)
-  const editorIds = new Set(editorBlocks.map(b => b.id))
-
-  const live = (mergedBlocks || []).filter(b => !b.deleted && b.id && b.html)
-  // Nothing new to add (a merge that only touched existing blocks is handled by
-  // the per-field LWW on the next idle setContent — we don't fight the cursor).
-  const missing = live.filter(b => !editorIds.has(b.id))
-  if (missing.length === 0) return
-
-  // Map each top-level editor node to its document position so we can insert
-  // after the right one. Positions shift as we insert, so recompute per insert
-  // by tracking offset growth — simplest correct approach: insert from the doc
-  // end backwards isn't possible (we need "after X"), so we re-derive positions
-  // each iteration against the live doc.
-  for (const block of missing) {
-    // Find the merged-sequence predecessor that the editor currently has.
-    const idxInMerged = live.findIndex(b => b.id === block.id)
-    let anchorId = null
-    for (let j = idxInMerged - 1; j >= 0; j--) {
-      if (editorIds.has(live[j].id)) { anchorId = live[j].id; break }
-    }
-
-    // Resolve the insert position from the live doc each time.
-    let insertPos = null // null → append at end
-    if (anchorId) {
-      let acc = 0
-      editor.state.doc.forEach((node) => {
-        const start = acc
-        acc += node.nodeSize
-        if (node.attrs?.bid === anchorId) insertPos = start + node.nodeSize
-      })
-    }
-
-    const chain = editor.chain().setMeta('addToHistory', false)
-    if (insertPos == null) {
-      chain.insertContentAt(editor.state.doc.content.size, block.html, { emitUpdate: false })
-    } else {
-      chain.insertContentAt(insertPos, block.html, { emitUpdate: false })
-    }
-    chain.run()
-    editorIds.add(block.id)
-  }
-}
-
 export default function JournalPanel({ onInsertText, date, headerLabel }) {
   const currentDay = useAppStore(s => s.currentDay)
   const updateJournalEntry = useAppStore(s => s.updateJournalEntry)
@@ -162,25 +103,17 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
     const current = editor.getHTML()
     if (current === remoteContent) return
 
-    if (!saveTimeout.current) {
-      // Idle (no pending local save): safe to reconcile the whole doc. This
-      // also restores cursor-free reload on day-switch / first load.
-      editor.commands.setContent(remoteContent, { emitUpdate: false })
-      return
-    }
-
-    // The user is actively typing (pending save). A full setContent here would
-    // reset their cursor and clobber the in-flight edit — that's the typing-lag
-    // bug. But a background sync may have merged in blocks from another device
-    // that the editor doesn't have; if we do nothing, the next save's snapshot
-    // omits them and stampBlocksFromDoc tombstones them (cross-device block
-    // loss). So reconcile INCREMENTALLY: insert only the merged-in blocks the
-    // editor is missing, at their sorted position, without touching the blocks
-    // the user is editing. O(new blocks); no cursor disruption.
-    reconcileMergedBlocks(editor, dayDoc?.blocks || [])
-    // Intentionally keyed on remoteContent only: dayDoc.blocks is read inside but
-    // remoteContent (derived from those blocks) is what should retrigger this.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Defer until the editor is idle (no pending local save). While the user is
+    // actively typing, do NOT touch the editor: a setContent mid-type resets the
+    // cursor, and any incremental insert fights BlockIdExtension's id-filler,
+    // which re-ids the inserted blocks as duplicates → the doubled-paragraph bug.
+    // The merged blocks are already safe in the store (currentDay); we just defer
+    // RENDERING them until typing pauses, when this effect re-runs (the local
+    // save bumped currentDay → remoteContent) and the editor is clear to reset.
+    // TipTap's setContent does its own cursor-free DOM reconciliation, so a clean
+    // reset is the right primitive here — no hand-rolled position math.
+    if (saveTimeout.current) return
+    editor.commands.setContent(remoteContent, { emitUpdate: false })
   }, [editor, remoteContent])
 
   useEffect(() => {
