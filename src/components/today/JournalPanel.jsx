@@ -9,6 +9,7 @@ import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { DOMSerializer } from '@tiptap/pm/model'
 import { useEffect, useRef } from 'react'
 import useAppStore from '../../store/useAppStore'
+import { logSync } from '../../services/syncLog'
 import { formatDate, currentJournalDay } from '../../lib/dates'
 import EditorToolbar from '../editor/EditorToolbar'
 import { RTLExtension } from '../editor/RTLExtension'
@@ -56,6 +57,10 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
   const config = useAppStore(s => s.config)
   const getTags = useAppStore.getState().getAllTags
   const saveTimeout = useRef(null)
+  // [lag-debug] timing probes — last keystroke ts + an "actively typing" window
+  // so we can tell whether a remote-driven setContent fires mid-type. Remove
+  // once the typing-lag cause is confirmed.
+  const lastKeyTs = useRef(0)
   const targetDate = date || currentJournalDay(config)
 
   useEffect(() => {
@@ -86,13 +91,19 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
     ],
     content,
     onUpdate: ({ editor }) => {
+      lastKeyTs.current = performance.now()
       const html = editor.getHTML()
       const serializer = DOMSerializer.fromSchema(editor.schema)
       const blocks = docToBlocks(editor.state.doc, serializer)
       clearTimeout(saveTimeout.current)
+      const scheduledAt = performance.now()
       saveTimeout.current = setTimeout(() => {
         saveTimeout.current = null
-        updateJournalEntry(targetDate, { html, blocks })
+        // [lag-debug] how long from last keystroke to the debounced save firing.
+        logSync('lag: debounce fired -> save', { sinceScheduleMs: Math.round(performance.now() - scheduledAt) })
+        const t0 = performance.now()
+        Promise.resolve(updateJournalEntry(targetDate, { html, blocks }))
+          .finally(() => logSync('lag: updateJournalEntry done', { ms: Math.round(performance.now() - t0) }))
       }, 800)
     },
   })
@@ -113,6 +124,12 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
     // TipTap's setContent does its own cursor-free DOM reconciliation, so a clean
     // reset is the right primitive here — no hand-rolled position math.
     if (saveTimeout.current) return
+    // [lag-debug] A remote-driven setContent rebuilds the whole ProseMirror doc
+    // and resets cursor/scroll. If this fires while the user is mid-type (small
+    // sinceLastKeyMs), it's the visible hitch. Online polls bump currentDay ~1/s
+    // → this effect re-runs; offline it never does (matches "smooth offline").
+    const sinceLastKeyMs = lastKeyTs.current ? Math.round(performance.now() - lastKeyTs.current) : null
+    logSync('lag: remote setContent', { sinceLastKeyMs, len: remoteContent.length })
     editor.commands.setContent(remoteContent, { emitUpdate: false })
   }, [editor, remoteContent])
 
