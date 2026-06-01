@@ -47,29 +47,40 @@ function scheduleFlush() {
   }, 1000)
 }
 
+// Drop anything older than the retention window. Entries are appended in time
+// order, so the stale ones are always a prefix — find the first one we keep and
+// splice everything before it in one shot. Runs on BOTH append and read, so a
+// dump always returns a clean window even if logging has gone quiet (e.g. all
+// call sites removed) and nothing has appended in hours. Returns true if it
+// changed the buffer (so callers can decide whether to persist).
+function prune() {
+  const cutoff = Date.now() - RETENTION_MS
+  let keepFrom = 0
+  while (keepFrom < buffer.length && Date.parse(buffer[keepFrom].t) < cutoff) keepFrom++
+  let changed = keepFrom > 0
+  if (changed) buffer.splice(0, keepFrom)
+  // Hard ceiling so a single busy hour can't grow unbounded.
+  if (buffer.length > MAX_ENTRIES) { buffer.splice(0, buffer.length - MAX_ENTRIES); changed = true }
+  return changed
+}
+
 export function logSync(event, data) {
   // Mirror to console for live watching too.
   console.debug(`[sync-debug] ${event}`, data || '')
   // Fire-and-forget IDB persistence.
   ;(async () => {
     await hydrate()
-    const now = Date.now()
-    buffer.push({ t: new Date(now).toISOString(), event, ...(data || {}) })
-    // Drop anything older than the retention window. Entries are appended in
-    // time order, so the stale ones are always a prefix — find the first one
-    // we keep and splice everything before it in one shot.
-    const cutoff = now - RETENTION_MS
-    let keepFrom = 0
-    while (keepFrom < buffer.length && Date.parse(buffer[keepFrom].t) < cutoff) keepFrom++
-    if (keepFrom > 0) buffer.splice(0, keepFrom)
-    // Hard ceiling so a single busy hour can't grow unbounded.
-    if (buffer.length > MAX_ENTRIES) buffer.splice(0, buffer.length - MAX_ENTRIES)
+    buffer.push({ t: new Date().toISOString(), event, ...(data || {}) })
+    prune()
     scheduleFlush()
   })()
 }
 
 export async function getSyncLog() {
   await hydrate()
+  // Prune on read too: a stale buffer from before logging went quiet should
+  // never bloat an export. Persist if it actually trimmed anything.
+  if (prune()) scheduleFlush()
   return buffer.slice()
 }
 
