@@ -49,6 +49,13 @@ let _storeGetter = null
 // fetched predates the user's local change and would clobber it.
 let writeGeneration = 0
 let pushesInFlight = 0
+// In-flight guard: the poll scheduler is a 1s setInterval, but a single poll's
+// network + Automerge merge work can take longer than 1s. Without this, the
+// next tick fires a second pollRemote on top of the first (both pass the
+// hash-changed check, since lastRemoteHash is only updated at the very end),
+// stacking concurrent loadDoc/mergeDoc/saveDoc CPU spikes on the main thread —
+// the typing hitch. One poll at a time; ticks that overlap are dropped.
+let pollInFlight = false
 // When true, the next pollRemote skips the modifiedTime hash check and
 // fetches directly.
 let forceNextPoll = true
@@ -227,6 +234,13 @@ export function setPollInterval(ms) {
 
 async function pollRemote(storeSetter) {
   if (!running || pushesInFlight > 0) return
+  // Drop this tick if a previous poll is still running — see pollInFlight.
+  if (pollInFlight) {
+    // [lag-debug] if this fires while typing, overlapping polls were the hitch.
+    logSync('poll skipped: previous poll still in-flight')
+    return
+  }
+  pollInFlight = true
   const startGen = writeGeneration
   try {
     const ids = await getDriveFileIds()
@@ -541,6 +555,8 @@ async function pollRemote(storeSetter) {
     } else if (!navigator.onLine) {
       setStatus({ state: 'offline' })
     }
+  } finally {
+    pollInFlight = false
   }
 }
 
