@@ -9,12 +9,11 @@
  */
 import { putAudio, getAudio, getAllAudio, deleteAudio as dbDeleteAudio } from './db'
 import {
-  getDriveFileIds, downloadFileBlob, deleteDriveFile,
+  getDriveFileIds, uploadAudioFile, downloadFileBlob, deleteDriveFile,
   readJsonFile, writeEntityFile, readEntityFile, listFolder,
 } from './drive'
 import { appendChanges, getDeviceId } from './manifest'
-import { withAuthRetry, pageTokenProvider } from './auth'
-import { pushAudioWith } from './sync-core/pushAudioCore'
+import { withAuthRetry } from './auth'
 import { logSync } from './syncLog'
 
 /**
@@ -102,10 +101,23 @@ function toIndexEntry(rec) {
  * Safe to call when offline — will just no-op.
  */
 export async function pushAudio(id) {
-  // Delegates to the portable sync-core push (same logic, gapi-free) with the
-  // page token provider. The SW path calls pushAudioWith(headlessTokenProvider)
-  // with the identical core, so the upload exists in exactly one place.
-  return pushAudioWith(pageTokenProvider, id)
+  const ids = await getDriveFileIds()
+  if (!ids || !ids.audioFolderId) return null
+  const rec = await getAudio(id)
+  if (!rec || !rec.blob) return null
+  if (rec.driveFileId) return rec.driveFileId // already uploaded
+
+  const ext = (rec.mimeType || 'audio/webm').split('/')[1]?.split(';')[0] || 'webm'
+  const filename = `${id}.${ext}`
+  const uploaded = await uploadAudioFile(ids.audioFolderId, filename, rec.blob)
+  if (!uploaded?.id) return null
+
+  // Stamp the driveFileId onto the local blob record so re-uploads short-circuit
+  // and offline→online reconciliation (pushPendingAudio) knows it's done. The
+  // document node carries the driveFileId for cross-device resolution; this IDB
+  // copy is just local bookkeeping.
+  await putAudio({ ...rec, driveFileId: uploaded.id, uploadedAt: new Date().toISOString() })
+  return uploaded.id
 }
 
 /**
