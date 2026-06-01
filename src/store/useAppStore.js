@@ -12,7 +12,8 @@ import {
 import { extractHashtags } from '../lib/hashtags'
 import { pushTasks, pushNotes, pushJournal, pushConfig, initialSyncStreaming, mergeAndPushJournal } from '../services/sync'
 import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, getSyncStatus, retryNow, setPollInterval } from '../services/syncEngine'
-import { pushAudio, pushPendingAudio, ensureAudioLocal, softDeleteAudio, restoreAudio, hardDeleteAudio, collectAudioIdsFromBlocks, audioBlockHtml } from '../services/audio'
+import { pushPendingAudio, ensureAudioLocal, softDeleteAudio, restoreAudio, hardDeleteAudio, collectAudioIdsFromBlocks, audioBlockHtml } from '../services/audio'
+import { queueAudioPush, registerServiceWorker } from '../services/swClient'
 import { putAudio, getAudio } from '../services/db'
 import { withAuthRetry } from '../services/auth'
 import { stampBlocks, stampBlocksFromDoc, blocksToHtml } from '../lib/blocks'
@@ -604,14 +605,12 @@ const useAppStore = create((set, get) => ({
     const createdAt = new Date().toISOString()
     await putAudio({ id, blob, mimeType, duration, createdAt })
     if (get().mode !== MODE_OFFLINE) {
-      ;(async () => {
-        try {
-          const driveFileId = await pushAudio(id)
-          if (driveFileId && typeof onUploaded === 'function') onUploaded(driveFileId)
-        } catch (e) {
-          console.warn('audio upload failed (pushPendingAudio will retry)', e)
-        }
-      })()
+      // Hand off to the SW push pipeline: enqueues the upload intent (survives
+      // screen-off) and either wakes the SW (Android Chrome) or uploads on the
+      // page (Firefox/iOS fallback) — same sync-core, no double upload. The
+      // onUploaded stamp fires via postMessage (SW) or inline (fallback).
+      queueAudioPush(id, onUploaded).catch(e =>
+        console.warn('audio upload enqueue failed (pushPendingAudio will retry)', e))
     }
     return { id, mimeType, createdAt }
   },
@@ -933,6 +932,10 @@ const useAppStore = create((set, get) => ({
       })
       const intervalMs = (result?.mergedConfig?.syncInterval || 1) * 1000
       startSyncEngine((data) => set(data), intervalMs, () => get())
+      // Register the push service worker (Android Chrome → screen-off audio
+      // upload; harmless no-op where unsupported), then reconcile any pending
+      // local blobs through the same queue.
+      registerServiceWorker().catch(e => console.warn('SW register failed', e))
       pushPendingAudio().catch(e => console.warn('pushPendingAudio failed', e))
       get().loadJournalTagPool()
     }).catch((e) => {
