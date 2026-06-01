@@ -61,6 +61,14 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
   // so we can tell whether a remote-driven setContent fires mid-type. Remove
   // once the typing-lag cause is confirmed.
   const lastKeyTs = useRef(0)
+  // True from the moment a local save starts until its echo (the currentDay
+  // bump it caused) has flowed back into the remoteContent effect. The editor
+  // already holds this content — there is nothing to re-render — but the
+  // round-tripped blocksToHtml() (tombstones + re-stamped order) never equals
+  // the HTML we saved, so the lastRenderedContent guard always misses and we'd
+  // setContent on our own echo, rebuilding the doc mid-type (the lag). This
+  // flag lets the effect recognise the echo and just resync its guard value.
+  const pendingLocalEcho = useRef(false)
   const targetDate = date || currentJournalDay(config)
 
   useEffect(() => {
@@ -102,6 +110,10 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
         // [lag-debug] how long from last keystroke to the debounced save firing.
         logSync('lag: debounce fired -> save', { sinceScheduleMs: Math.round(performance.now() - scheduledAt) })
         const t0 = performance.now()
+        // The save below bumps currentDay → remoteContent → the effect re-runs.
+        // That re-run is our own echo: the editor already shows this text. Flag
+        // it so the effect resyncs its guard instead of rebuilding the doc.
+        pendingLocalEcho.current = true
         Promise.resolve(updateJournalEntry(targetDate, { html, blocks }))
           .finally(() => logSync('lag: updateJournalEntry done', { ms: Math.round(performance.now() - t0) }))
       }, 800)
@@ -120,6 +132,16 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
     // Already showing this exact content (e.g. the echo of our own save coming
     // back through currentDay) — nothing to render.
     if (remoteContent === lastRenderedContent.current) return
+
+    // Our own save just bumped currentDay. The editor already holds this text;
+    // only the serialized form differs (tombstones + re-stamped order keys), so
+    // the guard above can't match. Resync the guard to the canonical content and
+    // bail — rebuilding the doc here is exactly the mid-type lag we're killing.
+    if (pendingLocalEcho.current) {
+      pendingLocalEcho.current = false
+      lastRenderedContent.current = remoteContent
+      return
+    }
 
     // Never rebuild the editor the user is actively in: a setContent mid-type
     // resets the cursor, and any incremental insert fights BlockIdExtension's
