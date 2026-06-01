@@ -17,6 +17,41 @@ export default function RecordFab({ editor }) {
   const streamRef = useRef(null)
   const startTimeRef = useRef(0)
   const tickRef = useRef(null)
+  const wakeLockRef = useRef(null)
+
+  // Keep the screen awake while recording. On mobile, when the display sleeps
+  // the tab is suspended and MediaRecorder stops capturing — so we hold a
+  // Screen Wake Lock for the duration of the recording. The OS auto-releases
+  // the lock whenever the page is hidden, so we also re-acquire it when the
+  // page becomes visible again (see the visibilitychange listener below).
+  const acquireWakeLock = async () => {
+    if (!('wakeLock' in navigator)) return
+    try {
+      wakeLockRef.current = await navigator.wakeLock.request('screen')
+    } catch (e) {
+      // Throws if the page isn't visible or the request is denied — not fatal.
+      void e
+    }
+  }
+
+  const releaseWakeLock = async () => {
+    const lock = wakeLockRef.current
+    wakeLockRef.current = null
+    if (lock) {
+      try { await lock.release() } catch (e) { void e }
+    }
+  }
+
+  useEffect(() => {
+    const onVisibility = () => {
+      // Re-acquire if we lost the lock while hidden but are still recording.
+      if (document.visibilityState === 'visible' && recording && !wakeLockRef.current) {
+        acquireWakeLock()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [recording])
 
   useEffect(() => {
     return () => {
@@ -28,6 +63,7 @@ export default function RecordFab({ editor }) {
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(t => t.stop())
       }
+      releaseWakeLock()
     }
   }, [])
 
@@ -63,6 +99,7 @@ export default function RecordFab({ editor }) {
       startTimeRef.current = Date.now()
       setElapsed(0)
       setRecording(true)
+      acquireWakeLock()
       tickRef.current = setInterval(() => {
         setElapsed((Date.now() - startTimeRef.current) / 1000)
       }, 250)
@@ -84,6 +121,7 @@ export default function RecordFab({ editor }) {
       clearInterval(tickRef.current)
       tickRef.current = null
     }
+    releaseWakeLock()
   }
 
   const handleStop = async () => {
