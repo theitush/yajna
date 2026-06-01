@@ -18,7 +18,6 @@
 import { enqueueAudioPush } from './sync-core/audioQueue'
 import { drainAudioQueue } from './sync-core/drainAudioQueue'
 import { pageTokenProvider } from './auth'
-import { logSync } from './syncLog'
 
 const SW_URL = `${import.meta.env.BASE_URL}sw.js`
 const SW_SCOPE = import.meta.env.BASE_URL
@@ -91,32 +90,25 @@ export async function queueAudioPush(id, onUploaded = null) {
 
   const reg = await registerServiceWorker()
   const canBackgroundSync = !!reg && 'sync' in reg
-  logSync('audio queue: enqueued', { id, hasSW: !!reg, canBackgroundSync })
 
   if (canBackgroundSync) {
     try {
       await reg.sync.register(AUDIO_SYNC_TAG)
       // Nudge the controlling SW to drain immediately while we're foreground;
       // the registered sync tag is the durable fallback if this no-ops.
-      const hasController = !!navigator.serviceWorker.controller
       navigator.serviceWorker.controller?.postMessage({ type: 'drain-audio' })
-      logSync('audio queue: SW path (sync registered)', { id, hasController })
       return
     } catch (e) {
       console.warn('[sw] sync.register failed, uploading on page', e)
-      logSync('audio queue: sync.register FAILED → fallback', { id, err: e?.message || String(e) })
       // fall through to direct upload
     }
   }
 
   // Fallback path (no Background Sync, or registration failed): upload here,
   // stamping inline via the same per-id callback the SW path uses.
-  logSync('audio queue: fallback drain (page upload)', { id })
   try {
-    const r = await drainAudioQueue(pageTokenProvider, (results) => results.forEach(applyUploadResult))
-    logSync('audio queue: fallback drain done', { id, uploaded: r?.uploaded ?? 0, failed: r?.failed ?? 0 })
+    await drainAudioQueue(pageTokenProvider, (results) => results.forEach(applyUploadResult))
   } catch (e) {
     console.warn('[sw] direct audio drain failed (queued for retry)', e)
-    logSync('audio queue: fallback drain FAILED', { id, err: e?.message || String(e) })
   }
 }
