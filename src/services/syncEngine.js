@@ -49,6 +49,13 @@ let _storeGetter = null
 // fetched predates the user's local change and would clobber it.
 let writeGeneration = 0
 let pushesInFlight = 0
+// Single-flight coalescing for pushes. pushJournal/pushNotes/pushTasks each do
+// synchronous Automerge (loadDoc/saveDoc, WASM, main thread) + network. While
+// one push runs, a second executePush would stack another Automerge spike on
+// the main thread mid-type = the typing hitch. Instead we keep only the LATEST
+// requested pushFn here and run it once the in-flight push settles (last write
+// wins — an older snapshot is always superseded by the newer one anyway).
+let coalescedPush = null
 // In-flight guard: the poll scheduler is a 1s setInterval, but a single poll's
 // network + Automerge merge work can take longer than 1s. Without this, the
 // next tick fires a second pollRemote on top of the first (both pass the
@@ -640,6 +647,13 @@ function scheduleRetry(pushFn) {
 
 async function executePush(pushFn) {
   if (!pushFn) return
+  // Single-flight: if a push is already running, don't start a second on the
+  // main thread. Park the latest fn; the running push drains it when it ends.
+  if (pushesInFlight > 0) {
+    coalescedPush = pushFn
+    logSync('push coalesced (one already in flight)')
+    return
+  }
   if (!navigator.onLine) {
     scheduleRetry(pushFn)
     return
@@ -674,6 +688,14 @@ async function executePush(pushFn) {
     }
   } finally {
     pushesInFlight--
+    // Drain a push that arrived while we were busy. Runs exactly one (the
+    // latest) — if more piled up they already overwrote coalescedPush, so we
+    // never replay a stale snapshot.
+    if (coalescedPush && pushesInFlight === 0) {
+      const next = coalescedPush
+      coalescedPush = null
+      executePush(next)
+    }
   }
 }
 

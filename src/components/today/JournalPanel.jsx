@@ -20,6 +20,16 @@ import { HeadingNoShortcut } from '../editor/HeadingNoShortcut'
 import RecordFab from '../voice/RecordFab'
 import { docToBlocks, blocksToHtml } from '../../lib/blocks'
 
+// How long to wait after the last keystroke before saving+pushing the journal.
+// Each save triggers pushJournal (synchronous Automerge + Drive upload), so we
+// only want it to fire when the user has genuinely PAUSED — not on the many
+// sub-second micro-pauses inside normal writing. 800ms was short enough that
+// ordinary typing rhythm fired a push every second or two; 2.5s rides through
+// thinking pauses and only commits when you actually stop. Local IDB autosave
+// safety isn't lost: the editor content is in memory and the next pause flushes
+// it; a poll/merge never clobbers an unflushed edit (saveTimeout guards render).
+const JOURNAL_SAVE_DEBOUNCE_MS = 2500
+
 const HashtagExtension = Extension.create({
   name: 'hashtag',
   addProseMirrorPlugins() {
@@ -62,10 +72,33 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
   const config = useAppStore(s => s.config)
   const getTags = useAppStore.getState().getAllTags
   const saveTimeout = useRef(null)
+  // Latest unsaved payload, captured each onUpdate. With a longer debounce the
+  // window where edits sit unsaved is bigger, so we flush this on unmount and on
+  // day-change to guarantee the tail of writing isn't lost if you navigate away
+  // before the debounce fires.
+  const pendingSave = useRef(null)
   const targetDate = date || currentJournalDay(config)
 
   useEffect(() => {
     loadJournal(targetDate)
+  }, [targetDate])
+
+  // Flush any pending (debounced-but-not-yet-saved) edit when the panel
+  // unmounts or the day changes, so the tail of writing survives navigation.
+  // Cleanup runs before the next targetDate's load, so we save the OLD day's
+  // pending payload using the date captured in pendingSave, not targetDate.
+  useEffect(() => {
+    return () => {
+      if (saveTimeout.current) {
+        clearTimeout(saveTimeout.current)
+        saveTimeout.current = null
+      }
+      const p = pendingSave.current
+      if (p) {
+        pendingSave.current = null
+        updateJournalEntry(p.date, { html: p.html, blocks: p.blocks })
+      }
+    }
   }, [targetDate])
 
   const dayDoc = currentDay?.date === targetDate ? currentDay : null
@@ -95,15 +128,17 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
       const html = editor.getHTML()
       const serializer = DOMSerializer.fromSchema(editor.schema)
       const blocks = docToBlocks(editor.state.doc, serializer)
+      pendingSave.current = { date: targetDate, html, blocks }
       clearTimeout(saveTimeout.current)
       saveTimeout.current = setTimeout(() => {
         saveTimeout.current = null
+        pendingSave.current = null
         // Bumps currentDay but NOT currentDayRev, so this save never re-fires
         // the render effect below — the editor doesn't rebuild on its own echo.
         // [lag-debug] local save: should NOT be followed by a 'render setContent'.
         logSync('lag: local save', { len: html.length })
         updateJournalEntry(targetDate, { html, blocks })
-      }, 800)
+      }, JOURNAL_SAVE_DEBOUNCE_MS)
     },
   })
 
