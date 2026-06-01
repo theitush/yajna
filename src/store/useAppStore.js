@@ -18,6 +18,27 @@ import { withAuthRetry } from '../services/auth'
 import { stampBlocks, stampBlocksFromDoc, blocksToHtml } from '../lib/blocks'
 import { logSync } from '../services/syncLog'
 
+// Per-task serialization for read-modify-write. updateTask reads the row from
+// IDB, merges the caller's partial `updates`, and writes it back. Two rapid
+// updates to the same id (e.g. setting a title then immediately marking done)
+// are both async and interleave: the second's getTask can resolve before the
+// first's putTask commits, so it reads a stale base and its write clobbers the
+// first update (the "create-then-done loses its title" bug). Chaining each id's
+// critical section onto the previous one makes the read-merge-write atomic per
+// id without blocking unrelated tasks.
+const taskWriteChains = new Map()
+function withTaskLock(id, fn) {
+  const prev = taskWriteChains.get(id) || Promise.resolve()
+  const next = prev.then(fn, fn)
+  // Keep the chain from growing unbounded: once this link settles and it's
+  // still the tail, drop it so a quiescent id holds no retained promise.
+  taskWriteChains.set(id, next)
+  next.finally(() => {
+    if (taskWriteChains.get(id) === next) taskWriteChains.delete(id)
+  })
+  return next
+}
+
 function collectAudioIdsFromHtml(html) {
   const ids = []
   if (!html) return ids
@@ -116,11 +137,15 @@ const useAppStore = create((set, get) => ({
     if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
     return task
   },
-  updateTask: async (id, updates) => {
+  updateTask: async (id, updates) => withTaskLock(id, async () => {
     // Base the merge on IDB, not the store. The store can lag behind a sync
     // poll by a tick; using a stale store snapshot here would re-pin stale
     // fields (status, doneDate, …) on top of the user's `updates` and push
     // them back to Drive, clobbering edits from the other device.
+    //
+    // The getTask→putTask below is serialized per id by withTaskLock so two
+    // rapid updates to the same task can't interleave and lose each other's
+    // fields (the create-then-done title-loss bug).
     const fromDb = await getTask(id)
     const fallback = get().tasks.find(t => t.id === id)
     const task = fromDb || fallback
@@ -138,7 +163,7 @@ const useAppStore = create((set, get) => ({
     set(s => ({ tasks: s.tasks.map(t => t.id === id ? updated : t) }))
     get().bumpReviewVersion()
     if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
-  },
+  }),
   markTaskDone: async (id) => {
     await get().updateTask(id, { status: 'done', doneDate: today() })
   },
