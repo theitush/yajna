@@ -195,6 +195,24 @@ export function setAccessToken(token) {
   }
 }
 
+/**
+ * Page token provider for sync-core (see sync-core/tokenProvider.js for the
+ * contract). Prefers the live in-memory token (set on login / refresh and
+ * mirrored into gapi), falling back to the persisted IDB token — so on the page
+ * a push pays no extra IDB read on the hot path. refresh() reuses the page's
+ * coalesced refreshOnce so a SW-bound push and a page poll don't double-rotate
+ * the refresh blob. This is what audio.js / future CRDT pushes inject when
+ * running ON the page; the SW injects headlessTokenProvider instead.
+ */
+export const pageTokenProvider = {
+  async getToken() {
+    return accessToken || (await getStoredToken())
+  },
+  async refresh() {
+    return refreshOnce()
+  },
+}
+
 export async function signOut() {
   if (refreshTimer) {
     clearTimeout(refreshTimer)
