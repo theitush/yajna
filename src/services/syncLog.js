@@ -14,6 +14,10 @@ import { getMeta, putMeta, getAllAudio } from './db'
 import { getDriveFileIds, findFile, writeJsonFile, listFolder } from './drive'
 
 const LOG_KEY = 'sync_debug_log'
+// Retain by time, not count: a dump should be "what happened recently" so the
+// repro moment isn't buried under days of routine 1s-poll spam. MAX_ENTRIES is
+// just a hard ceiling so a busy hour can't blow up memory/IDB.
+const RETENTION_MS = 60 * 60 * 1000 // keep the last hour
 const MAX_ENTRIES = 3000
 
 // In-memory mirror so rapid 1s-poll appends don't serialize a full IDB
@@ -49,7 +53,16 @@ export function logSync(event, data) {
   // Fire-and-forget IDB persistence.
   ;(async () => {
     await hydrate()
-    buffer.push({ t: new Date().toISOString(), event, ...(data || {}) })
+    const now = Date.now()
+    buffer.push({ t: new Date(now).toISOString(), event, ...(data || {}) })
+    // Drop anything older than the retention window. Entries are appended in
+    // time order, so the stale ones are always a prefix — find the first one
+    // we keep and splice everything before it in one shot.
+    const cutoff = now - RETENTION_MS
+    let keepFrom = 0
+    while (keepFrom < buffer.length && Date.parse(buffer[keepFrom].t) < cutoff) keepFrom++
+    if (keepFrom > 0) buffer.splice(0, keepFrom)
+    // Hard ceiling so a single busy hour can't grow unbounded.
     if (buffer.length > MAX_ENTRIES) buffer.splice(0, buffer.length - MAX_ENTRIES)
     scheduleFlush()
   })()
