@@ -16,6 +16,7 @@
 import { getAudio, putAudio } from '../db'
 import { getDriveFileIds } from '../drive'
 import { uploadAudioBlob } from './driveCore'
+import { logSync } from '../syncLogCore'
 
 /**
  * Upload the local audio blob for `id` to Drive if it isn't already there.
@@ -26,15 +27,16 @@ import { uploadAudioBlob } from './driveCore'
  */
 export async function pushAudioWith(provider, id) {
   const ids = await getDriveFileIds()
-  if (!ids || !ids.audioFolderId) return null
+  if (!ids || !ids.audioFolderId) { logSync('audio push: no-op (no audioFolderId)', { id }); return null }
   const rec = await getAudio(id)
-  if (!rec || !rec.blob) return null
-  if (rec.driveFileId) return rec.driveFileId // already uploaded
+  if (!rec || !rec.blob) { logSync('audio push: no-op (no local blob)', { id, hasRec: !!rec }); return null }
+  if (rec.driveFileId) { logSync('audio push: no-op (already uploaded)', { id, driveFileId: rec.driveFileId }); return rec.driveFileId }
 
   const ext = (rec.mimeType || 'audio/webm').split('/')[1]?.split(';')[0] || 'webm'
   const filename = `${id}.${ext}`
+  logSync('audio push: uploading blob', { id, filename, bytes: rec.blob.size })
   const uploaded = await uploadAudioBlob(provider, ids.audioFolderId, filename, rec.blob)
-  if (!uploaded?.id) return null
+  if (!uploaded?.id) { logSync('audio push: upload returned no id', { id }); return null }
 
   // Stamp the driveFileId onto the local record so re-uploads short-circuit and
   // offline→online reconciliation (pushPendingAudio) knows it's done.

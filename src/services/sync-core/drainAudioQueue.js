@@ -19,6 +19,7 @@
  */
 import { peekAudioQueue, dequeueAudioPush } from './audioQueue'
 import { pushAudioWith } from './pushAudioCore'
+import { logSync } from '../syncLogCore'
 
 /**
  * @param provider  token provider (headless in SW, page provider as fallback)
@@ -28,6 +29,7 @@ import { pushAudioWith } from './pushAudioCore'
  */
 export async function drainAudioQueue(provider, onResults = null) {
   const ids = await peekAudioQueue()
+  logSync('audio drain: start', { queued: ids.length, ids })
   if (!ids.length) return { uploaded: 0, failed: 0 }
 
   let uploaded = 0
@@ -43,9 +45,11 @@ export async function drainAudioQueue(provider, onResults = null) {
       await dequeueAudioPush(id)
       uploaded++
       if (driveFileId) results.push({ id, driveFileId })
+      logSync('audio drain: pushed', { id, driveFileId: driveFileId || null })
     } catch (e) {
       failed++
       if (!firstError) firstError = e
+      logSync('audio drain: push FAILED (left queued)', { id, err: e?.message || String(e), status: e?.status })
       // Leave the id queued for the next retry.
     }
   }
