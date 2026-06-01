@@ -24,7 +24,6 @@ import {
 } from './sync'
 import { readManifest, diffManifest, getLocalLastSeq, setLocalLastSeq } from './manifest'
 import { blocksToHtml } from '../lib/blocks'
-import { logSync } from './syncLog'
 
 const DEFAULT_POLL_INTERVAL = 1000  // 1 second default
 const RETRY_BASE_MS = 2000         // retry backoff starts at 2s
@@ -66,8 +65,6 @@ let pollInFlight = false
 // When true, the next pollRemote skips the modifiedTime hash check and
 // fetches directly.
 let forceNextPoll = true
-// Suppresses repeated steady-state "hash unchanged" debug log spam.
-let _shortCircuitLogged = false
 
 export function notifyLocalWrite() {
   writeGeneration++
@@ -242,11 +239,7 @@ export function setPollInterval(ms) {
 async function pollRemote(storeSetter) {
   if (!running || pushesInFlight > 0) return
   // Drop this tick if a previous poll is still running — see pollInFlight.
-  if (pollInFlight) {
-    // [lag-debug] if this fires while typing, overlapping polls were the hitch.
-    logSync('poll skipped: previous poll still in-flight')
-    return
-  }
+  if (pollInFlight) return
   pollInFlight = true
   const startGen = writeGeneration
   try {
@@ -268,17 +261,7 @@ async function pollRemote(storeSetter) {
       forceNextPoll = false
     } else {
       hash = await getRemoteHash(ids)
-      if (hash === lastRemoteHash) {
-        // Don't log the steady-state no-op every second — it floods the ring
-        // buffer. Only log the first short-circuit after a real change.
-        if (!_shortCircuitLogged) {
-          logSync('poll short-circuit: remote hash unchanged (further repeats suppressed)', { hash })
-          _shortCircuitLogged = true
-        }
-        return
-      }
-      _shortCircuitLogged = false
-      logSync('poll proceeding: remote hash changed', { hash, prev: lastRemoteHash })
+      if (hash === lastRemoteHash) return
     }
 
     // Only surface 'syncing' for forced polls — the ones the user perceives as a
@@ -310,10 +293,6 @@ async function pollRemote(storeSetter) {
         }
       }
     }
-    logSync('manifest diff', {
-      headSeq, localLastSeq, coldStart,
-      changed: Object.fromEntries(Object.entries(changedByType).map(([t, m]) => [t, [...m.keys()]])),
-    })
 
     // 2. Config is now a per-entity Automerge doc (config/config.bin). Only
     //    fetch it when the manifest flagged it (or on cold start) — no more
@@ -360,10 +339,6 @@ async function pollRemote(storeSetter) {
 
     // A local write raced with our pull — discard, the user's edit is fresher.
     if (writeGeneration !== startGen || pushesInFlight > 0) {
-      logSync('poll result DISCARDED by writeGeneration guard', {
-        startGen, writeGeneration, pushesInFlight,
-        wouldHaveMerged: Object.fromEntries(Object.entries(changedByType).map(([t, m]) => [t, [...m.keys()]])),
-      })
       if (forced) setStatus({ state: 'synced' })
       return
     }
@@ -530,11 +505,6 @@ async function pollRemote(storeSetter) {
     // head as-is — we just enumerated every entity file, so anything older is
     // covered by the per-id merges above.
     if (headSeq > localLastSeq) {
-      logSync('localLastSeq advance', {
-        from: localLastSeq, to: headSeq, coldStart,
-        mergedJournals: mergedJournals.map(d => d?.date),
-        fetchedJournalIds: [...changedByType.journal.keys()],
-      })
       await setLocalLastSeq(headSeq)
     }
 
@@ -651,7 +621,6 @@ async function executePush(pushFn) {
   // main thread. Park the latest fn; the running push drains it when it ends.
   if (pushesInFlight > 0) {
     coalescedPush = pushFn
-    logSync('push coalesced (one already in flight)')
     return
   }
   if (!navigator.onLine) {

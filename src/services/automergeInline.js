@@ -52,43 +52,22 @@ export async function journalApply({ existingBytes, remoteBytes, source }) {
 }
 
 /**
- * Automerge core of mergeJournalDocs' per-day loop. Returns merged bytes + row
- * plus branch/shared/counts for the [sync-debug] log the caller emits (kept
- * identical for verification).
+ * Automerge core of mergeJournalDocs' per-day loop. Returns merged bytes + row.
  */
 export async function journalMerge({ remoteBytes, localBytes, localRow }) {
   const remoteDoc = await loadDoc(remoteBytes)
   let mergedDoc
-  let branch = 'remoteOnly'
-  let shared = null
-  let localDocBlocks = null
-  let remoteDocBlocks = null
-  let localDocUpd = null
-  let remoteDocUpd = null
-
-  const blockCount = (d) => {
-    const r = materializeJournalRow(d)
-    return Array.isArray(r?.blocks) ? r.blocks.filter(b => !b?.deleted).length : 0
-  }
 
   if (localBytes) {
     const localDoc = await loadDoc(localBytes)
-    shared = await sharesAncestry(localDoc, remoteDoc)
-    if (shared) {
-      branch = 'merge(shared)'
+    if (await sharesAncestry(localDoc, remoteDoc)) {
       mergedDoc = await mergeDoc(localDoc, remoteDoc)
     } else {
-      branch = 'newerDoc(disjoint)'
       mergedDoc = newerDoc(localDoc, remoteDoc)
     }
-    localDocBlocks = blockCount(localDoc)
-    remoteDocBlocks = blockCount(remoteDoc)
-    localDocUpd = materializeJournalRow(localDoc)?.updatedAt || null
-    remoteDocUpd = materializeJournalRow(remoteDoc)?.updatedAt || null
   } else if (localRow) {
     // No local bytes → remote authoritative. Adopt + re-apply local row.
     // NOT createDoc()+merge: disjoint roots drop the remote's blocks.
-    branch = 'applyToRemote'
     mergedDoc = await applyJournalFields(remoteDoc, localRow)
   } else {
     mergedDoc = remoteDoc
@@ -96,8 +75,5 @@ export async function journalMerge({ remoteBytes, localBytes, localRow }) {
 
   const bytes = await saveDoc(mergedDoc)
   const row = materializeJournalRow(mergedDoc)
-  return {
-    bytes, row, branch, shared,
-    counts: { localDocBlocks, remoteDocBlocks, localDocUpd, remoteDocUpd },
-  }
+  return { bytes, row }
 }

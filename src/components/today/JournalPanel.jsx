@@ -9,7 +9,6 @@ import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { DOMSerializer } from '@tiptap/pm/model'
 import { useEffect, useRef } from 'react'
 import useAppStore from '../../store/useAppStore'
-import { logSync } from '../../services/syncLog'
 import { formatDate, currentJournalDay } from '../../lib/dates'
 import EditorToolbar from '../editor/EditorToolbar'
 import { RTLExtension } from '../editor/RTLExtension'
@@ -137,8 +136,6 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
         pendingSave.current = null
         // Bumps currentDay but NOT currentDayRev, so this save never re-fires
         // the render effect below — the editor doesn't rebuild on its own echo.
-        // [lag-debug] local save: should NOT be followed by a 'render setContent'.
-        logSync('lag: local save', { len: html.length })
         updateJournalEntry(targetDate, { html, blocks })
       }, JOURNAL_SAVE_DEBOUNCE_MS)
     },
@@ -157,20 +154,8 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
     // re-run on the save's external echo) renders the remote change safely.
     // setContent is TipTap's own cursor-free reconcile, so a clean reset is the
     // right primitive — no hand-rolled position math.
-    if (saveTimeout.current) {
-      // [lag-debug] external bump arrived mid-type → deferred, no rebuild now.
-      logSync('lag: render deferred (mid-type)', { rev: currentDayRev })
-      return
-    }
-    if (editor.getHTML() === remoteContent) {
-      // [lag-debug] rev bumped but content already matches → no rebuild. If this
-      // fires right after a 'local save', the own-echo path is misrouting.
-      logSync('lag: render skip (content equal)', { rev: currentDayRev })
-      return
-    }
-    // [lag-debug] a real remote change rendering in. Should NEVER appear right
-    // after your OWN 'local save' — only on navigation/poll-merge from device B.
-    logSync('lag: render setContent', { rev: currentDayRev, len: remoteContent.length })
+    if (saveTimeout.current) return
+    if (editor.getHTML() === remoteContent) return
     editor.commands.setContent(remoteContent, { emitUpdate: false })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, currentDayRev])

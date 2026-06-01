@@ -33,7 +33,6 @@ import {
 } from './automergeDoc'
 import { journalApply, journalMerge } from './automergeWorkerClient'
 import { dayKey } from '../lib/dates'
-import { logSync } from './syncLog'
 
 const LAST_SYNC_KEY = 'last_sync'
 
@@ -391,36 +390,11 @@ export async function mergeJournalDocs(journalDocs, changedMap) {
     }
 
     // Off-thread the load→merge→save chain. Disjoint-root reconcile (the
-    // staleness heal) lives inside journalMerge, unchanged; it returns the merge
-    // branch + block counts so the [sync-debug] log below stays identical.
+    // staleness heal) lives inside journalMerge, unchanged.
     const localBytes = await getJournalDocBytes(id)
-    const { bytes: mergedBytes, row: mergedRow, branch: _branch, shared: _shared, counts } =
+    const { bytes: mergedBytes, row: mergedRow } =
       await journalMerge({ remoteBytes: bytes, localBytes, localRow: l })
-    if (localBytes) {
-      // [sync-debug] decisive: did the merge actually keep the remote's blocks?
-      try {
-        const mergedDocBlocks = Array.isArray(mergedRow?.blocks) ? mergedRow.blocks.filter(b => !b?.deleted).length : 0
-        logSync('mergeJournalDocs branch', {
-          id, branch: _branch, shared: _shared,
-          localDocBlocks: counts.localDocBlocks, remoteDocBlocks: counts.remoteDocBlocks, mergedDocBlocks,
-          localDocUpd: counts.localDocUpd,
-          remoteDocUpd: counts.remoteDocUpd,
-        })
-      } catch { /* best-effort */ }
-    }
     if (!mergedRow.date) mergedRow.date = id
-    try {
-      const blockCount = (r) => Array.isArray(r?.blocks) ? r.blocks.filter(b => !b?.deleted).length : 0
-      logSync('mergeJournalDocs result', {
-        id,
-        seededFrom: localBytes ? 'localDoc' : (l ? 'localRowSeed' : 'remoteOnly'),
-        localBlocks: blockCount(l),
-        mergedBlocks: blockCount(mergedRow),
-        localUpdatedAt: l?.updatedAt || null,
-        mergedUpdatedAt: mergedRow?.updatedAt || null,
-        changedOp: change?.op || null,
-      })
-    } catch { /* logging best-effort */ }
     writeRows.push(mergedRow)
     writeDocBytes.set(id, mergedBytes)
     localByDate.set(id, mergedRow)
