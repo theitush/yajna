@@ -52,6 +52,12 @@ function extractTags(text) {
 
 function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags, autoFocusTitle, onDidAutoFocusTitle, onDraftTitleChange }) {
   const saveTimeout = useRef(null)
+  // Latest unsaved body captured each onUpdate, so we can flush it when the
+  // editor unmounts, the selected note changes, or the tab is hidden/unloaded —
+  // mirrors JournalPanel. Without this, the tail of a note edit was lost on
+  // navigation and on mobile screen-off (the page freezes before the 800ms
+  // debounce fires).
+  const pendingSave = useRef(null)
   const titleInputRef = useRef(null)
   const focusBodyAfterTitleBlurRef = useRef(false)
   const [editingTitle, setEditingTitle] = useState(false)
@@ -83,14 +89,45 @@ function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags, autoFocu
       const body = editor.getHTML()
       const serializer = DOMSerializer.fromSchema(editor.schema)
       const blocks = docToBlocks(editor.state.doc, serializer)
+      const tags = extractTags(editor.getText())
+      pendingSave.current = { id: note.id, body, blocks, tags }
       clearTimeout(saveTimeout.current)
       saveTimeout.current = setTimeout(() => {
         saveTimeout.current = null
-        const tags = extractTags(editor.getText())
+        pendingSave.current = null
         onUpdate(note.id, { body, blocks, tags })
       }, 800)
     },
   })
+
+  // Flush the pending debounced edit on unmount, note-change, and when the tab
+  // is hidden / unloaded (mobile screen-off freezes the page before the debounce
+  // fires). The note id is captured in the payload, so a flush during a switch
+  // saves the OLD note, not the newly-selected one. Local save is enqueued
+  // synchronously; the push rides the next resume until sync-core lands.
+  const flushPending = useRef(null)
+  flushPending.current = () => {
+    if (saveTimeout.current) {
+      clearTimeout(saveTimeout.current)
+      saveTimeout.current = null
+    }
+    const p = pendingSave.current
+    if (!p) return
+    pendingSave.current = null
+    onUpdate(p.id, { body: p.body, blocks: p.blocks, tags: p.tags })
+  }
+  useEffect(() => {
+    const flush = () => flushPending.current?.()
+    const onVisibility = () => { if (document.visibilityState === 'hidden') flush() }
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('pagehide', flush)
+    return () => {
+      // Runs on unmount and before each note switch (key={selectedNoteId}).
+      flush()
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('pagehide', flush)
+    }
+  }, [])
 
   useEffect(() => {
     if (!editor || !note) return

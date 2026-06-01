@@ -141,6 +141,36 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
     },
   })
 
+  // Flush the pending debounced edit when the tab is hidden or the page is
+  // being unloaded — on mobile the OS freezes the page's JS within seconds of
+  // screen-off, before the 1.2s debounce can fire, so without this the tail of
+  // writing is lost (the screen-off data-loss report, 2026-06-02). The unmount
+  // effect above doesn't cover backgrounding because the component stays mounted
+  // when the tab is merely hidden. updateJournalEntry kicks off the local save
+  // synchronously (IDB write is async but enqueued before freeze); the push
+  // rides the next resume until sync-core lands. visibilitychange(hidden) is the
+  // reliable mobile signal; pagehide covers desktop tab-close / bfcache.
+  useEffect(() => {
+    const flush = () => {
+      if (saveTimeout.current) {
+        clearTimeout(saveTimeout.current)
+        saveTimeout.current = null
+      }
+      const p = pendingSave.current
+      if (!p) return
+      pendingSave.current = null
+      updateJournalEntry(p.date, { html: p.html, blocks: p.blocks })
+    }
+    const onVisibility = () => { if (document.visibilityState === 'hidden') flush() }
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('pagehide', flush)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('pagehide', flush)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Render external changes into the editor. Keyed on currentDayRev (bumped
   // only by navigation/load, sync-poll merge, or audio restore), so the effect
   // runs for genuine remote content and never for the echo of our own save.
