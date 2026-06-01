@@ -241,6 +241,25 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
 
     const mergedBytes = await saveDoc(mergedDoc)
     const mergedRow = materializeTaskRow(mergedDoc)
+    // Diagnostic: did this poll-merge change what the user has locally? If the
+    // merged row's status/title/explanation differs from the local row, this is
+    // the moment a synced edit gets reverted. `path` tells us which merge branch
+    // produced it (ancestry-merge vs disjoint-root newerDoc vs adopt-remote).
+    if (l) {
+      const changedFields = []
+      if ((mergedRow.status || '') !== (l.status || '')) changedFields.push('status')
+      if (!!mergedRow.title !== !!l.title) changedFields.push('title')
+      if ((mergedRow.explanation || '') !== (l.explanation || '')) changedFields.push('explanation')
+      if ((mergedRow.updatedAt || '') !== (l.updatedAt || '')) changedFields.push('updatedAt')
+      if (changedFields.length) {
+        const path = localBytes ? (await sharesAncestry(await loadDoc(localBytes), remoteDoc) ? 'merge' : 'newerDoc') : (l ? 'adoptRemote' : 'remote')
+        logSync('mergeTaskDocs CHANGED local', {
+          id: id.slice(0, 8), path, changedFields,
+          localStatus: l.status, mergedStatus: mergedRow.status,
+          localUpd: l.updatedAt, mergedUpd: mergedRow.updatedAt,
+        })
+      }
+    }
     writeRows.push(mergedRow)
     writeDocBytes.set(id, mergedBytes)
     localById.set(id, mergedRow)
@@ -758,6 +777,19 @@ export async function pushTasks() {
           snapUpd: local.updatedAt, freshUpd: fresh.updatedAt,
         })
       }
+    }
+
+    // Diagnostic: exactly what this push is about to upload to Drive. Lets us
+    // confirm a device shipped the user's latest edit vs. a stale field set.
+    {
+      const shipped = materializeTaskRow(doc)
+      logSync('pushTasks shipped', {
+        id: id.slice(0, 8),
+        status: shipped.status,
+        hasTitle: !!shipped.title,
+        hasExpl: !!shipped.explanation,
+        upd: shipped.updatedAt,
+      })
     }
 
     // Persist the new bytes locally before uploading so a mid-push crash
