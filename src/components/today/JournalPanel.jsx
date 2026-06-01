@@ -22,10 +22,13 @@ import { docToBlocks, blocksToHtml } from '../../lib/blocks'
 
 // How long to wait after the last keystroke before saving+pushing the journal.
 // The push's Automerge work now runs in a worker (automergeWorkerClient), so a
-// save no longer freezes the editor and the debounce no longer needs to be long
-// to mask lag. It only needs to coalesce a burst of typing into one push. 1.2s
-// keeps cross-device sync responsive while still riding through normal typing
-// rhythm. Push coalescing in syncEngine guarantees never more than one in flight.
+// save never freezes the editor — the debounce no longer masks lag, it just
+// trims redundant Drive writes (and the sidebar status-dot flicker that comes
+// with each push). 1.2s keeps cross-device sync responsive while staying calm
+// during a normal typing burst. Bursts can't pile up regardless: executePush in
+// syncEngine is single-flight + coalescing — at most one push runs and one (the
+// LATEST) is queued behind it; intermediate snapshots are dropped, which loses
+// nothing because pushJournal always writes the current full row, not a diff.
 const JOURNAL_SAVE_DEBOUNCE_MS = 1200
 
 const HashtagExtension = Extension.create({
