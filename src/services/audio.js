@@ -13,8 +13,8 @@ import {
   readJsonFile, writeEntityFile, readEntityFile, listFolder,
 } from './drive'
 import { appendChanges, getDeviceId } from './manifest'
-import { withAuthRetry } from './auth'
-import { queueAudioPush } from './swClient'
+import { withAuthRetry, pageTokenProvider } from './auth'
+import { pushAudioWith } from './sync-core/pushAudioCore'
 import { logSync } from './syncLog'
 
 /**
@@ -95,6 +95,17 @@ function toIndexEntry(rec) {
     sourceId: rec.sourceId || null,
     sourceTitle: rec.sourceTitle || null,
   }
+}
+
+/**
+ * Upload a local audio record to Drive and update the audio.json index.
+ * Safe to call when offline — will just no-op.
+ */
+export async function pushAudio(id) {
+  // Delegates to the portable sync-core push (same logic, gapi-free) with the
+  // page token provider. The SW path calls pushAudioWith(headlessTokenProvider)
+  // with the identical core, so the upload exists in exactly one place.
+  return pushAudioWith(pageTokenProvider, id)
 }
 
 /**
@@ -394,9 +405,7 @@ export async function pushPendingAudio() {
   for (const rec of all) {
     if (!rec.driveFileId && rec.blob) {
       try {
-        // Route through the SW push queue (same as a fresh recording): wakes
-        // the SW where available, falls back to a page upload otherwise.
-        await queueAudioPush(rec.id)
+        await pushAudio(rec.id)
       } catch (e) {
         console.warn('Audio upload failed', rec.id, e)
       }
