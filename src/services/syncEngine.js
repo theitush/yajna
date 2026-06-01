@@ -23,6 +23,7 @@ import {
   resolveConfigDoc, mergeConfigDoc,
 } from './sync'
 import { readManifest, diffManifest, getLocalLastSeq, setLocalLastSeq } from './manifest'
+import { blocksToHtml } from '../lib/blocks'
 import { logSync } from './syncLog'
 
 const DEFAULT_POLL_INTERVAL = 1000  // 1 second default
@@ -481,10 +482,25 @@ async function pollRemote(storeSetter) {
       }
       if (updatedDay !== undefined) {
         update.currentDay = updatedDay
-        // External origin (remote merge) → bump the rev so the open editor
-        // re-renders. Local saves never reach here, so the editor never
-        // reacts to the echo of its own write.
-        update.currentDayRev = (_storeGetter?.()?.currentDayRev ?? 0) + 1
+        // Only bump currentDayRev (which re-renders the open editor) when the
+        // merged content actually differs from what's already shown. The merge
+        // result for the open day is usually just our OWN saves echoing back
+        // through Drive — content-identical, same updatedAt. Bumping on that
+        // echo rebuilds the doc mid-type = the typing lag. Same guard
+        // loadJournal already uses; the poll-merge path was missing it.
+        const shown = _storeGetter?.()?.currentDay
+        const contentChanged =
+          !shown ||
+          shown.date !== updatedDay.date ||
+          blocksToHtml(shown.blocks) !== blocksToHtml(updatedDay.blocks) ||
+          (shown.reviewedAt || null) !== (updatedDay.reviewedAt || null)
+        if (contentChanged) {
+          update.currentDayRev = (_storeGetter?.()?.currentDayRev ?? 0) + 1
+        } else {
+          // Don't even replace currentDay with a fresh-but-identical reference;
+          // leave the in-memory doc (and any unsaved edit) untouched.
+          delete update.currentDay
+        }
       }
       storeSetter(update)
     }
