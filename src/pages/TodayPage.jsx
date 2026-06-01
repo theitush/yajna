@@ -2,12 +2,19 @@ import { useRef, useState } from 'react'
 import JournalPanel from '../components/today/JournalPanel'
 import TasksPanel from '../components/today/TasksPanel'
 import useAppStore from '../store/useAppStore'
+import useMediaQuery, { MD_BREAKPOINT } from '../lib/useMediaQuery'
 
 export default function TodayPage() {
   const insertTextRef = useRef(null)
   const [panel, setPanel] = useState('journal')
   const config = useAppStore(s => s.config)
   const updateConfig = useAppStore(s => s.updateConfig)
+  // Mount exactly one layout. Rendering both and CSS-hiding one (the old
+  // `hidden md:flex` / `md:hidden` pair) kept two live JournalPanel editors
+  // mounted — the hidden twin still subscribed to the store and re-ran
+  // setContent on every currentDay bump, fighting the visible editor and
+  // causing the online typing lag.
+  const isDesktop = useMediaQuery(MD_BREAKPOINT)
 
   const showTasks = config.showTasksToday !== false
 
@@ -15,10 +22,24 @@ export default function TodayPage() {
     updateConfig({ showTasksToday: !showTasks })
   }
 
+  return isDesktop ? (
+    <DesktopLayout
+      insertTextRef={insertTextRef}
+      showTasks={showTasks}
+      toggleTasks={toggleTasks}
+    />
+  ) : (
+    <MobileLayout
+      insertTextRef={insertTextRef}
+      panel={panel}
+      setPanel={setPanel}
+    />
+  )
+}
+
+function DesktopLayout({ insertTextRef, showTasks, toggleTasks }) {
   return (
-    <>
-      {/* Desktop: side-by-side */}
-      <div className="hidden md:flex h-full relative" style={{ background: 'var(--bg-primary)' }}>
+      <div className="flex h-full relative" style={{ background: 'var(--bg-primary)' }}>
         <div style={{
           flex: 1,
           borderRight: showTasks ? '1px solid var(--border-light)' : 'none',
@@ -70,9 +91,12 @@ export default function TodayPage() {
           </div>
         </div>
       </div>
+  )
+}
 
-      {/* Mobile: tabbed panels */}
-      <div className="md:hidden flex flex-col h-full" style={{ background: 'var(--bg-primary)' }}>
+function MobileLayout({ insertTextRef, panel, setPanel }) {
+  return (
+      <div className="flex flex-col h-full" style={{ background: 'var(--bg-primary)' }}>
         <div style={{ display: 'flex', borderBottom: '1px solid var(--border-light)' }}>
           <button
             onClick={() => setPanel('journal')}
@@ -82,7 +106,6 @@ export default function TodayPage() {
               color: panel === 'journal' ? 'var(--text-primary)' : 'var(--text-tertiary)',
               borderBottom: panel === 'journal' ? '2px solid var(--accent)' : '2px solid transparent',
               background: 'none', border: 'none', cursor: 'pointer',
-              borderBottom: panel === 'journal' ? `2px solid var(--accent)` : '2px solid transparent',
               transition: 'color 0.15s',
             }}
           >
@@ -111,7 +134,6 @@ export default function TodayPage() {
           )}
         </div>
       </div>
-    </>
   )
 }
 

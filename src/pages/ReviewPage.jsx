@@ -13,6 +13,7 @@ import { BlockIdExtension } from '../components/editor/BlockIdExtension'
 import { HeadingNoShortcut } from '../components/editor/HeadingNoShortcut'
 import JournalPanel from '../components/today/JournalPanel'
 import TasksPanel from '../components/today/TasksPanel'
+import useMediaQuery, { MD_BREAKPOINT } from '../lib/useMediaQuery'
 
 const HASHTAG_RE = /(#[\p{L}\p{N}_-]+)/gu
 
@@ -370,6 +371,10 @@ export default function ReviewPage() {
   const [openCommentKey, setOpenCommentKey] = useState(null)
   const [mode, setMode] = useState('review') // 'review' | 'edit'
   const todayStr = today()
+  // Mount one detail pane, not both. The desktop (`hidden md:flex`) and mobile
+  // (`md:hidden`) panes each hold a JournalPanel in edit mode; CSS-hiding one
+  // left two live editors mounted (same typing-lag bug as TodayPage).
+  const isDesktop = useMediaQuery(MD_BREAKPOINT)
 
   // If the URL changes (arriving from search), follow it.
   useEffect(() => {
@@ -580,7 +585,8 @@ export default function ReviewPage() {
               <ModeToggle mode={mode} onChange={setMode} />
             </header>
 
-            <div className="hidden md:flex" style={{ flex: 1, minHeight: 0 }}>
+            {isDesktop && (
+            <div className="flex" style={{ flex: 1, minHeight: 0 }}>
               <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border-light)' }}>
                 {mode === 'edit' ? (
                   <JournalPanel key={`edit-journal-${selectedDay.date}`} date={selectedDay.date} headerLabel="Journal" />
@@ -612,8 +618,10 @@ export default function ReviewPage() {
                 )}
               </div>
             </div>
+            )}
 
-            <div className="md:hidden" style={{ flex: 1, overflow: 'hidden' }}>
+            {!isDesktop && (
+            <div style={{ flex: 1, overflow: 'hidden' }}>
               {mobilePanel === 'journal' ? (
                 mode === 'edit' ? (
                   <JournalPanel key={`edit-journal-m-${selectedDay.date}`} date={selectedDay.date} headerLabel="Journal" />
@@ -644,6 +652,7 @@ export default function ReviewPage() {
                 )
               )}
             </div>
+            )}
           </>
         ) : (
           <div style={{ display: 'grid', placeItems: 'center', flex: 1 }}>

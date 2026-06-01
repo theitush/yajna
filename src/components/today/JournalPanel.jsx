@@ -109,21 +109,28 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
   })
 
   const remoteContent = dayDoc ? blocksToHtml(dayDoc.blocks) : ''
+  // The last remoteContent we rendered into (or originated from) the editor.
+  // We compare against THIS — not editor.getHTML() — because getHTML() and
+  // blocksToHtml() serialize differently, so a raw HTML compare never matched
+  // and treated every echo of our own save as a remote change → a self-inflicted
+  // setContent that rebuilt the doc and reset the cursor mid-type (the lag).
+  const lastRenderedContent = useRef(content)
   useEffect(() => {
     if (!editor || !remoteContent) return
-    const current = editor.getHTML()
-    if (current === remoteContent) return
+    // Already showing this exact content (e.g. the echo of our own save coming
+    // back through currentDay) — nothing to render.
+    if (remoteContent === lastRenderedContent.current) return
 
-    // Defer until the editor is idle (no pending local save). While the user is
-    // actively typing, do NOT touch the editor: a setContent mid-type resets the
-    // cursor, and any incremental insert fights BlockIdExtension's id-filler,
-    // which re-ids the inserted blocks as duplicates → the doubled-paragraph bug.
-    // The merged blocks are already safe in the store (currentDay); we just defer
-    // RENDERING them until typing pauses, when this effect re-runs (the local
-    // save bumped currentDay → remoteContent) and the editor is clear to reset.
-    // TipTap's setContent does its own cursor-free DOM reconciliation, so a clean
-    // reset is the right primitive here — no hand-rolled position math.
-    if (saveTimeout.current) return
+    // Never rebuild the editor the user is actively in: a setContent mid-type
+    // resets the cursor, and any incremental insert fights BlockIdExtension's
+    // id-filler, which re-ids the inserted blocks as duplicates → the
+    // doubled-paragraph bug. The merged blocks are already safe in the store
+    // (currentDay); we defer RENDERING them until typing pauses, when this
+    // effect re-runs (the local save bumped currentDay → remoteContent) and the
+    // editor is clear to reset. TipTap's setContent does its own cursor-free DOM
+    // reconciliation, so a clean reset is the right primitive — no hand-rolled
+    // position math.
+    if (saveTimeout.current || editor.isFocused) return
     // [lag-debug] A remote-driven setContent rebuilds the whole ProseMirror doc
     // and resets cursor/scroll. If this fires while the user is mid-type (small
     // sinceLastKeyMs), it's the visible hitch. Online polls bump currentDay ~1/s
@@ -131,6 +138,7 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
     const sinceLastKeyMs = lastKeyTs.current ? Math.round(performance.now() - lastKeyTs.current) : null
     logSync('lag: remote setContent', { sinceLastKeyMs, len: remoteContent.length })
     editor.commands.setContent(remoteContent, { emitUpdate: false })
+    lastRenderedContent.current = remoteContent
   }, [editor, remoteContent])
 
   useEffect(() => {
