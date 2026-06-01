@@ -38,12 +38,14 @@ const TASK_NON_FIELDS = new Set(['_doc'])
 // non-business field; everything else is a real setting.
 const CONFIG_NON_FIELDS = new Set(['_doc'])
 const NOTE_NON_FIELDS = new Set(['_doc', 'body'])
-// Per-block fields. `id` is the stable identifier (already used by mergeBlocks
-// as the join key); we keep it as a plain string inside Automerge so we can
-// look blocks up across devices. `html` is plain text — field-level LWW per
-// block matches what mergeBlocks did. `order` is dropped (Automerge.List
-// position is the ordering source of truth post-Phase-C).
-const NOTE_BLOCK_FIELDS = new Set(['id', 'html', 'deleted', 'updatedAt'])
+// Per-block fields. `id` is the stable identifier (the join key across devices).
+// `html` is the content (field-level LWW per block). `order` is a fractional-
+// index key (see blocks.js fiBetween): ordering is carried by this FIELD, not by
+// the Automerge list's physical position. This is deliberate — reordering by
+// splicing the Automerge list (deleteAt/insertAt) duplicates blocks under
+// concurrent edits, because list elements have structural identity that the `id`
+// field can't override. So the list is APPEND-ONLY; we sort by `order` on read.
+const NOTE_BLOCK_FIELDS = new Set(['id', 'html', 'deleted', 'updatedAt', 'order'])
 
 /**
  * Build the JSON shape for the config singleton's Automerge doc. Pass-through
@@ -135,15 +137,15 @@ function initialShape(type, seed) {
 }
 
 function cloneBlock(b) {
-  // `order` from the legacy fractional-index world is intentionally dropped —
-  // Automerge.List position is authoritative now. `updatedAt` per-block stays
-  // so we can resolve same-block conflicts on materialize if needed; Automerge
-  // already gives per-field LWW so this is just a debugging aid.
+  // `order` is the fractional-index sort key — KEPT (not dropped). Ordering lives
+  // in this field; the Automerge list is append-only and sorted by `order` on
+  // read. `updatedAt` per-block stays for per-field LWW debugging.
   return {
     id: b.id,
     html: b.html ?? '',
     deleted: b.deleted ?? false,
     updatedAt: b.updatedAt ?? new Date().toISOString(),
+    order: b.order ?? null,
   }
 }
 
@@ -289,67 +291,66 @@ export async function applyNoteFields(doc, source) {
     const srcById = new Map(srcBlocks.map((b) => [b.id, b]))
     const docIds = new Set()
 
-    // Pass 1: update or tombstone existing entries.
+    // Pass 1: update existing entries in place (including `order`). We do NOT
+    // tombstone a doc block that the source row simply doesn't mention — the
+    // editor snapshot can lag the merged doc, and treating "absent" as "deleted"
+    // is the cross-device block-loss bug. Genuine deletes arrive as an explicit
+    // { deleted: true } source entry (stampBlocksFromDoc tombstones removed
+    // blocks) and flow through this same per-field update.
     for (let i = 0; i < d.blocks.length; i++) {
       const cur = d.blocks[i]
       if (!cur || !cur.id) continue
       docIds.add(cur.id)
       const src = srcById.get(cur.id)
-      if (!src) {
-        if (!cur.deleted) {
-          cur.deleted = true
-          cur.updatedAt = src?.updatedAt || new Date().toISOString()
-        }
-        continue
-      }
-      // Per-field update where the value actually changed.
+      if (!src) continue
       for (const k of NOTE_BLOCK_FIELDS) {
         if (!shallowEqual(cur[k], src[k])) cur[k] = src[k]
       }
     }
 
-    // Pass 2: append new blocks the doc hasn't seen yet, in source order.
+    // Pass 2: append new blocks the doc hasn't seen yet. The list is APPEND-ONLY
+    // — order is carried by each block's `order` field and applied on read via
+    // sortByOrder. We never deleteAt/insertAt to reorder: under concurrent edits
+    // that re-inserts list elements Automerge can't dedupe by our `id` field, so
+    // merge keeps both copies (the doubled-paragraph duplication bug). Ordering
+    // changes are just `order` field updates handled in Pass 1.
     for (const src of srcBlocks) {
       if (docIds.has(src.id)) continue
       const fresh = {}
       for (const k of NOTE_BLOCK_FIELDS) fresh[k] = src[k]
       d.blocks.push(fresh)
     }
-
-    // Pass 3: if the source-block ordering differs from the doc ordering of
-    // the *live* (non-deleted) subset, rewrite the live subset's positions to
-    // match. Tombstones stay in place. This is rare in practice — the editor
-    // hands us the same order it produced last render.
-    const liveSrcOrder = srcBlocks.filter((b) => !b.deleted).map((b) => b.id)
-    const liveDocPositions = []
-    for (let i = 0; i < d.blocks.length; i++) {
-      if (!d.blocks[i].deleted) liveDocPositions.push(i)
-    }
-    let orderMatches = liveSrcOrder.length === liveDocPositions.length
-    if (orderMatches) {
-      for (let i = 0; i < liveSrcOrder.length; i++) {
-        if (d.blocks[liveDocPositions[i]].id !== liveSrcOrder[i]) { orderMatches = false; break }
-      }
-    }
-    if (!orderMatches) {
-      // Splice live entries out (from the end, to keep indices valid), then
-      // re-insert in source order at the front. Tombstones float to the back —
-      // they don't affect rendering since we filter `deleted` on read, and
-      // their list positions no longer carry meaning.
-      for (let i = liveDocPositions.length - 1; i >= 0; i--) {
-        d.blocks.deleteAt(liveDocPositions[i])
-      }
-      for (let i = 0; i < liveSrcOrder.length; i++) {
-        d.blocks.insertAt(i, pickBlockFields(srcById.get(liveSrcOrder[i]) || {}))
-      }
-    }
   })
 }
 
-function pickBlockFields(b) {
-  const out = {}
-  for (const k of NOTE_BLOCK_FIELDS) out[k] = b?.[k]
-  return out
+/**
+ * Sort materialized blocks by their fractional-index `order` key (id tiebreak,
+ * matching blocks.js sortByOrder so HTML and row order agree). The Automerge
+ * list is append-only, so its physical order is meaningless — `order` is the
+ * source of truth.
+ *
+ * Legacy docs predate the `order` field: their blocks have order == null. To
+ * avoid scrambling existing content, we backfill a temporary order from each
+ * block's current list position BEFORE sorting, so a doc that's never been
+ * re-stamped renders in exactly the order it's stored in today. The first real
+ * edit persists proper fractional keys via stampBlocksFromDoc.
+ */
+function sortBlocksByOrder(blocks) {
+  // Mixed/partial migration is the only ambiguous case. Resolve it by tier:
+  //   - every block keyed   → sort by fractional `order` (id tiebreak).
+  //   - none keyed (legacy) → keep current Automerge list position (backfill
+  //     from position; first re-stamp persists real keys).
+  //   - some keyed (mid-migration) → keep list position too. Interleaving a
+  //     half-stamped doc by a comparator that mixes keys and positions isn't a
+  //     total order; staying with the stored list order is stable and matches
+  //     what the user sees today. The next full save stamps everyone.
+  const allKeyed = blocks.every(b => b.order != null)
+  if (!allKeyed) return blocks.slice()
+  return blocks.slice().sort((a, b) => {
+    if (a.order < b.order) return -1
+    if (a.order > b.order) return 1
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+  })
 }
 
 /**
@@ -363,14 +364,15 @@ export function materializeNoteRow(doc) {
     out[k] = plainCopy(v)
   }
   // Blocks: filter nothing here — the UI's getNotes filters by note-level
-  // `deleted`, and block-level tombstones are kept so future merges still
-  // see the delete. Strip Automerge proxies; preserve list order.
+  // `deleted`, and block-level tombstones are kept so future merges still see
+  // the delete. Strip Automerge proxies, then sort by `order` (the append-only
+  // list's physical position is meaningless).
   out.blocks = Array.isArray(doc.blocks)
-    ? doc.blocks.map((b) => {
+    ? sortBlocksByOrder(doc.blocks.map((b) => {
         const o = {}
         for (const k of NOTE_BLOCK_FIELDS) o[k] = plainCopy(b[k])
         return o
-      })
+      }))
     : []
   return out
 }
@@ -444,46 +446,30 @@ export async function applyJournalFields(doc, source) {
     const srcById = new Map(srcBlocks.map((b) => [b.id, b]))
     const docIds = new Set()
 
+    // Pass 1: update existing entries in place (incl. `order`). A doc block the
+    // source row doesn't mention is NOT tombstoned — the editor snapshot can lag
+    // the merged doc, and "absent" must not mean "deleted" (the block-loss bug).
+    // Genuine deletes arrive as explicit { deleted: true } source entries.
     for (let i = 0; i < d.blocks.length; i++) {
       const cur = d.blocks[i]
       if (!cur || !cur.id) continue
       docIds.add(cur.id)
       const src = srcById.get(cur.id)
-      if (!src) {
-        if (!cur.deleted) {
-          cur.deleted = true
-          cur.updatedAt = src?.updatedAt || new Date().toISOString()
-        }
-        continue
-      }
+      if (!src) continue
       for (const k of JOURNAL_BLOCK_FIELDS) {
         if (!shallowEqual(cur[k], src[k])) cur[k] = src[k]
       }
     }
+    // Pass 2: append new blocks only. The list is APPEND-ONLY; ordering is the
+    // `order` field, applied via sortByOrder on read. We never deleteAt/insertAt
+    // to reorder — concurrent splices duplicate blocks Automerge can't dedupe by
+    // our `id` field (the doubled-paragraph bug). Reorders are `order` updates
+    // handled in Pass 1.
     for (const src of srcBlocks) {
       if (docIds.has(src.id)) continue
       const fresh = {}
       for (const k of JOURNAL_BLOCK_FIELDS) fresh[k] = src[k]
       d.blocks.push(fresh)
-    }
-    const liveSrcOrder = srcBlocks.filter((b) => !b.deleted).map((b) => b.id)
-    const liveDocPositions = []
-    for (let i = 0; i < d.blocks.length; i++) {
-      if (!d.blocks[i].deleted) liveDocPositions.push(i)
-    }
-    let orderMatches = liveSrcOrder.length === liveDocPositions.length
-    if (orderMatches) {
-      for (let i = 0; i < liveSrcOrder.length; i++) {
-        if (d.blocks[liveDocPositions[i]].id !== liveSrcOrder[i]) { orderMatches = false; break }
-      }
-    }
-    if (!orderMatches) {
-      for (let i = liveDocPositions.length - 1; i >= 0; i--) {
-        d.blocks.deleteAt(liveDocPositions[i])
-      }
-      for (let i = 0; i < liveSrcOrder.length; i++) {
-        d.blocks.insertAt(i, pickBlockFields(srcById.get(liveSrcOrder[i]) || {}))
-      }
     }
 
     // blockComments: per-blockId reconcile. The source is authoritative for
@@ -532,11 +518,11 @@ export function materializeJournalRow(doc) {
     out[k] = plainCopy(v)
   }
   out.blocks = Array.isArray(doc.blocks)
-    ? doc.blocks.map((b) => {
+    ? sortBlocksByOrder(doc.blocks.map((b) => {
         const o = {}
         for (const k of JOURNAL_BLOCK_FIELDS) o[k] = plainCopy(b[k])
         return o
-      })
+      }))
     : []
   const bc = {}
   const srcBc = doc.blockComments || {}

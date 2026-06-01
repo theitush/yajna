@@ -423,8 +423,18 @@ const useAppStore = create((set, get) => ({
       if (merged) {
         doc = merged
         await putJournal(doc)
-        // Only overwrite currentDay if the user hasn't navigated away meanwhile.
-        if (get().currentDay?.date === doc.date) set({ currentDay: doc })
+        // Only overwrite currentDay if the user hasn't navigated away, AND only
+        // when the merged content actually differs from what's shown. We set
+        // currentDay optimistically to the local doc above; re-setting it to an
+        // identical-content object makes a fresh reference that re-fires
+        // JournalPanel's reconcile effect for nothing (the stale-then-flick).
+        const shown = get().currentDay
+        if (shown?.date === doc.date) {
+          const changed =
+            blocksToHtml(shown.blocks) !== blocksToHtml(doc.blocks) ||
+            (shown.reviewedAt || null) !== (doc.reviewedAt || null)
+          if (changed) set({ currentDay: doc })
+        }
         if (doc.reviewedAt) {
           const nextReviews = { ...get().reviews, [doc.date]: doc.reviewedAt }
           set({ reviews: nextReviews })
