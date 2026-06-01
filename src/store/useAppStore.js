@@ -16,6 +16,7 @@ import { pushAudio, pushPendingAudio, ensureAudioLocal, softDeleteAudio, restore
 import { putAudio, getAudio } from '../services/db'
 import { withAuthRetry } from '../services/auth'
 import { stampBlocks, stampBlocksFromDoc, blocksToHtml } from '../lib/blocks'
+import { logSync } from '../services/syncLog'
 
 function collectAudioIdsFromHtml(html) {
   const ids = []
@@ -87,6 +88,7 @@ const useAppStore = create((set, get) => ({
       updatedAt: now,
     }
     await putTask(task)
+    logSync('addTask', { id: task.id.slice(0, 8), hasTitle: !!task.title, status: task.status })
     set(s => ({ tasks: [...s.tasks, task] }))
     if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
     return task
@@ -125,6 +127,14 @@ const useAppStore = create((set, get) => ({
     if (!task) return
     const updated = { ...task, ...updates, updatedAt: new Date().toISOString() }
     await putTask(updated)
+    logSync('updateTask', {
+      id: id.slice(0, 8),
+      from: fromDb ? 'db' : (fallback ? 'store' : 'none'),
+      baseHasTitle: !!task.title,
+      updHasTitle: !!updated.title,
+      updates: Object.keys(updates),
+      status: updated.status,
+    })
     set(s => ({ tasks: s.tasks.map(t => t.id === id ? updated : t) }))
     get().bumpReviewVersion()
     if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()

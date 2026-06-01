@@ -7,7 +7,7 @@ import {
   putTasks, putNotes, putJournal, getConfig, putConfig,
   putMeta, getAllTasksRaw, getAllNotesRaw, purgeTombstones,
   getDirty, clearDirty, putAudio, getAllAudio,
-  getTaskDocBytes, putTaskWithDoc,
+  getTaskDocBytes, putTaskWithDoc, getTask,
   getNoteDocBytes, putNoteWithDoc,
   getJournalDocBytes, putJournalWithDoc, getAllJournals,
   getConfigDocBytes, putConfigWithDoc,
@@ -33,6 +33,7 @@ import {
 } from './automergeDoc'
 import { journalApply, journalMerge } from './automergeWorkerClient'
 import { dayKey } from '../lib/dates'
+import { logSync } from './syncLog'
 
 const LAST_SYNC_KEY = 'last_sync'
 
@@ -742,6 +743,22 @@ export async function pushTasks() {
     }
     doc = await applyTaskFields(doc, local)
     const bytes = await saveDoc(doc)
+
+    // Diagnostic: the row we captured at snapshot time (line ~717) vs. what's
+    // in IDB right now. If they diverge, a user write (e.g. mark-done) landed
+    // mid-push and the `local` snapshot we're about to persist is stale — the
+    // clobber behind "create-then-done loses title / reverts status".
+    {
+      const fresh = await getTask(id)
+      if (fresh && (fresh.status !== local.status || !!fresh.title !== !!local.title || (fresh.updatedAt || '') !== (local.updatedAt || ''))) {
+        logSync('pushTasks STALE snapshot', {
+          id: id.slice(0, 8),
+          snapStatus: local.status, freshStatus: fresh.status,
+          snapHasTitle: !!local.title, freshHasTitle: !!fresh.title,
+          snapUpd: local.updatedAt, freshUpd: fresh.updatedAt,
+        })
+      }
+    }
 
     // Persist the new bytes locally before uploading so a mid-push crash
     // doesn't leave the remote ahead of local.

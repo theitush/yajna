@@ -24,6 +24,7 @@ import {
 } from './sync'
 import { readManifest, diffManifest, getLocalLastSeq, setLocalLastSeq } from './manifest'
 import { blocksToHtml } from '../lib/blocks'
+import { logSync } from './syncLog'
 
 const DEFAULT_POLL_INTERVAL = 1000  // 1 second default
 const RETRY_BASE_MS = 2000         // retry backoff starts at 2s
@@ -467,6 +468,22 @@ async function pollRemote(storeSetter) {
     if (storeSetter) {
       const visibleTasks = mergedTasks.filter(t => !t.deleted)
       const visibleNotes = mergedNotes.filter(n => !n.deleted)
+      // Diagnostic: which task ids was the store showing that this poll is about
+      // to drop (or add)? A drop here is the "task vanishes for a few seconds"
+      // moment. Only log when something actually changes, to keep it quiet.
+      {
+        const shown = _storeGetter?.()?.tasks || []
+        const shownIds = new Set(shown.map(t => t.id))
+        const nextIds = new Set(visibleTasks.map(t => t.id))
+        const dropped = [...shownIds].filter(id => !nextIds.has(id)).map(id => id.slice(0, 8))
+        const added = [...nextIds].filter(id => !shownIds.has(id)).map(id => id.slice(0, 8))
+        if (dropped.length || added.length) {
+          logSync('poll task store set', {
+            dropped, added, coldStart,
+            changed: Array.from(changedByType.task.keys()).map(id => id.slice(0, 8)),
+          })
+        }
+      }
       const update = {
         tasks: visibleTasks,
         notes: visibleNotes,
