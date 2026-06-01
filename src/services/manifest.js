@@ -187,10 +187,7 @@ export async function appendChanges(rootId, entries) {
     }
     if (next.changes.length > MAX_ENTRIES) next = compactManifest(next)
     const res = await writeManifestWithIfMatch(fileId, next, headRevisionId)
-    if (res.ok) {
-      logSync('manifest append OK', { attempt, seq: next.seq, entries: entries.map(e => `${e.type}:${e.id}`) })
-      return next
-    }
+    if (res.ok) return next
     logSync('manifest append 412 conflict, retrying', { attempt })
     // 412 — another device appended between read and write. Re-read and retry.
   }
