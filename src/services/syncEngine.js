@@ -196,6 +196,10 @@ function handleOnline() {
     setStatus({ state: 'synced' })
   }
 
+  // Reconnect counts as a real "load": force the next poll so it surfaces the
+  // syncing spinner (and skips the hash short-circuit) the way wake-from-focus
+  // does.
+  forceNextPoll = true
   startPolling(_storeSetter)
 }
 
@@ -256,7 +260,13 @@ async function pollRemote(storeSetter) {
       logSync('poll proceeding: remote hash changed', { hash, prev: lastRemoteHash })
     }
 
-    setStatus({ state: 'syncing' })
+    // Only surface the 'syncing' status for forced polls — i.e. the ones the
+    // user perceives as a real "load": cold start, wake-from-background/focus,
+    // reconnect, and manual sync (all set forceNextPoll before calling). Routine
+    // every-second background polls merge silently and land on 'synced' without
+    // ever flipping the status dot, so the user never sees a spinner flicker
+    // while just sitting on the Today screen.
+    if (forced) setStatus({ state: 'syncing' })
 
     // 1. Manifest diff — what entity ids changed since we last polled?
     const head = await readManifest(ids.rootId)
@@ -335,7 +345,7 @@ async function pollRemote(storeSetter) {
         startGen, writeGeneration, pushesInFlight,
         wouldHaveMerged: Object.fromEntries(Object.entries(changedByType).map(([t, m]) => [t, [...m.keys()]])),
       })
-      setStatus({ state: 'synced' })
+      if (forced) setStatus({ state: 'synced' })
       return
     }
 
@@ -456,7 +466,7 @@ async function pollRemote(storeSetter) {
     }
 
     if (writeGeneration !== startGen || pushesInFlight > 0) {
-      setStatus({ state: 'synced' })
+      if (forced) setStatus({ state: 'synced' })
       return
     }
 
@@ -499,7 +509,11 @@ async function pollRemote(storeSetter) {
     } else {
       lastRemoteHash = hash
     }
-    setStatus({ state: 'synced' })
+    // Forced polls showed 'syncing' above, so settle them back to 'synced'.
+    // Silent background polls never changed the status, so leave it untouched
+    // (setStatus already no-ops on an equal state, but being explicit keeps the
+    // intent clear: a routine merge must not produce any status churn).
+    if (forced) setStatus({ state: 'synced' })
   } catch (e) {
     console.warn('Poll failed:', e.message || e)
     if (isAuthError(e)) {

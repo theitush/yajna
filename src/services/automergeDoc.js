@@ -289,19 +289,17 @@ export async function applyNoteFields(doc, source) {
     const srcById = new Map(srcBlocks.map((b) => [b.id, b]))
     const docIds = new Set()
 
-    // Pass 1: update or tombstone existing entries.
+    // Pass 1: update existing entries. (Same data-loss guard as journals: a
+    // doc block the source row never mentions is NOT tombstoned — the editor's
+    // snapshot may simply lag the merged doc. Genuine deletes arrive as an
+    // explicit { deleted: true } source entry via stampBlocksFromDoc and are
+    // applied through the per-field update path below.)
     for (let i = 0; i < d.blocks.length; i++) {
       const cur = d.blocks[i]
       if (!cur || !cur.id) continue
       docIds.add(cur.id)
       const src = srcById.get(cur.id)
-      if (!src) {
-        if (!cur.deleted) {
-          cur.deleted = true
-          cur.updatedAt = src?.updatedAt || new Date().toISOString()
-        }
-        continue
-      }
+      if (!src) continue
       // Per-field update where the value actually changed.
       for (const k of NOTE_BLOCK_FIELDS) {
         if (!shallowEqual(cur[k], src[k])) cur[k] = src[k]
@@ -320,18 +318,26 @@ export async function applyNoteFields(doc, source) {
     // the *live* (non-deleted) subset, rewrite the live subset's positions to
     // match. Tombstones stay in place. This is rare in practice — the editor
     // hands us the same order it produced last render.
-    const liveSrcOrder = srcBlocks.filter((b) => !b.deleted).map((b) => b.id)
+    // Pass 3: reorder live subset to match source — only when the live block
+    // SETS match by id. If the doc has live blocks the source omits (stale
+    // editor snapshot), skip the reorder; splicing would drop them (same
+    // data-loss guard as the journal path / Pass 1).
+    const liveSrcIds = srcBlocks.filter((b) => !b.deleted).map((b) => b.id)
     const liveDocPositions = []
     for (let i = 0; i < d.blocks.length; i++) {
       if (!d.blocks[i].deleted) liveDocPositions.push(i)
     }
-    let orderMatches = liveSrcOrder.length === liveDocPositions.length
+    const liveDocIds = liveDocPositions.map((i) => d.blocks[i].id)
+    const sameLiveSet =
+      liveSrcIds.length === liveDocIds.length &&
+      new Set(liveSrcIds).size === new Set([...liveSrcIds, ...liveDocIds]).size
+    let orderMatches = liveSrcIds.length === liveDocPositions.length
     if (orderMatches) {
-      for (let i = 0; i < liveSrcOrder.length; i++) {
-        if (d.blocks[liveDocPositions[i]].id !== liveSrcOrder[i]) { orderMatches = false; break }
+      for (let i = 0; i < liveSrcIds.length; i++) {
+        if (d.blocks[liveDocPositions[i]].id !== liveSrcIds[i]) { orderMatches = false; break }
       }
     }
-    if (!orderMatches) {
+    if (sameLiveSet && !orderMatches) {
       // Splice live entries out (from the end, to keep indices valid), then
       // re-insert in source order at the front. Tombstones float to the back —
       // they don't affect rendering since we filter `deleted` on read, and
@@ -339,8 +345,8 @@ export async function applyNoteFields(doc, source) {
       for (let i = liveDocPositions.length - 1; i >= 0; i--) {
         d.blocks.deleteAt(liveDocPositions[i])
       }
-      for (let i = 0; i < liveSrcOrder.length; i++) {
-        d.blocks.insertAt(i, pickBlockFields(srcById.get(liveSrcOrder[i]) || {}))
+      for (let i = 0; i < liveSrcIds.length; i++) {
+        d.blocks.insertAt(i, pickBlockFields(srcById.get(liveSrcIds[i]) || {}))
       }
     }
   })
@@ -450,10 +456,18 @@ export async function applyJournalFields(doc, source) {
       docIds.add(cur.id)
       const src = srcById.get(cur.id)
       if (!src) {
-        if (!cur.deleted) {
-          cur.deleted = true
-          cur.updatedAt = src?.updatedAt || new Date().toISOString()
-        }
+        // The source row doesn't mention this block at all. CRITICAL: do NOT
+        // tombstone it. The source comes from the live editor's snapshot, which
+        // can legitimately lag the merged Automerge doc — e.g. the editor was
+        // loaded before another device's blocks merged in, or a poll/save race
+        // left currentDay truncated. Tombstoning here is the cross-device
+        // "blocks keep disappearing (29→28→…)" data-loss bug: every push
+        // re-asserts the editor's partial view as authoritative and nukes the
+        // blocks it never loaded. Genuine deletes DO reach us — they arrive as
+        // an explicit { deleted: true } entry in source (stampBlocksFromDoc
+        // tombstones removed blocks relative to currentDay), handled below.
+        // A block simply absent from source is "unknown to the editor", which
+        // must be a no-op, not a delete.
         continue
       }
       for (const k of JOURNAL_BLOCK_FIELDS) {
@@ -466,23 +480,34 @@ export async function applyJournalFields(doc, source) {
       for (const k of JOURNAL_BLOCK_FIELDS) fresh[k] = src[k]
       d.blocks.push(fresh)
     }
-    const liveSrcOrder = srcBlocks.filter((b) => !b.deleted).map((b) => b.id)
+    // Pass 3: reorder the live subset to match source order — but ONLY when
+    // the live block SETS are identical by id. If the doc holds live blocks the
+    // source doesn't mention (the editor's snapshot lagged the merged doc), the
+    // splice-and-reinsert below would drop them, reintroducing the very
+    // data-loss the Pass 1 guard prevents. In that case we leave the order as
+    // merged; a later push from a device whose editor has the full set will
+    // settle ordering.
+    const liveSrcIds = srcBlocks.filter((b) => !b.deleted).map((b) => b.id)
     const liveDocPositions = []
     for (let i = 0; i < d.blocks.length; i++) {
       if (!d.blocks[i].deleted) liveDocPositions.push(i)
     }
-    let orderMatches = liveSrcOrder.length === liveDocPositions.length
+    const liveDocIds = liveDocPositions.map((i) => d.blocks[i].id)
+    const sameLiveSet =
+      liveSrcIds.length === liveDocIds.length &&
+      new Set(liveSrcIds).size === new Set([...liveSrcIds, ...liveDocIds]).size
+    let orderMatches = liveSrcIds.length === liveDocPositions.length
     if (orderMatches) {
-      for (let i = 0; i < liveSrcOrder.length; i++) {
-        if (d.blocks[liveDocPositions[i]].id !== liveSrcOrder[i]) { orderMatches = false; break }
+      for (let i = 0; i < liveSrcIds.length; i++) {
+        if (d.blocks[liveDocPositions[i]].id !== liveSrcIds[i]) { orderMatches = false; break }
       }
     }
-    if (!orderMatches) {
+    if (sameLiveSet && !orderMatches) {
       for (let i = liveDocPositions.length - 1; i >= 0; i--) {
         d.blocks.deleteAt(liveDocPositions[i])
       }
-      for (let i = 0; i < liveSrcOrder.length; i++) {
-        d.blocks.insertAt(i, pickBlockFields(srcById.get(liveSrcOrder[i]) || {}))
+      for (let i = 0; i < liveSrcIds.length; i++) {
+        d.blocks.insertAt(i, pickBlockFields(srcById.get(liveSrcIds[i]) || {}))
       }
     }
 
