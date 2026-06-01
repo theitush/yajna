@@ -137,8 +137,13 @@ export async function getTaskDocBytes(id) {
 export async function putTaskDocBytes(id, bytes) {
   if (!id || !(bytes instanceof Uint8Array)) return
   const db = await getDB()
-  const existing = await db.get(STORE_TASKS, id)
-  await db.put(STORE_TASKS, { ...(existing || { id }), _doc: bytes })
+  // Single readwrite tx so the get+put is atomic: a concurrent putTask (the
+  // row owner) can't slip between our read and write and get its fresh fields
+  // clobbered. We only ever touch `_doc`, never the materialized row fields.
+  const tx = db.transaction(STORE_TASKS, 'readwrite')
+  const existing = await tx.store.get(id)
+  await tx.store.put({ ...(existing || { id }), _doc: bytes })
+  await tx.done
 }
 
 /**

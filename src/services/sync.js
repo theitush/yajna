@@ -7,7 +7,7 @@ import {
   putTasks, putNotes, putJournal, getConfig, putConfig,
   putMeta, getAllTasksRaw, getAllNotesRaw, purgeTombstones,
   getDirty, clearDirty, putAudio, getAllAudio,
-  getTaskDocBytes, putTaskWithDoc, getTask,
+  getTaskDocBytes, putTaskWithDoc, putTaskDocBytes, getTask,
   getNoteDocBytes, putNoteWithDoc,
   getJournalDocBytes, putJournalWithDoc, getAllJournals,
   getConfigDocBytes, putConfigWithDoc,
@@ -749,6 +749,12 @@ export async function pushTasks() {
       continue
     }
 
+    // Re-read the row fresh right before building the doc. The snapshot from the
+    // top of pushTasks (getAllTasksRaw) can be stale: this push is fire-and-forget
+    // from updateTask, so a SECOND edit to the same task (e.g. mark-done then type
+    // feedback) can land after the snapshot. We must ship the latest fields.
+    const fresh = (await getTask(id)) || local
+
     // Pick the base doc: our own bytes, else adopt the remote .bin's root, else
     // (first writer) createDoc. Forking a fresh root when a remote already
     // exists breaks Automerge.merge across devices (the staleness bug).
@@ -758,43 +764,17 @@ export async function pushTasks() {
       doc = await loadDoc(existingBytes)
     } else {
       const remoteBytes = await readEntityBinFile(ids.tasksFolderId, id).catch(() => null)
-      doc = remoteBytes ? await loadDoc(remoteBytes) : await createDoc('task', local)
+      doc = remoteBytes ? await loadDoc(remoteBytes) : await createDoc('task', fresh)
     }
-    doc = await applyTaskFields(doc, local)
+    doc = await applyTaskFields(doc, fresh)
     const bytes = await saveDoc(doc)
 
-    // Diagnostic: the row we captured at snapshot time (line ~717) vs. what's
-    // in IDB right now. If they diverge, a user write (e.g. mark-done) landed
-    // mid-push and the `local` snapshot we're about to persist is stale — the
-    // clobber behind "create-then-done loses title / reverts status".
-    {
-      const fresh = await getTask(id)
-      if (fresh && (fresh.status !== local.status || !!fresh.title !== !!local.title || (fresh.updatedAt || '') !== (local.updatedAt || ''))) {
-        logSync('pushTasks STALE snapshot', {
-          id: id.slice(0, 8),
-          snapStatus: local.status, freshStatus: fresh.status,
-          snapHasTitle: !!local.title, freshHasTitle: !!fresh.title,
-          snapUpd: local.updatedAt, freshUpd: fresh.updatedAt,
-        })
-      }
-    }
-
-    // Diagnostic: exactly what this push is about to upload to Drive. Lets us
-    // confirm a device shipped the user's latest edit vs. a stale field set.
-    {
-      const shipped = materializeTaskRow(doc)
-      logSync('pushTasks shipped', {
-        id: id.slice(0, 8),
-        status: shipped.status,
-        hasTitle: !!shipped.title,
-        hasExpl: !!shipped.explanation,
-        upd: shipped.updatedAt,
-      })
-    }
-
-    // Persist the new bytes locally before uploading so a mid-push crash
-    // doesn't leave the remote ahead of local.
-    await putTaskWithDoc(local, bytes, { fromSync: true })
+    // Persist ONLY the Automerge bytes, never the row. The row is owned by
+    // updateTask (the UI write path); pushTasks writing a materialized row here
+    // is what clobbered a concurrent edit. putTaskDocBytes is atomic and touches
+    // only `_doc`, so a fresh updateTask field set is never lost. This is the
+    // canonical ownership split: updateTask owns row fields, push owns doc bytes.
+    await putTaskDocBytes(id, bytes)
 
     // Blind upload — no pre-merge read. Other devices' edits get folded in
     // on the next pull via Automerge.merge.
@@ -803,7 +783,7 @@ export async function pushTasks() {
     changes.push({
       type: 'task',
       id,
-      op: local.deleted ? 'delete' : 'upsert',
+      op: fresh.deleted ? 'delete' : 'upsert',
       at: new Date().toISOString(),
       deviceId,
     })
