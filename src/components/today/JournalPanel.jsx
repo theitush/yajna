@@ -9,7 +9,6 @@ import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { DOMSerializer } from '@tiptap/pm/model'
 import { useEffect, useRef } from 'react'
 import useAppStore from '../../store/useAppStore'
-import { logSync } from '../../services/syncLog'
 import { formatDate, currentJournalDay } from '../../lib/dates'
 import EditorToolbar from '../editor/EditorToolbar'
 import { RTLExtension } from '../editor/RTLExtension'
@@ -52,23 +51,16 @@ const HashtagExtension = Extension.create({
 
 export default function JournalPanel({ onInsertText, date, headerLabel }) {
   const currentDay = useAppStore(s => s.currentDay)
+  // External-origin counter: bumps on navigation/load, sync-poll merge, or
+  // audio restore — never on the editor's own debounced save. We key the
+  // re-render effect on this so the editor renders genuine remote changes but
+  // never reacts to the echo of its own write (the mid-type rebuild = lag).
+  const currentDayRev = useAppStore(s => s.currentDayRev)
   const updateJournalEntry = useAppStore(s => s.updateJournalEntry)
   const loadJournal = useAppStore(s => s.loadJournal)
   const config = useAppStore(s => s.config)
   const getTags = useAppStore.getState().getAllTags
   const saveTimeout = useRef(null)
-  // [lag-debug] timing probes — last keystroke ts + an "actively typing" window
-  // so we can tell whether a remote-driven setContent fires mid-type. Remove
-  // once the typing-lag cause is confirmed.
-  const lastKeyTs = useRef(0)
-  // True from the moment a local save starts until its echo (the currentDay
-  // bump it caused) has flowed back into the remoteContent effect. The editor
-  // already holds this content — there is nothing to re-render — but the
-  // round-tripped blocksToHtml() (tombstones + re-stamped order) never equals
-  // the HTML we saved, so the lastRenderedContent guard always misses and we'd
-  // setContent on our own echo, rebuilding the doc mid-type (the lag). This
-  // flag lets the effect recognise the echo and just resync its guard value.
-  const pendingLocalEcho = useRef(false)
   const targetDate = date || currentJournalDay(config)
 
   useEffect(() => {
@@ -99,69 +91,37 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
     ],
     content,
     onUpdate: ({ editor }) => {
-      lastKeyTs.current = performance.now()
       const html = editor.getHTML()
       const serializer = DOMSerializer.fromSchema(editor.schema)
       const blocks = docToBlocks(editor.state.doc, serializer)
       clearTimeout(saveTimeout.current)
-      const scheduledAt = performance.now()
       saveTimeout.current = setTimeout(() => {
         saveTimeout.current = null
-        // [lag-debug] how long from last keystroke to the debounced save firing.
-        logSync('lag: debounce fired -> save', { sinceScheduleMs: Math.round(performance.now() - scheduledAt) })
-        const t0 = performance.now()
-        // The save below bumps currentDay → remoteContent → the effect re-runs.
-        // That re-run is our own echo: the editor already shows this text. Flag
-        // it so the effect resyncs its guard instead of rebuilding the doc.
-        pendingLocalEcho.current = true
-        Promise.resolve(updateJournalEntry(targetDate, { html, blocks }))
-          .finally(() => logSync('lag: updateJournalEntry done', { ms: Math.round(performance.now() - t0) }))
+        // Bumps currentDay but NOT currentDayRev, so this save never re-fires
+        // the render effect below — the editor doesn't rebuild on its own echo.
+        updateJournalEntry(targetDate, { html, blocks })
       }, 800)
     },
   })
 
-  const remoteContent = dayDoc ? blocksToHtml(dayDoc.blocks) : ''
-  // The last remoteContent we rendered into (or originated from) the editor.
-  // We compare against THIS — not editor.getHTML() — because getHTML() and
-  // blocksToHtml() serialize differently, so a raw HTML compare never matched
-  // and treated every echo of our own save as a remote change → a self-inflicted
-  // setContent that rebuilt the doc and reset the cursor mid-type (the lag).
-  const lastRenderedContent = useRef(content)
+  // Render external changes into the editor. Keyed on currentDayRev (bumped
+  // only by navigation/load, sync-poll merge, or audio restore), so the effect
+  // runs for genuine remote content and never for the echo of our own save.
   useEffect(() => {
-    if (!editor || !remoteContent) return
-    // Already showing this exact content (e.g. the echo of our own save coming
-    // back through currentDay) — nothing to render.
-    if (remoteContent === lastRenderedContent.current) return
-
-    // Our own save just bumped currentDay. The editor already holds this text;
-    // only the serialized form differs (tombstones + re-stamped order keys), so
-    // the guard above can't match. Resync the guard to the canonical content and
-    // bail — rebuilding the doc here is exactly the mid-type lag we're killing.
-    if (pendingLocalEcho.current) {
-      pendingLocalEcho.current = false
-      lastRenderedContent.current = remoteContent
-      return
-    }
-
-    // Never rebuild the editor the user is actively in: a setContent mid-type
-    // resets the cursor, and any incremental insert fights BlockIdExtension's
-    // id-filler, which re-ids the inserted blocks as duplicates → the
-    // doubled-paragraph bug. The merged blocks are already safe in the store
-    // (currentDay); we defer RENDERING them until typing pauses, when this
-    // effect re-runs (the local save bumped currentDay → remoteContent) and the
-    // editor is clear to reset. TipTap's setContent does its own cursor-free DOM
-    // reconciliation, so a clean reset is the right primitive — no hand-rolled
-    // position math.
-    if (saveTimeout.current || editor.isFocused) return
-    // [lag-debug] A remote-driven setContent rebuilds the whole ProseMirror doc
-    // and resets cursor/scroll. If this fires while the user is mid-type (small
-    // sinceLastKeyMs), it's the visible hitch. Online polls bump currentDay ~1/s
-    // → this effect re-runs; offline it never does (matches "smooth offline").
-    const sinceLastKeyMs = lastKeyTs.current ? Math.round(performance.now() - lastKeyTs.current) : null
-    logSync('lag: remote setContent', { sinceLastKeyMs, len: remoteContent.length })
+    if (!editor) return
+    const remoteContent = dayDoc ? blocksToHtml(dayDoc.blocks) : ''
+    if (!remoteContent) return
+    // Don't rebuild the doc while the user is mid-type: a setContent resets the
+    // cursor. A pending debounced save IS the "actively typing" signal — once it
+    // fires and clears, the user has paused and the next poll (or this effect's
+    // re-run on the save's external echo) renders the remote change safely.
+    // setContent is TipTap's own cursor-free reconcile, so a clean reset is the
+    // right primitive — no hand-rolled position math.
+    if (saveTimeout.current) return
+    if (editor.getHTML() === remoteContent) return
     editor.commands.setContent(remoteContent, { emitUpdate: false })
-    lastRenderedContent.current = remoteContent
-  }, [editor, remoteContent])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, currentDayRev])
 
   useEffect(() => {
     if (!onInsertText) return

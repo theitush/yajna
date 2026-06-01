@@ -481,6 +481,10 @@ async function pollRemote(storeSetter) {
       }
       if (updatedDay !== undefined) {
         update.currentDay = updatedDay
+        // External origin (remote merge) → bump the rev so the open editor
+        // re-renders. Local saves never reach here, so the editor never
+        // reacts to the echo of its own write.
+        update.currentDayRev = (_storeGetter?.()?.currentDayRev ?? 0) + 1
       }
       storeSetter(update)
     }

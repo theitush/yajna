@@ -301,6 +301,13 @@ const useAppStore = create((set, get) => ({
   // Journals (per-day docs keyed by date YYYY-MM-DD).
   // currentDay shape: { date, blocks, reviewedAt, blockComments, createdAt, updatedAt }
   currentDay: null,
+  // Monotonic counter bumped ONLY when currentDay changes from an external
+  // origin — navigation/load, a sync-poll merge, or an audio restore. The
+  // editor's own debounced save also writes currentDay (so other readers see
+  // fresh blocks) but deliberately does NOT bump this. JournalPanel keys its
+  // re-render effect on this counter, so it never reacts to the echo of its
+  // own save — which is what rebuilt the doc mid-type and caused typing lag.
+  currentDayRev: 0,
   // Tag usage accumulated from ALL local journal days so the autocomplete
   // pool isn't limited to the currently-loaded day.
   journalTagPool: {},
@@ -411,8 +418,9 @@ const useAppStore = create((set, get) => ({
 
     // Show the locally-stored doc immediately so the editor doesn't flash empty
     // while we wait on a network round-trip. The merge below will update
-    // currentDay again if Drive had newer content.
-    set({ currentDay: doc })
+    // currentDay again if Drive had newer content. External origin (navigation)
+    // → bump rev so the editor renders it.
+    set(s => ({ currentDay: doc, currentDayRev: s.currentDayRev + 1 }))
     if (doc.reviewedAt) {
       const nextReviews = { ...get().reviews, [doc.date]: doc.reviewedAt }
       set({ reviews: nextReviews })
@@ -433,7 +441,7 @@ const useAppStore = create((set, get) => ({
           const changed =
             blocksToHtml(shown.blocks) !== blocksToHtml(doc.blocks) ||
             (shown.reviewedAt || null) !== (doc.reviewedAt || null)
-          if (changed) set({ currentDay: doc })
+          if (changed) set(s => ({ currentDay: doc, currentDayRev: s.currentDayRev + 1 }))
         }
         if (doc.reviewedAt) {
           const nextReviews = { ...get().reviews, [doc.date]: doc.reviewedAt }
@@ -673,7 +681,7 @@ const useAppStore = create((set, get) => ({
       const updatedDoc = { ...doc, blocks, updatedAt: now, createdAt: doc.createdAt || now }
       await putJournal(updatedDoc)
       await restoreAudio(id)
-      set(s => (s.currentDay?.date === date ? { currentDay: updatedDoc } : {}))
+      set(s => (s.currentDay?.date === date ? { currentDay: updatedDoc, currentDayRev: s.currentDayRev + 1 } : {}))
       if (get().mode !== MODE_OFFLINE) withRetry(() => pushJournal(updatedDoc))()
     } else {
       return { ok: false, reason: 'Unknown audio source type.' }
