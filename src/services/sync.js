@@ -28,9 +28,10 @@ import {
   createDoc, loadDoc, saveDoc, mergeDoc, sharesAncestry,
   applyTaskFields, materializeTaskRow,
   applyNoteFields, materializeNoteRow,
-  applyJournalFields, materializeJournalRow,
+  materializeJournalRow,
   applyConfigFields, materializeConfigRow,
 } from './automergeDoc'
+import { journalApply, journalMerge } from './automergeWorkerClient'
 import { dayKey } from '../lib/dates'
 import { logSync } from './syncLog'
 
@@ -389,49 +390,24 @@ export async function mergeJournalDocs(journalDocs, changedMap) {
       continue
     }
 
-    const remoteDoc = await loadDoc(bytes)
+    // Off-thread the load→merge→save chain. Disjoint-root reconcile (the
+    // staleness heal) lives inside journalMerge, unchanged; it returns the merge
+    // branch + block counts so the [sync-debug] log below stays identical.
     const localBytes = await getJournalDocBytes(id)
-    let mergedDoc
-    let _branch = 'remoteOnly'
-    let _shared = null
+    const { bytes: mergedBytes, row: mergedRow, branch: _branch, shared: _shared, counts } =
+      await journalMerge({ remoteBytes: bytes, localBytes, localRow: l })
     if (localBytes) {
-      const localDoc = await loadDoc(localBytes)
-      // Only Automerge.merge if the docs share ancestry. A pre-fix device may
-      // hold a disjoint-root local .bin (e.g. an empty day pushed as a fresh
-      // root); merging that against the remote silently drops the remote's
-      // blocks. Disjoint roots can't be CRDT-merged, so resolve by recency:
-      // adopt whichever doc was updated last (wholesale — applying one row's
-      // fields onto the other would delete the loser's blocks). This heals the
-      // stale device: the remote (newer) wins and its content lands locally.
-      _shared = await sharesAncestry(localDoc, remoteDoc)
-      if (_shared) {
-        _branch = 'merge(shared)'
-        mergedDoc = await mergeDoc(localDoc, remoteDoc)
-      } else {
-        _branch = 'newerDoc(disjoint)'
-        mergedDoc = newerDoc(localDoc, remoteDoc, materializeJournalRow)
-      }
       // [sync-debug] decisive: did the merge actually keep the remote's blocks?
       try {
-        const bc = (d) => { const r = materializeJournalRow(d); return Array.isArray(r?.blocks) ? r.blocks.filter(b => !b?.deleted).length : 0 }
+        const mergedDocBlocks = Array.isArray(mergedRow?.blocks) ? mergedRow.blocks.filter(b => !b?.deleted).length : 0
         logSync('mergeJournalDocs branch', {
           id, branch: _branch, shared: _shared,
-          localDocBlocks: bc(localDoc), remoteDocBlocks: bc(remoteDoc), mergedDocBlocks: bc(mergedDoc),
-          localDocUpd: materializeJournalRow(localDoc)?.updatedAt || null,
-          remoteDocUpd: materializeJournalRow(remoteDoc)?.updatedAt || null,
+          localDocBlocks: counts.localDocBlocks, remoteDocBlocks: counts.remoteDocBlocks, mergedDocBlocks,
+          localDocUpd: counts.localDocUpd,
+          remoteDocUpd: counts.remoteDocUpd,
         })
       } catch { /* best-effort */ }
-    } else if (l) {
-      // No local bytes → remote authoritative. Adopt + re-apply local row.
-      // Do NOT createDoc()+merge: disjoint roots drop the remote's blocks,
-      // which is exactly the "0 merged blocks" staleness bug.
-      mergedDoc = await applyJournalFields(remoteDoc, l)
-    } else {
-      mergedDoc = remoteDoc
     }
-
-    const mergedBytes = await saveDoc(mergedDoc)
-    const mergedRow = materializeJournalRow(mergedDoc)
     if (!mergedRow.date) mergedRow.date = id
     try {
       const blockCount = (r) => Array.isArray(r?.blocks) ? r.blocks.filter(b => !b?.deleted).length : 0
@@ -975,28 +951,14 @@ export async function pushJournal(dayDoc) {
   // Minting a fresh-root doc when a remote already exists is what caused the
   // cross-device "0 merged blocks" staleness bug: a disjoint-root doc can't be
   // Automerge.merge'd with the others, so each pull silently drops content.
+  // Gather byte inputs on the main thread (IDB + network — non-blocking I/O),
+  // then hand the synchronous Automerge load→apply→save chain to the worker so
+  // it never freezes the editor. Disjoint-root reconcile (the staleness heal)
+  // lives inside journalApply, unchanged. We always read the remote .bin so the
+  // worker can detect a disjoint local root, exactly as the inline code did.
   const existingBytes = await getJournalDocBytes(date)
-  let doc
-  if (existingBytes) {
-    doc = await loadDoc(existingBytes)
-    // A pre-fix device may hold a disjoint-root local doc. If so, pushing it
-    // would clobber the remote (which shares ancestry with every other device)
-    // and re-poison it. Reconcile against the remote first: keep ours only if
-    // it's genuinely newer, else adopt the remote root before applying fields.
-    const remoteBytes = await readEntityBinFile(ids.journalsFolderId, date).catch(() => null)
-    if (remoteBytes) {
-      const remoteDoc = await loadDoc(remoteBytes)
-      if (!(await sharesAncestry(doc, remoteDoc))) {
-        doc = newerDoc(doc, remoteDoc, materializeJournalRow)
-      }
-    }
-  } else {
-    const remoteBytes = await readEntityBinFile(ids.journalsFolderId, date).catch(() => null)
-    doc = remoteBytes ? await loadDoc(remoteBytes) : await createDoc('journal', source)
-  }
-  doc = await applyJournalFields(doc, source)
-  const bytes = await saveDoc(doc)
-  const merged = materializeJournalRow(doc)
+  const remoteBytes = await readEntityBinFile(ids.journalsFolderId, date).catch(() => null)
+  const { bytes, row: merged } = await journalApply({ existingBytes, remoteBytes, source })
   if (!merged.date) merged.date = date
 
   // Persist locally before upload so a mid-push crash can't leave the remote

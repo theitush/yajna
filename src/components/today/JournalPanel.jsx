@@ -21,14 +21,12 @@ import RecordFab from '../voice/RecordFab'
 import { docToBlocks, blocksToHtml } from '../../lib/blocks'
 
 // How long to wait after the last keystroke before saving+pushing the journal.
-// Each save triggers pushJournal (synchronous Automerge + Drive upload), so we
-// only want it to fire when the user has genuinely PAUSED — not on the many
-// sub-second micro-pauses inside normal writing. 800ms was short enough that
-// ordinary typing rhythm fired a push every second or two; 2.5s rides through
-// thinking pauses and only commits when you actually stop. Local IDB autosave
-// safety isn't lost: the editor content is in memory and the next pause flushes
-// it; a poll/merge never clobbers an unflushed edit (saveTimeout guards render).
-const JOURNAL_SAVE_DEBOUNCE_MS = 2500
+// The push's Automerge work now runs in a worker (automergeWorkerClient), so a
+// save no longer freezes the editor and the debounce no longer needs to be long
+// to mask lag. It only needs to coalesce a burst of typing into one push. 1.2s
+// keeps cross-device sync responsive while still riding through normal typing
+// rhythm. Push coalescing in syncEngine guarantees never more than one in flight.
+const JOURNAL_SAVE_DEBOUNCE_MS = 1200
 
 const HashtagExtension = Extension.create({
   name: 'hashtag',
@@ -99,6 +97,7 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
         updateJournalEntry(p.date, { html: p.html, blocks: p.blocks })
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [targetDate])
 
   const dayDoc = currentDay?.date === targetDate ? currentDay : null
