@@ -39,6 +39,24 @@ function withTaskLock(id, fn) {
   return next
 }
 
+// Re-run pending-audio upload whenever the tab returns to the foreground.
+// Firefox-Android (and iOS) have no Background Sync, so an upload interrupted by
+// the screen turning off mid-push can't finish in the background — the page is
+// frozen. pushPendingAudio derives the pending set from IDB (any local blob
+// without a driveFileId), so calling it on visibility-return reliably finishes
+// those clips the instant the user reopens the app, instead of leaving them
+// stranded until a full re-init. Registered once (guarded) by runInitialSync.
+let audioVisibilityHandlerAttached = false
+function attachAudioVisibilityReplay(getState) {
+  if (audioVisibilityHandlerAttached || typeof document === 'undefined') return
+  audioVisibilityHandlerAttached = true
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return
+    if (getState().mode === MODE_OFFLINE) return
+    pushPendingAudio().catch(e => console.warn('pushPendingAudio (on resume) failed', e))
+  })
+}
+
 function collectAudioIdsFromHtml(html) {
   const ids = []
   if (!html) return ids
@@ -934,6 +952,7 @@ const useAppStore = create((set, get) => ({
       const intervalMs = (result?.mergedConfig?.syncInterval || 1) * 1000
       startSyncEngine((data) => set(data), intervalMs, () => get())
       pushPendingAudio().catch(e => console.warn('pushPendingAudio failed', e))
+      attachAudioVisibilityReplay(get)
       get().loadJournalTagPool()
     }).catch((e) => {
       console.error('Sync failed', e)
