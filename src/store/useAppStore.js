@@ -977,7 +977,13 @@ const useAppStore = create((set, get) => ({
         if (!Object.keys(s.config || {}).length) fills.push(getConfig().then(v => set({ config: v || {} })))
         await Promise.all(fills)
         await get().rebuildReviewsFromJournals().catch(() => {})
-      })().catch(() => {})
+        // Safety net for the `today` gate when the user did NOT land on Today.
+        // loadJournal (JournalPanel mount) is the primary signal, but it only
+        // runs on the Today route; /review is also gated on `today` and could
+        // be the landing route. By now the full merge is done and journals are
+        // rebuilt, so `today` is genuinely ready. Idempotent with loadJournal's.
+        get().markSyncReady('today')
+      })().catch(() => { get().markSyncReady('today') })
 
       set({ lastSync: Date.now(), syncing: false, coldPull: { active: false, progress: {} } })
 

@@ -6,12 +6,19 @@ import useAppStore from '../../store/useAppStore'
  * to a partially-hydrated surface could clobber data we haven't merged yet.
  *
  * Usage: `<SurfaceLoadingGate bucket="tasks">{page contents}</SurfaceLoadingGate>`
- * Once syncReady[bucket] is true it renders children with no overlay.
+ * Pass an array to gate on several buckets — the overlay stays up until EVERY
+ * listed bucket is ready (e.g. Review reads+writes both journals and tasks):
+ * `<SurfaceLoadingGate bucket={['today', 'tasks']}>…`
+ * Once the bucket(s) are ready it renders children with no overlay.
  */
 export default function SurfaceLoadingGate({ bucket, children, label }) {
-  const ready = useAppStore(s => s.syncReady?.[bucket])
+  const buckets = Array.isArray(bucket) ? bucket : [bucket]
+  const ready = useAppStore(s => buckets.every(b => s.syncReady?.[b]))
   const coldPull = useAppStore(s => s.coldPull)
-  const bucketLabel = bucket === 'tasks' ? 'tasks' : bucket === 'notes' ? 'notes' : bucket
+  // Cold-pull progress sub-label tracks the first listed bucket (good enough —
+  // it's just a "pulling X from Drive" hint, not load-bearing).
+  const primary = buckets[0]
+  const bucketLabel = primary === 'tasks' ? 'tasks' : primary === 'notes' ? 'notes' : primary
   const bucketProgress = coldPull?.active ? coldPull.progress?.[bucketLabel] : null
   return (
     <div style={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -45,7 +52,7 @@ export default function SurfaceLoadingGate({ bucket, children, label }) {
               </>
             ) : (
               <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.9)' }}>
-                {label || `Loading ${bucket}...`}
+                {label || `Loading ${buckets.join(' + ')}...`}
               </div>
             )}
           </div>
