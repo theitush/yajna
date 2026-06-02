@@ -346,7 +346,7 @@ export default function App() {
           <main className="flex-1 overflow-hidden flex flex-col">
             <Routes>
               <Route path="/" element={
-                <SurfaceLoadingGate bucket="tasks" label="Loading tasks..."><TodayPage /></SurfaceLoadingGate>
+                <SurfaceLoadingGate bucket="today" label="Loading today..."><TodayPage /></SurfaceLoadingGate>
               } />
               <Route path="/review" element={
                 <SurfaceLoadingGate bucket="tasks" label="Loading..."><ReviewPage /></SurfaceLoadingGate>

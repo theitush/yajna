@@ -472,36 +472,60 @@ const useAppStore = create((set, get) => ({
     // Show the locally-stored doc immediately so the editor doesn't flash empty
     // while we wait on a network round-trip. The merge below will update
     // currentDay again if Drive had newer content. External origin (navigation)
-    // → bump rev so the editor renders it.
-    set(s => ({ currentDay: doc, currentDayRev: s.currentDayRev + 1 }))
+    // → bump rev so the editor renders it. Capture this exact object reference:
+    // it's our "did the user edit while the merge was in flight?" sentinel. If
+    // currentDay is replaced during the await — by the editor's debounced
+    // updateJournalEntry (which sets a NEW currentDay object that already
+    // contains the keystrokes AND ran its own merge+push) — then our `merged`
+    // here was computed from a pre-edit snapshot and is stale. Overwriting
+    // currentDay with it would clobber the just-typed text (the "edit in the
+    // first few secs gets deleted, reappears on refresh" bug). So we only adopt
+    // `merged` when the reference is unchanged.
+    const optimistic = doc
+    set(s => ({ currentDay: optimistic, currentDayRev: s.currentDayRev + 1 }))
     if (doc.reviewedAt) {
       const nextReviews = { ...get().reviews, [doc.date]: doc.reviewedAt }
       set({ reviews: nextReviews })
     }
 
     if (get().mode !== MODE_OFFLINE) {
-      const merged = await mergeAndPushJournal(doc).catch(() => null)
-      if (merged) {
-        doc = merged
-        await putJournal(doc)
-        // Only overwrite currentDay if the user hasn't navigated away, AND only
-        // when the merged content actually differs from what's shown. We set
-        // currentDay optimistically to the local doc above; re-setting it to an
-        // identical-content object makes a fresh reference that re-fires
-        // JournalPanel's reconcile effect for nothing (the stale-then-flick).
-        const shown = get().currentDay
-        if (shown?.date === doc.date) {
-          const changed =
-            blocksToHtml(shown.blocks) !== blocksToHtml(doc.blocks) ||
-            (shown.reviewedAt || null) !== (doc.reviewedAt || null)
-          if (changed) set(s => ({ currentDay: doc, currentDayRev: s.currentDayRev + 1 }))
+      try {
+        const merged = await mergeAndPushJournal(doc).catch(() => null)
+        if (merged) {
+          doc = merged
+          await putJournal(doc)
+          // Adopt the merge result only if the user has NOT edited since we
+          // showed the optimistic doc. Reference identity is the test: a typed
+          // edit's debounced save replaces currentDay with a fresh object, so
+          // `shown !== optimistic` means edits are in flight and `merged` is
+          // stale — leave the live (edited) doc alone; its own push carries it.
+          const shown = get().currentDay
+          const userEditedSinceLoad = shown !== optimistic
+          if (!userEditedSinceLoad && shown?.date === doc.date) {
+            // No in-flight edit. Re-set only when content actually differs, so
+            // an identical merge doesn't churn a fresh reference and re-fire
+            // JournalPanel's reconcile effect for nothing (the stale-then-flick).
+            const changed =
+              blocksToHtml(shown.blocks) !== blocksToHtml(doc.blocks) ||
+              (shown.reviewedAt || null) !== (doc.reviewedAt || null)
+            if (changed) set(s => ({ currentDay: doc, currentDayRev: s.currentDayRev + 1 }))
+          }
+          if (!userEditedSinceLoad && doc.reviewedAt) {
+            const nextReviews = { ...get().reviews, [doc.date]: doc.reviewedAt }
+            set({ reviews: nextReviews })
+          }
+          return doc
         }
-        if (doc.reviewedAt) {
-          const nextReviews = { ...get().reviews, [doc.date]: doc.reviewedAt }
-          set({ reviews: nextReviews })
-        }
-        return doc
+      } finally {
+        // The Today gate (SurfaceLoadingGate bucket="today") tracks JOURNAL
+        // readiness, which is exactly this merge — the streaming sync's `today`
+        // bucket only covers config, not the per-day journal merge. Lift the
+        // gate once the merge settles (success OR failure): a stale-but-local
+        // view is fine, and leaving it gated would freeze the editor forever.
+        get().markSyncReady('today')
       }
+    } else {
+      get().markSyncReady('today')
     }
 
     await putJournal(doc)
@@ -910,13 +934,20 @@ const useAppStore = create((set, get) => ({
       const [tasks, notes, config] = await Promise.all([getTasks(), getNotes(), getConfig()])
       set({ tasks, notes, config: config || {}, lastSync: Date.now() })
       set({ syncing: false, syncStatus: { state: 'offline' } })
+      // Sync never started — no journal merge will run. Lift every gate so the
+      // editor isn't frozen behind a spinner that can never clear.
+      get().markAllSyncReady()
       await get().rebuildReviewsFromJournals().catch(() => {})
       return
     }
 
-    handle.buckets.today.then(() => {
-      get().markSyncReady('today')
-    }).catch(() => { get().markSyncReady('today') })
+    // NOTE: the `today` gate is marked ready by loadJournal once its per-day
+    // journal merge settles — NOT here. The streaming `today` bucket only
+    // resolves config (see sync.js Stage 1), so marking it ready here would lift
+    // the Today gate before the journal merge finishes and re-open the
+    // edit-clobber race. We still consume the bucket promise for its side
+    // effects, but the real "today ready" signal is loadJournal's.
+    handle.buckets.today.catch(() => {})
     handle.buckets.tasks.then(tasks => {
       if (tasks != null) set({ tasks })
       get().markSyncReady('tasks')
