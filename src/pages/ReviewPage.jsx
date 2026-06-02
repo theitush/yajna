@@ -5,7 +5,7 @@ import useHighlightTarget from '../lib/useHighlightTarget'
 import StarterKit from '@tiptap/starter-kit'
 import { getAllJournals } from '../services/db'
 import useAppStore from '../store/useAppStore'
-import { formatDate, today } from '../lib/dates'
+import { formatDate, currentJournalDay } from '../lib/dates'
 import { buildReviewDays } from '../lib/review'
 import { RTLExtension } from '../components/editor/RTLExtension'
 import { AudioNode, PALETTE, rankAudioItems } from '../components/editor/AudioNode'
@@ -360,6 +360,7 @@ export default function ReviewPage() {
   const addTaskReviewComment = useAppStore(s => s.addTaskReviewComment)
   const setJournalEntryReviewed = useAppStore(s => s.setJournalEntryReviewed)
   const addJournalBlockComment = useAppStore(s => s.addJournalBlockComment)
+  const config = useAppStore(s => s.config)
   const [searchParams] = useSearchParams()
   const urlDate = searchParams.get('date')
   const highlightBlock = useHighlightTarget('block')
@@ -370,7 +371,13 @@ export default function ReviewPage() {
   const [mobilePanel, setMobilePanel] = useState('journal')
   const [openCommentKey, setOpenCommentKey] = useState(null)
   const [mode, setMode] = useState('review') // 'review' | 'edit'
-  const todayStr = today()
+  // The current journal day per the rollover config (zone + 4am boundary) —
+  // NOT raw today(). Review shows only PAST days, so this is the exclusive
+  // upper bound. Using today() here let the current/next calendar day leak in
+  // (e.g. after local midnight but before the 4am rollover, or via the UTC vs
+  // local-zone gap in today()), surfacing today's day and an empty "tomorrow"
+  // placeholder in the list.
+  const currentDay = currentJournalDay(config)
   // Mount one detail pane, not both. The desktop (`hidden md:flex`) and mobile
   // (`md:hidden`) panes each hold a JournalPanel in edit mode; CSS-hiding one
   // left two live editors mounted (same typing-lag bug as TodayPage).
@@ -410,8 +417,8 @@ export default function ReviewPage() {
   }, [reviewVersion])
 
   const reviewDays = useMemo(
-    () => buildReviewDays({ tasks, journalDocs, reviews, todayStr }),
-    [tasks, journalDocs, reviews, todayStr]
+    () => buildReviewDays({ tasks, journalDocs, reviews, currentDay }),
+    [tasks, journalDocs, reviews, currentDay]
   )
 
   const pendingDaysCount = reviewDays.filter(day => day.needsReview).length

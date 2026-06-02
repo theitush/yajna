@@ -5,6 +5,7 @@ import { putMeta } from '../../services/db'
 import { MODE_KEY, MODE_OFFLINE, MODE_DRIVE } from '../../lib/constants'
 import { getAllJournals } from '../../services/db'
 import { buildReviewDays } from '../../lib/review'
+import { currentJournalDay } from '../../lib/dates'
 
 const baseItems = [
   { to: '/', label: 'Today', icon: BookIcon },
@@ -39,13 +40,17 @@ function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
   const tasks = useAppStore(s => s.tasks)
   const reviews = useAppStore(s => s.reviews)
   const reviewVersion = useAppStore(s => s.reviewVersion)
+  const config = useAppStore(s => s.config)
   const [journalDocs, setJournalDocs] = useState([])
   const isClickable = syncStatus.state === 'waiting' || syncStatus.state === 'offline' || syncStatus.isAuth
   const isDriveMode = useAppStore(s => s.mode === MODE_DRIVE)
 
+  // Same rollover-aware bound as ReviewPage so the badge count matches the list
+  // exactly (only PAST days, today excluded).
+  const currentDay = currentJournalDay(config)
   const reviewCount = useMemo(
-    () => buildReviewDays({ tasks, journalDocs, reviews }).filter(day => day.needsReview).length,
-    [tasks, journalDocs, reviews]
+    () => buildReviewDays({ tasks, journalDocs, reviews, currentDay }).filter(day => day.needsReview).length,
+    [tasks, journalDocs, reviews, currentDay]
   )
   const items = useMemo(
     () => baseItems.map(item => item.to === '/review'

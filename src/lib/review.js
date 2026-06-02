@@ -1,5 +1,5 @@
 import { blocksToHtml } from './blocks'
-import { today } from './dates'
+import { currentJournalDay } from './dates'
 
 function toDateValue(dateStr) {
   return new Date(`${dateStr}T12:00:00`).getTime()
@@ -64,22 +64,27 @@ export function collectJournalEntries(journalDocs) {
   return entries
 }
 
-export function buildReviewDays({ tasks, journalDocs, reviews, todayStr = today() }) {
+// Review shows only PAST days. `currentDay` is the rollover-aware current
+// journal day (zone + 4am boundary) and is the EXCLUSIVE upper bound — today's
+// day and anything after it (the empty "tomorrow" placeholder) are filtered
+// out. Callers pass currentJournalDay(config); the default is a config-less
+// fallback for tests/back-compat.
+export function buildReviewDays({ tasks, journalDocs, reviews, currentDay = currentJournalDay() }) {
   const journalEntries = collectJournalEntries(journalDocs)
   const relevantDates = new Set()
 
   for (const date of Object.keys(journalEntries)) {
-    if (date <= todayStr && hasJournalData(journalEntries[date])) relevantDates.add(date)
+    if (date < currentDay && hasJournalData(journalEntries[date])) relevantDates.add(date)
   }
 
   // Also include dates from the global reviews index if they have a review timestamp
   if (reviews) {
     for (const date of Object.keys(reviews)) {
-      if (date <= todayStr) relevantDates.add(date)
+      if (date < currentDay) relevantDates.add(date)
     }
   }
 
-  let earliestDate = todayStr
+  let earliestDate = currentDay
   for (const task of tasks || []) {
     const createdDate = task.createdDate || task.createdAt?.slice(0, 10)
     if (createdDate && createdDate < earliestDate) earliestDate = createdDate
@@ -88,7 +93,7 @@ export function buildReviewDays({ tasks, journalDocs, reviews, todayStr = today(
     if (date < earliestDate) earliestDate = date
   }
 
-  for (let date = earliestDate; date <= todayStr; date = addDays(date, 1)) {
+  for (let date = earliestDate; date < currentDay; date = addDays(date, 1)) {
     const taskSnapshots = (tasks || [])
       .map(task => getTaskSnapshotForDate(task, date))
       .filter(Boolean)
@@ -97,7 +102,7 @@ export function buildReviewDays({ tasks, journalDocs, reviews, todayStr = today(
   }
 
   return [...relevantDates]
-    .filter(date => toDateValue(date) <= toDateValue(todayStr))
+    .filter(date => toDateValue(date) < toDateValue(currentDay))
     .sort((a, b) => toDateValue(b) - toDateValue(a))
     .map(date => {
       const journalEntry = journalEntries[date] || null
