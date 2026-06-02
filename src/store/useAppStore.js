@@ -864,12 +864,12 @@ const useAppStore = create((set, get) => ({
   // staged-pull bucket resolves. Once true they stay true — incremental polls
   // are cheap and merge-safe via writeGeneration, no need to re-gate.
   // Offline mode: everything is immediately ready since there's no Drive merge.
-  syncReady: { today: false, tasks: false, notes: false, audio: false },
+  syncReady: { today: false, tasks: false, notes: false, audio: false, config: false },
   markSyncReady: (bucket) => set(s => ({
     syncReady: { ...s.syncReady, [bucket]: true },
   })),
   markAllSyncReady: () => set({
-    syncReady: { today: true, tasks: true, notes: true, audio: true },
+    syncReady: { today: true, tasks: true, notes: true, audio: true, config: true },
   }),
   setSyncStatus: (s) => {
     if (s.isAuth) {
@@ -961,7 +961,8 @@ const useAppStore = create((set, get) => ({
     }).catch(() => { get().markSyncReady('notes') })
     handle.buckets.config.then(config => {
       if (config != null) set({ config: config || {} })
-    }).catch(() => {})
+      get().markSyncReady('config')
+    }).catch(() => { get().markSyncReady('config') })
 
     // Tail work that depends on the full merge being done: lastSync stamp,
     // sync engine startup, deferred audio uploads, tag pool refresh.

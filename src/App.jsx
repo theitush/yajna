@@ -362,7 +362,9 @@ export default function App() {
               <Route path="/trash" element={
                 <SurfaceLoadingGate bucket="notes" label="Loading..."><TrashPage /></SurfaceLoadingGate>
               } />
-              <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/settings" element={
+                <SurfaceLoadingGate bucket="config" label="Loading settings..."><SettingsPage /></SurfaceLoadingGate>
+              } />
             </Routes>
           </main>
         </div>
