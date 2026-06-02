@@ -258,6 +258,36 @@ function shallowEqual(a, b) {
 }
 
 /**
+ * Collapse duplicate physical list elements that share a block `id` down to a
+ * single live element, IN PLACE inside an Automerge.change.
+ *
+ * The block list is append-only and reconciled by `id`: Pass-1 assumes at most
+ * one physical element per id. Older bugs (and the audio re-id migration) left
+ * the list holding several physical elements with the SAME id. The editor
+ * dedupes by id on read, so the user sees one block, deletes it, and the single
+ * tombstone never neutralizes the other physical copies — they re-materialize
+ * (the un-deletable duplicate-audio bug).
+ *
+ * We CANNOT splice/deleteAt to remove them (concurrent splices re-duplicate —
+ * the original doubled-block bug). Instead we tombstone the surplus copies in
+ * place: keep the first live element per id, mark every other physical element
+ * with that id `deleted: true`. Idempotent, splice-free, converges on every
+ * device, and heals existing corruption on the next write. Mutates `blocks`.
+ */
+function collapseDuplicateBlockIds(blocks) {
+  const liveSeen = new Set()
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i]
+    if (!b || !b.id || b.deleted) continue
+    if (liveSeen.has(b.id)) {
+      b.deleted = true // surplus live copy of an id we already kept
+    } else {
+      liveSeen.add(b.id)
+    }
+  }
+}
+
+/**
  * Apply a note row into its Automerge doc inside a single change. Top-level
  * fields use the same pass-through pattern as tasks. Blocks are reconciled
  * id-keyed against the existing list:
@@ -287,6 +317,10 @@ export async function applyNoteFields(doc, source) {
 
     // Blocks: id-keyed reconcile.
     if (!Array.isArray(d.blocks)) d.blocks = []
+    // Pass 0: collapse any pre-existing duplicate-id physical elements to one
+    // live each, so Pass-1's one-element-per-id assumption holds and deletes of
+    // a duplicated block actually stick.
+    collapseDuplicateBlockIds(d.blocks)
     const srcBlocks = fields.blocks
     const srcById = new Map(srcBlocks.map((b) => [b.id, b]))
     const docIds = new Set()
@@ -442,6 +476,8 @@ export async function applyJournalFields(doc, source) {
 
     // Blocks: same shape as applyNoteFields.
     if (!Array.isArray(d.blocks)) d.blocks = []
+    // Pass 0: collapse duplicate-id physical elements (see applyNoteFields).
+    collapseDuplicateBlockIds(d.blocks)
     const srcBlocks = fields.blocks
     const srcById = new Map(srcBlocks.map((b) => [b.id, b]))
     const docIds = new Set()
