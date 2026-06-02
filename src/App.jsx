@@ -349,7 +349,7 @@ export default function App() {
                 <SurfaceLoadingGate bucket="today" label="Loading today..."><TodayPage /></SurfaceLoadingGate>
               } />
               <Route path="/review" element={
-                <SurfaceLoadingGate bucket={['today', 'tasks']} label="Loading review..."><ReviewPage /></SurfaceLoadingGate>
+                <SurfaceLoadingGate bucket={['journals', 'tasks']} label="Loading review..."><ReviewPage /></SurfaceLoadingGate>
               } />
               <Route path="/journal" element={<Navigate to="/review" replace />} />
               <Route path="/notes" element={

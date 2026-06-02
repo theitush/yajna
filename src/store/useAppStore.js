@@ -864,12 +864,12 @@ const useAppStore = create((set, get) => ({
   // staged-pull bucket resolves. Once true they stay true — incremental polls
   // are cheap and merge-safe via writeGeneration, no need to re-gate.
   // Offline mode: everything is immediately ready since there's no Drive merge.
-  syncReady: { today: false, tasks: false, notes: false, audio: false, config: false },
+  syncReady: { today: false, journals: false, tasks: false, notes: false, audio: false, config: false },
   markSyncReady: (bucket) => set(s => ({
     syncReady: { ...s.syncReady, [bucket]: true },
   })),
   markAllSyncReady: () => set({
-    syncReady: { today: true, tasks: true, notes: true, audio: true, config: true },
+    syncReady: { today: true, journals: true, tasks: true, notes: true, audio: true, config: true },
   }),
   setSyncStatus: (s) => {
     if (s.isAuth) {
@@ -977,13 +977,17 @@ const useAppStore = create((set, get) => ({
         if (!Object.keys(s.config || {}).length) fills.push(getConfig().then(v => set({ config: v || {} })))
         await Promise.all(fills)
         await get().rebuildReviewsFromJournals().catch(() => {})
+        // Past-journals readiness (Stage 4 + reviews rebuilt). Review and Search
+        // read ALL historical journal days + `reviews`, both current only now —
+        // distinct from `today` (just today's single day). Mark it here, after
+        // rebuildReviewsFromJournals, so the Review gate lifts with correct data.
+        get().markSyncReady('journals')
         // Safety net for the `today` gate when the user did NOT land on Today.
         // loadJournal (JournalPanel mount) is the primary signal, but it only
-        // runs on the Today route; /review is also gated on `today` and could
-        // be the landing route. By now the full merge is done and journals are
-        // rebuilt, so `today` is genuinely ready. Idempotent with loadJournal's.
+        // runs on the Today route. By now the full merge is done, so `today` is
+        // genuinely ready too. Idempotent with loadJournal's own mark.
         get().markSyncReady('today')
-      })().catch(() => { get().markSyncReady('today') })
+      })().catch(() => { get().markSyncReady('journals'); get().markSyncReady('today') })
 
       set({ lastSync: Date.now(), syncing: false, coldPull: { active: false, progress: {} } })
 

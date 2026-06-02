@@ -66,7 +66,11 @@ function newerDoc(localDoc, remoteDoc, materialize) {
  * can await `done` to start the sync engine afterwards.
  */
 export function mergeWithDriveStreaming(onProgress = null) {
-  const buckets = { today: null, tasks: null, audio: null, notes: null, config: null }
+  // `today` = today's single journal day (resolved alongside config in Stage 1;
+  // the actual today-doc merge is done by loadJournal). `journals` = ALL past /
+  // historical journal days (Stage 4) — distinct from `today`. Review, Search,
+  // and the sidebar day picker depend on `journals`, not `today`.
+  const buckets = { today: null, journals: null, tasks: null, audio: null, notes: null, config: null }
   const resolvers = {}
   for (const k of Object.keys(buckets)) {
     buckets[k] = new Promise(r => { resolvers[k] = r })
@@ -664,9 +668,11 @@ async function mergeWithDriveImpl(resolvers, onProgress = null) {
     if (journalProgress && inspection.coldStart) journalProgress(journalDocs.length, journalDocs.length)
     await mergeJournalDocs(journalDocs, inspection.changedByType.journal)
     mark(`stage4 journals (cold=${inspection.coldStart}, ${journalDocs.length}j)`, tStage)
+    resolvers.journals(journalDocs.length)
     return journalDocs.length
   })().catch(err => {
     console.warn('[sync] stage4 journals failed:', err?.message || err)
+    resolvers.journals(null)
   })
 
   const [mergedConfig] = await Promise.all([stage1, stage2, stage3, stage4])
