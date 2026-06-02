@@ -288,6 +288,32 @@ function collapseDuplicateBlockIds(blocks) {
 }
 
 /**
+ * Read-side counterpart to collapseDuplicateBlockIds. The write-side collapse
+ * only runs inside applyNote/JournalFields (i.e. on a local push). The MERGE
+ * path (Automerge.merge of two docs that share ancestry, journalMerge/sync.js)
+ * does NOT go through it — it combines raw bytes — so a doc carrying several
+ * live physical elements with the same id will re-materialize all of them after
+ * every pull, and the user's delete keeps "coming back". This filters the
+ * surplus LIVE copies out of the materialized row on EVERY read, regardless of
+ * which path produced the doc, so the UI is always correct on the first render
+ * with no write required. Tombstones (deleted:true) are left untouched and kept
+ * in the output — merges still need to see the delete. Operates on already-
+ * mapped plain block objects; preserves their order.
+ */
+function dedupeLiveBlocksById(blocks) {
+  const liveSeen = new Set()
+  const out = []
+  for (const b of blocks) {
+    if (b && b.id && !b.deleted) {
+      if (liveSeen.has(b.id)) continue // drop surplus live copy
+      liveSeen.add(b.id)
+    }
+    out.push(b)
+  }
+  return out
+}
+
+/**
  * Apply a note row into its Automerge doc inside a single change. Top-level
  * fields use the same pass-through pattern as tasks. Blocks are reconciled
  * id-keyed against the existing list:
@@ -402,11 +428,11 @@ export function materializeNoteRow(doc) {
   // the delete. Strip Automerge proxies, then sort by `order` (the append-only
   // list's physical position is meaningless).
   out.blocks = Array.isArray(doc.blocks)
-    ? sortBlocksByOrder(doc.blocks.map((b) => {
+    ? sortBlocksByOrder(dedupeLiveBlocksById(doc.blocks.map((b) => {
         const o = {}
         for (const k of NOTE_BLOCK_FIELDS) o[k] = plainCopy(b[k])
         return o
-      }))
+      })))
     : []
   return out
 }
@@ -554,11 +580,11 @@ export function materializeJournalRow(doc) {
     out[k] = plainCopy(v)
   }
   out.blocks = Array.isArray(doc.blocks)
-    ? sortBlocksByOrder(doc.blocks.map((b) => {
+    ? sortBlocksByOrder(dedupeLiveBlocksById(doc.blocks.map((b) => {
         const o = {}
         for (const k of JOURNAL_BLOCK_FIELDS) o[k] = plainCopy(b[k])
         return o
-      }))
+      })))
     : []
   const bc = {}
   const srcBc = doc.blockComments || {}
