@@ -705,7 +705,10 @@ const useAppStore = create((set, get) => ({
 
     const now = new Date().toISOString()
     const audioHtml = audioBlockHtml(rec)
-    const newBlock = { id: uuid(), html: audioHtml, updatedAt: now }
+    // Block id MUST equal the data-bid baked into audioHtml (audio-<clipId>), so
+    // the Automerge list identity and the html identity agree — otherwise a
+    // re-parse on another device mints a different id and the clip duplicates.
+    const newBlock = { id: `audio-${rec.id}`, html: audioHtml, updatedAt: now }
     const sourceLabel = rec.sourceTitle || (rec.sourceType === 'journal' ? 'journal entry' : 'note')
 
     if (rec.sourceType === 'note') {

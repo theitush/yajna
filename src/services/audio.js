@@ -375,7 +375,14 @@ export function audioBlockHtml(rec) {
   const esc = (s) => String(s)
     .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
     .replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  let out = `<div data-audio-id="${esc(rec.id)}" data-duration="${rec.duration || 0}"`
+  // data-bid is the block's sync identity (see BlockIdExtension / lib/blocks.js).
+  // Derive it deterministically from the clip's own id so the SAME clip yields
+  // the SAME block identity on every device and every re-materialization (restore,
+  // re-parse) — never a fresh uuid, which would make the merge-by-id list append
+  // a duplicate. `audio-` prefix keeps it distinct from a paragraph that might
+  // ever hash to the same string.
+  const bid = `audio-${rec.id}`
+  let out = `<div data-bid="${esc(bid)}" data-audio-id="${esc(rec.id)}" data-duration="${rec.duration || 0}"`
   if (rec.createdAt) out += ` data-created-at="${esc(rec.createdAt)}"`
   if (rec.driveFileId) out += ` data-drive-file-id="${esc(rec.driveFileId)}"`
   if (rec.mimeType) out += ` data-mime-type="${esc(rec.mimeType)}"`

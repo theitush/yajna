@@ -113,22 +113,29 @@ export function htmlToBlocks(html) {
   container.innerHTML = html
   const out = []
   for (const child of Array.from(container.children)) {
-    const existing = child.getAttribute(BLOCK_ID_ATTR)
-    const hasContent = child.textContent.trim().length > 0
-    // If it has content, use its ID or a stable ID.
-    // If it's empty, use a stable content-based ID so all empty paragraphs
-    // across all devices share the same "anonymous" identity.
-    const id = existing || (hasContent ? stableIdFromContent(contentKey(child)) : 'empty-' + out.length)
-    
+    // Identity is READ from data-bid, never re-derived. BlockIdExtension
+    // guarantees every block written by the live editor carries a stable bid;
+    // re-deriving an id here (by content hash or position) would create a
+    // SECOND id authority that disagrees with the editor's, and the Automerge
+    // block list (reconciled by id) would then append the "new" id as a
+    // duplicate. A block legitimately missing a bid is genuinely-legacy data
+    // (pre-bid); mint one uuid for it and write it into the html so it's stable
+    // from now on — the only place htmlToBlocks ever creates identity.
+    let id = child.getAttribute(BLOCK_ID_ATTR)
+    if (!id) {
+      id = uuid()
+      child.setAttribute(BLOCK_ID_ATTR, id)
+    }
     // updatedAt: 0 — parsed-from-HTML blocks lose to any stamped edit, and
     // collide deterministically with their peers on other devices.
     out.push({ id, html: child.outerHTML, updatedAt: new Date(0).toISOString() })
   }
   if (out.length === 0 && container.textContent.trim()) {
     const text = container.textContent
+    const id = uuid()
     out.push({
-      id: stableIdFromContent(text),
-      html: `<p>${escapeHtml(text)}</p>`,
+      id,
+      html: `<p ${BLOCK_ID_ATTR}="${id}">${escapeHtml(text)}</p>`,
       updatedAt: new Date(0).toISOString(),
     })
   }
@@ -137,13 +144,6 @@ export function htmlToBlocks(html) {
   return out
 }
 
-// Content fingerprint used for deterministic ids. Strips data-bid so two
-// devices that stored the same paragraph with different bids converge to
-// the same id on re-parse. Uses textContent + tagName so attribute-order
-// differences don't fork the id either.
-function contentKey(el) {
-  return `${el.tagName}|${el.textContent}`
-}
 
 export function blocksToHtml(blocks) {
   if (!Array.isArray(blocks) || blocks.length === 0) return ''
@@ -338,14 +338,6 @@ function toMs(iso) {
   if (!iso) return 0
   const t = new Date(iso).getTime()
   return isFinite(t) ? t : 0
-}
-
-// Deterministic id derived from content. Collision is fine: two paragraphs
-// with identical HTML should merge to one across devices.
-function stableIdFromContent(s) {
-  let h = 5381
-  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
-  return 'c' + (h >>> 0).toString(36)
 }
 
 function escapeHtml(s) {
