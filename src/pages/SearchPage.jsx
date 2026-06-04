@@ -87,7 +87,10 @@ function ResultRow({ title, titleIndices, snippet, snippetIndices, meta, onClick
 export default function SearchPage() {
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
+  // `q` is the COMMITTED query — it only changes on submit (button / Enter),
+  // so Fuse re-runs on submit, never on keystroke. `draft` is the live input.
   const q = params.get('q') || ''
+  const [draft, setDraft] = useState(q)
   const inputRef = useRef(null)
 
   const tasks = useAppStore(s => s.tasks)
@@ -121,11 +124,13 @@ export default function SearchPage() {
 
   useEffect(() => { inputRef.current?.focus() }, [])
 
-  const setQuery = (next) => {
+  const commitQuery = (next) => {
     const p = new URLSearchParams(params)
     if (next) p.set('q', next); else p.delete('q')
     setParams(p, { replace: true })
   }
+  const runSearch = () => commitQuery(draft.trim())
+  const clearSearch = () => { setDraft(''); commitQuery('') }
 
   // Per-block indexing: every block gets its own search doc so a hit can
   // navigate to the exact paragraph. Same date/title appearing in multiple
@@ -374,16 +379,19 @@ export default function SearchPage() {
         background: 'var(--bg-primary)', zIndex: 10,
       }}>
         <h1 style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-primary)', flexShrink: 0 }}>Search</h1>
-        <div style={{ position: 'relative', flex: 1, minWidth: 0, maxWidth: '420px', margin: '0 auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0, maxWidth: '480px', margin: '0 auto' }}>
           <input
             ref={inputRef}
-            value={q}
-            onChange={e => setQuery(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Escape') setQuery('') }}
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') { e.preventDefault(); runSearch() }
+              else if (e.key === 'Escape') clearSearch()
+            }}
             placeholder="Search everything…"
             dir="auto"
             style={{
-              width: '100%', fontSize: '13px',
+              flex: 1, minWidth: 0, fontSize: '13px',
               background: 'var(--bg-tertiary)',
               border: '1px solid var(--border-mid)',
               borderRadius: '8px', padding: '8px 12px',
@@ -392,6 +400,18 @@ export default function SearchPage() {
               outline: 'none',
             }}
           />
+          <button
+            onClick={runSearch}
+            style={{
+              flexShrink: 0, fontSize: '13px', fontWeight: 500,
+              color: 'var(--text-secondary)', background: 'var(--bg-secondary)',
+              border: '1px solid var(--border-light)', borderRadius: '8px',
+              padding: '8px 16px', cursor: 'pointer',
+              fontFamily: 'var(--font-body)',
+            }}
+          >
+            Go
+          </button>
         </div>
         <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', flexShrink: 0 }}>
           {hasQuery ? `${totalCount} match${totalCount === 1 ? '' : 'es'}` : ''}
@@ -401,7 +421,7 @@ export default function SearchPage() {
       <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px' }}>
         {!hasQuery && (
           <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
-            Type to search across journal entries, notes, todos, and trash.
+            Type a query and press Search (or Enter) to search across journal entries, notes, todos, audio transcripts, and trash.
           </p>
         )}
 

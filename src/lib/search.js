@@ -34,7 +34,32 @@ export function blocksWithText(blocks) {
     let m
     while ((m = re.exec(html))) audioIds.push(m[1])
     const text = htmlToPlainText(html)
-    out.push({ blockId: b?.id || null, text, audioIds })
+    // Newer audio clips carry their transcript inline on the node as a
+    // `data-transcript` attribute (the meta store no longer holds it). Pull it
+    // out before htmlToPlainText drops the attribute, so audio is searchable
+    // even when `audioMap` has no entry for the clip.
+    const inlineTranscripts = inlineTranscriptsFromHtml(html)
+    out.push({ blockId: b?.id || null, text: buildSearchableText([text, ...inlineTranscripts]), audioIds })
+  }
+  return out
+}
+
+// Extract transcript text baked into a block's audio nodes via the
+// `data-transcript` attribute. Returns decoded plain-text strings.
+function inlineTranscriptsFromHtml(html) {
+  const out = []
+  if (!html) return out
+  const re = /data-transcript="([^"]*)"/g
+  let m
+  while ((m = re.exec(html))) {
+    const decoded = m[1]
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .trim()
+    if (decoded) out.push(decoded)
   }
   return out
 }
