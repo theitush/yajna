@@ -303,7 +303,7 @@ export async function initDriveStructure() {
     findOrEnsureLegacy('notes.json', []),
     ensureFile('config.json', {}),
     findOrEnsureLegacy('audio.json', []),
-  ]); t = lap('ensureFiles', t)
+  ]); lap('ensureFiles', t)
 
   const ids = {
     rootId, journalsFolderId, audioFolderId, notesFolderId, tasksFolderId, audioMetaFolderId, configFolderId,

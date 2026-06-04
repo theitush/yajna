@@ -126,7 +126,10 @@ function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
         <div style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.8px', color: 'var(--text-tertiary)', padding: '10px 20px 4px', fontWeight: 500 }}>
           Navigate
         </div>
-        {items.map(({ to, label, icon: Icon }) => (
+        {items.map((item) => {
+          const Icon = item.icon
+          const { to, label } = item
+          return (
           <NavLink key={to} to={to} end={to === '/'} onClick={onNav}
             style={({ isActive }) => ({
               display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 20px',
@@ -140,7 +143,8 @@ function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
           >
             <Icon />{label}
           </NavLink>
-        ))}
+          )
+        })}
       </nav>
 
       <NavLink to="/settings" onClick={onNav}

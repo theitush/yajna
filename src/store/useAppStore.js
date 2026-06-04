@@ -1,17 +1,17 @@
 import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
-import { today, dayKey, isVisibleToday, currentJournalDay } from '../lib/dates'
+import { today, dayKey, currentJournalDay } from '../lib/dates'
 import { detectBrowserTimezone } from '../lib/timezones'
 import { MODE_OFFLINE } from '../lib/constants'
 import {
   getTasks, putTask, putTasks, getTask,
-  getNotes, putNote, putNotes,
+  getNotes, putNote,
   getJournal, putJournal, getAllJournals, getConfig, putConfigWithDoc,
   getAllTasksRaw, getAllNotesRaw, getAllAudio,
 } from '../services/db'
 import { extractHashtags } from '../lib/hashtags'
 import { pushTasks, pushNotes, pushJournal, pushConfig, initialSyncStreaming, mergeAndPushJournal } from '../services/sync'
-import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, getSyncStatus, retryNow, setPollInterval } from '../services/syncEngine'
+import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, retryNow, setPollInterval } from '../services/syncEngine'
 import { pushAudio, pushPendingAudio, ensureAudioLocal, softDeleteAudio, restoreAudio, hardDeleteAudio, collectAudioIdsFromBlocks, audioBlockHtml } from '../services/audio'
 import { putAudio, getAudio } from '../services/db'
 import { withAuthRetry } from '../services/auth'

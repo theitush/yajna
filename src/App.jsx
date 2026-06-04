@@ -31,7 +31,6 @@ export default function App() {
   const coldPull = useAppStore(s => s.coldPull)
   const [loginLoading, setLoginLoading] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [blockingInitialSync, setBlockingInitialSync] = useState(false)
 
   // Map the active route to the buckets/journal it needs to render. Used
   // at boot to decide what to wait for before releasing the global spinner.
@@ -78,7 +77,6 @@ export default function App() {
           setAuthenticated(true)
 
           // Finish Drive setup in background
-          setBlockingInitialSync(true)
           setSyncStatus({ state: 'syncing' })
           ;(async () => {
             try {
@@ -105,8 +103,6 @@ export default function App() {
               } else {
                 setSyncStatus({ state: 'offline' })
               }
-            } finally {
-              setBlockingInitialSync(false)
             }
           })()
           return
@@ -131,7 +127,6 @@ export default function App() {
           setAuthenticated(true)
 
           // Connect to Drive in the background — app is already usable
-          setBlockingInitialSync(true)
           setSyncStatus({ state: 'syncing' })
           ;(async () => {
             const tBoot = performance.now()
@@ -150,7 +145,7 @@ export default function App() {
                 const work = priorityWorkForRoute(window.location.hash)
                 const priorityTasks = [runInitialSync({ priorityBuckets: work.buckets })]
                 if (work.journal) priorityTasks.push(loadJournal())
-                await Promise.all(priorityTasks); t = lap('priority sync', t)
+                await Promise.all(priorityTasks); lap('priority sync', t)
                 lap('TOTAL boot gate', tBoot)
                 return
               }
@@ -186,8 +181,6 @@ export default function App() {
               } else {
                 setSyncStatus({ state: 'offline' })
               }
-            } finally {
-              setBlockingInitialSync(false)
             }
           })()
           return

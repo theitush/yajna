@@ -17,7 +17,10 @@ export default function BottomNav() {
       display: 'flex',
       zIndex: 50,
     }} className="md:hidden">
-      {tabs.map(({ to, label, icon: Icon }) => (
+      {tabs.map((tab) => {
+        const Icon = tab.icon
+        const { to, label } = tab
+        return (
         <NavLink
           key={to}
           to={to}
@@ -38,7 +41,8 @@ export default function BottomNav() {
           <Icon />
           <span>{label}</span>
         </NavLink>
-      ))}
+        )
+      })}
     </nav>
   )
 }

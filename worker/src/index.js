@@ -6,7 +6,7 @@
  */
 
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, env, _ctx) {
     const url = new URL(request.url);
     const origin = request.headers.get('Origin');
     const allowedOrigin = env.ALLOWED_ORIGIN;
@@ -186,7 +186,7 @@ async function handleRefresh(request, env) {
     }), {
       headers: { 'Content-Type': 'application/json' }
     });
-  } catch (err) {
+  } catch {
     return new Response('Invalid or expired refresh session', { status: 401 });
   }
 }

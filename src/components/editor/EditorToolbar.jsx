@@ -138,7 +138,7 @@ export default function EditorToolbar({ editor }) {
                 onMouseDown={(e) => { e.preventDefault(); applySize(s) }}
                 style={{
                   width: '100%', textAlign: 'left',
-                  padding: '7px 12px', fontSize: '12px',
+                  padding: '7px 12px',
                   background: s.label === currentSize.label ? 'rgba(107,163,214,0.1)' : 'transparent',
                   color: s.label === currentSize.label ? 'var(--accent)' : 'var(--text-secondary)',
                   border: 'none', cursor: 'pointer',

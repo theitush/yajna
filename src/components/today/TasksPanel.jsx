@@ -30,7 +30,6 @@ export default function TasksPanel({ date }) {
   const offsetRef = useRef({ x: 0, y: 0 })
   const pendingDragRef = useRef(null) // { id, startX, startY } — drag not yet committed
   const didDragRef = useRef(false) // true if a real drag (not a click) just ended
-  const todayTasksRef = useRef([])
   const DRAG_THRESHOLD = 5 // px movement before drag starts
 
   const { today, yesterday } = (() => {
@@ -53,9 +52,7 @@ export default function TasksPanel({ date }) {
         .filter(Boolean)
         .sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity))
 
-  todayTasksRef.current = todayTasks
-
-  const getIds = useCallback(() => todayTasksRef.current.map(t => t.id), [])
+  const getIds = useCallback(() => todayTasks.map(t => t.id), [todayTasks])
 
   const applyTransforms = useCallback((fromId, toId) => {
     const ids = getIds()

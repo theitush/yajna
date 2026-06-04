@@ -185,7 +185,7 @@ export async function ensureAudioLocal(id, hints = null, opts = null) {
   let blob
   try {
     blob = await downloadFileBlob(driveFileId)
-  } catch (e) {
+  } catch {
     throw new Error('You need to connect to download the audio.')
   }
   const record = {

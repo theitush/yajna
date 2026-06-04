@@ -23,7 +23,7 @@
  *     idempotent; if contended, give up and let the next device try.
  */
 import { getMeta, putMeta } from './db'
-import { readJsonFile, findFile } from './drive'
+import { readJsonFile } from './drive'
 import { withAuthRetry } from './auth'
 import { logSync } from './syncLog'
 

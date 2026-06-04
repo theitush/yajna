@@ -315,7 +315,9 @@ function AudioNodeView({ node, editor, getPos, extension }) {
   const [transcriptError, setTranscriptError] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmRetranscribe, setConfirmRetranscribe] = useState(false)
-  const [draftTranscript, setDraftTranscript] = useState(node.attrs.transcript || '')
+  // Value is intentionally unread — only the setter is used, to trigger a
+  // re-render alongside transcriptVersion when transcript text changes.
+  const [, setDraftTranscript] = useState(node.attrs.transcript || '')
   // Bumped whenever transcript state is replaced from outside the editor
   // (re-transcribe, hydrate from DB). Used as a `key` on the inner editor so
   // it remounts and rebuilds its DOM — without this, re-transcribing the same
