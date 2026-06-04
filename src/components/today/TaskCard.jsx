@@ -117,7 +117,6 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
     range.collapse(false)
     sel.removeAllRanges()
     sel.addRange(range)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingTitle])
 
   const isDone = task.status === 'done' || task.status === 'reviewed'

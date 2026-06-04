@@ -9,9 +9,16 @@ export default function TimezonePicker({ value, onChange, inputStyle }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [activeIdx, setActiveIdx] = useState(0)
+  const [prevQuery, setPrevQuery] = useState(query)
   const wrapRef = useRef(null)
   const inputRef = useRef(null)
   const listRef = useRef(null)
+
+  const openPicker = () => {
+    setQuery('')
+    setActiveIdx(0)
+    setOpen(true)
+  }
 
   const all = useMemo(() => getAllTimezones(), [])
   const fuse = useMemo(() => new Fuse(all, {
@@ -28,8 +35,6 @@ export default function TimezonePicker({ value, onChange, inputStyle }) {
 
   useEffect(() => {
     if (open) {
-      setQuery('')
-      setActiveIdx(0)
       setTimeout(() => {
         if (inputRef.current) {
           inputRef.current.textContent = ''
@@ -48,9 +53,12 @@ export default function TimezonePicker({ value, onChange, inputStyle }) {
     return () => document.removeEventListener('mousedown', onDown)
   }, [open])
 
-  useEffect(() => {
-    setActiveIdx(0)
-  }, [query])
+  // Reset the highlight to the top as the query changes. Adjust during render
+  // rather than in an effect to avoid a cascading second render.
+  if (prevQuery !== query) {
+    setPrevQuery(query)
+    if (activeIdx !== 0) setActiveIdx(0)
+  }
 
   useEffect(() => {
     if (!open) return
@@ -101,7 +109,7 @@ export default function TimezonePicker({ value, onChange, inputStyle }) {
         .tz-search-box:focus { outline: none; }
       `}</style>
       {!open && (
-        <button type="button" onClick={() => setOpen(true)} style={buttonStyle}>
+        <button type="button" onClick={openPicker} style={buttonStyle}>
           <span>{timezoneLabel(value)}</span>
           <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>▾</span>
         </button>

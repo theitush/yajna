@@ -201,14 +201,23 @@ function AudioTrashCard({ audio, onPurge, onRestore, getAudioReferenceCount }) {
     if (result && result.ok === false) setPurgeError(result.reason || 'Could not delete.')
   }
 
-  useEffect(() => {
-    if (!confirm) {
-      setPurgeError(null)
-      setRefState({ loading: false, total: null, notes: 0, journals: 0 })
-      return
-    }
-    let cancelled = false
+  const startConfirm = () => {
+    setConfirm(true)
+    // User action that begins the ref-count lookup: enter the loading state here
+    // so the effect below only has to write the fetched result, not a synchronous
+    // pre-fetch setState.
     setRefState({ loading: true, total: null, notes: 0, journals: 0 })
+  }
+
+  const cancelConfirm = () => {
+    setConfirm(false)
+    setPurgeError(null)
+    setRefState({ loading: false, total: null, notes: 0, journals: 0 })
+  }
+
+  useEffect(() => {
+    if (!confirm) return
+    let cancelled = false
     ;(async () => {
       try {
         const refs = await getAudioReferenceCount(audio.id)
@@ -283,12 +292,12 @@ function AudioTrashCard({ audio, onPurge, onRestore, getAudioReferenceCount }) {
             >
               Delete forever
             </button>
-            <button style={subtleBtn} onClick={() => setConfirm(false)}>Cancel</button>
+            <button style={subtleBtn} onClick={cancelConfirm}>Cancel</button>
           </>
         ) : (
           <>
             {audio.sourceType && <button style={subtleBtn} onClick={handleRestore}>Restore</button>}
-            <button style={dangerBtn} onClick={() => setConfirm(true)}>Delete forever</button>
+            <button style={dangerBtn} onClick={startConfirm}>Delete forever</button>
           </>
         )}
       </div>

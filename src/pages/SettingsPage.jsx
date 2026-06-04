@@ -99,13 +99,18 @@ export default function SettingsPage() {
   const [persistRequesting, setPersistRequesting] = useState(false)
   const [syncLogStatus, setSyncLogStatus] = useState(null)
 
-  useEffect(() => {
+  // Re-seed the form fields from the store's config whenever it changes (e.g.
+  // a sync pulls newer settings). Adjust during render rather than in an effect
+  // so the freshly-loaded values render in the same pass.
+  const [prevConfig, setPrevConfig] = useState(null)
+  if (prevConfig !== config) {
+    setPrevConfig(config)
     setGroqKey(config?.groqApiKey || '')
     setGroqModel(config?.groqModel || DEFAULT_GROQ_MODEL)
     setAutoDismissCompletedNextDay(config?.autoDismissCompletedNextDay === true)
     if (config?.dayRolloverZone) setDayRolloverZone(config.dayRolloverZone)
     if (Number.isFinite(config?.dayRolloverHour)) setDayRolloverHour(config.dayRolloverHour)
-  }, [config])
+  }
 
   // Tick once a minute so the "right now" preview stays fresh.
   useEffect(() => {

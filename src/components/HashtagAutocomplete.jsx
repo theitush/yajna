@@ -17,6 +17,7 @@ const HashtagTextarea = forwardRef(function HashtagTextarea(
   const [caret, setCaret] = useState(0)
   const [open, setOpen] = useState(false)
   const [activeIdx, setActiveIdx] = useState(0)
+  const [prevResetKey, setPrevResetKey] = useState(null)
   const listRef = useRef(null)
 
   useEffect(() => {
@@ -37,7 +38,14 @@ const HashtagTextarea = forwardRef(function HashtagTextarea(
     return []
   }, [allTags, token, open, value, showOnFocus])
 
-  useEffect(() => { setActiveIdx(0) }, [token?.partial, suggestions.length])
+  // Reset highlight to the top whenever the token text or list size changes.
+  // Adjust during render (React's "storing info from previous renders" pattern)
+  // instead of an effect, to avoid a cascading second render.
+  const resetKey = `${token?.partial ?? ''}|${suggestions.length}`
+  if (prevResetKey !== resetKey) {
+    setPrevResetKey(resetKey)
+    if (activeIdx !== 0) setActiveIdx(0)
+  }
 
   const apply = (tag) => {
     const el = inner.current
