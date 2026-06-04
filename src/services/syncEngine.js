@@ -507,6 +507,17 @@ async function pollRemote(storeSetter) {
           shown.date !== updatedDay.date ||
           blocksToHtml(shown.blocks) !== blocksToHtml(updatedDay.blocks) ||
           (shown.reviewedAt || null) !== (updatedDay.reviewedAt || null)
+        // Probe: did a poll-merged remote journal reach the OPEN editor, or get
+        // dropped as a same-content echo? This is the blind spot in the "wrote
+        // on laptop, didn't appear on phone" reports — the merge can land in IDB
+        // (Probe 1) yet never bump currentDayRev, so the open day never repaints.
+        logSync('poll journal render decision', {
+          date: updatedDay.date,
+          journalChanged: changedByType.journal.has(updatedDay.date),
+          contentChanged,
+          coldStart,
+          willBumpRev: contentChanged,
+        })
         if (contentChanged) {
           update.currentDayRev = (_storeGetter?.()?.currentDayRev ?? 0) + 1
         } else {

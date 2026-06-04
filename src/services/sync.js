@@ -419,6 +419,23 @@ export async function mergeJournalDocs(journalDocs, changedMap) {
     const { bytes: mergedBytes, row: mergedRow } =
       await journalMerge({ remoteBytes: bytes, localBytes, localRow: l })
     if (!mergedRow.date) mergedRow.date = id
+    // Probe: did a remote journal .bin actually arrive + change local content?
+    // The journal sync path had zero instrumentation, so the "wrote on laptop,
+    // didn't appear on phone" reports were un-diagnosable. Log lengths only — no
+    // entry text — so the flushed log stays PII-free.
+    try {
+      const localLen = Array.isArray(l?.blocks) ? l.blocks.filter(b => !b?.deleted).length : 0
+      const mergedLen = Array.isArray(mergedRow?.blocks) ? mergedRow.blocks.filter(b => !b?.deleted).length : 0
+      logSync('mergeJournalDocs merged', {
+        id,
+        op: change?.op || null,
+        hadLocalBytes: !!localBytes,
+        localBlocks: localLen,
+        mergedBlocks: mergedLen,
+        blocksChanged: mergedLen !== localLen,
+        updChanged: (l?.updatedAt || null) !== (mergedRow?.updatedAt || null),
+      })
+    } catch { /* logging must never break the merge */ }
     writeRows.push(mergedRow)
     writeDocBytes.set(id, mergedBytes)
     localByDate.set(id, mergedRow)

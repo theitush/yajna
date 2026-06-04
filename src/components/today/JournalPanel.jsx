@@ -18,6 +18,7 @@ import { HashtagSuggest } from '../editor/HashtagSuggest'
 import { HeadingNoShortcut } from '../editor/HeadingNoShortcut'
 import RecordFab from '../voice/RecordFab'
 import { docToBlocks, blocksToHtml } from '../../lib/blocks'
+import { logSync } from '../../services/syncLog'
 
 // How long to wait after the last keystroke before saving+pushing the journal.
 // The push's Automerge work now runs in a worker (automergeWorkerClient), so a
@@ -177,6 +178,23 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
   useEffect(() => {
     if (!editor) return
     const remoteContent = dayDoc ? blocksToHtml(dayDoc.blocks) : ''
+    // Probe: this effect is the LAST mile — a poll-merged remote journal only
+    // reaches the screen if it runs setContent here. Log every exit reason
+    // (lengths only, no entry text) so the "didn't appear on phone" reports can
+    // finally be traced end to end: merge (Probe 1) → render decision (Probe 2)
+    // → this paint.
+    const reason =
+      !remoteContent ? 'empty-remote'
+      : saveTimeout.current ? 'mid-type'
+      : editor.getHTML() === remoteContent ? 'identical'
+      : 'applied'
+    logSync('journal render effect', {
+      date: targetDate,
+      rev: currentDayRev,
+      reason,
+      remoteLen: remoteContent.length,
+      editorLen: editor.getHTML().length,
+    })
     if (!remoteContent) return
     // Don't rebuild the doc while the user is mid-type: a setContent resets the
     // cursor. A pending debounced save IS the "actively typing" signal — once it
