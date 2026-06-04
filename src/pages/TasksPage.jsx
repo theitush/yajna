@@ -5,7 +5,6 @@ import useHighlightTarget from '../lib/useHighlightTarget'
 
 const SECTIONS = [
   { key: 'active', label: 'Active' },
-  { key: 'scheduled', label: 'Scheduled' },
   { key: 'backlog', label: 'Backlog' },
   { key: 'done', label: 'Done' },
   { key: 'reviewed', label: 'Reviewed' },
@@ -18,7 +17,7 @@ export default function TasksPage() {
   const [showAdd, setShowAdd] = useState(false)
   const [title, setTitle] = useState('')
   const [explanation, setExplanation] = useState('')
-  const [openSections, setOpenSections] = useState({ active: true, scheduled: true, backlog: true })
+  const [openSections, setOpenSections] = useState({ active: true, backlog: true })
   const highlightId = useHighlightTarget('id')
   const highlightRef = useRef(null)
 

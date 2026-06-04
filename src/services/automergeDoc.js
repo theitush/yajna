@@ -65,8 +65,8 @@ function shapeConfigFields(source) {
 
 function shapeTaskFields(source) {
   // Pass-through copy of all task fields except internals. Tasks have been
-  // accreting fields over time (dailyReviews, feedback, order, scheduledDate,
-  // …) so a fixed schema rots; the doc just holds whatever the row holds.
+  // accreting fields over time (dailyReviews, feedback, order, …) so a fixed
+  // schema rots; the doc just holds whatever the row holds.
   // Per-field LWW comes for free from Automerge's internal Lamport clocks.
   const out = {}
   for (const [k, v] of Object.entries(source || {})) {
@@ -222,7 +222,7 @@ export async function changeDoc(doc, mutator) {
 /**
  * Apply a task row's fields into an Automerge doc inside a single change.
  * Removes keys no longer present in the source so deletes (e.g. clearing
- * `scheduledDate`) propagate.
+ * `feedback`) propagate.
  */
 export async function applyTaskFields(doc, source) {
   const Automerge = await getAutomerge()

@@ -34,9 +34,6 @@ export function getTaskSnapshotForDate(task, date) {
   if (!createdDate || createdDate > date) return null
   if (task.status === 'backlog') return null
 
-  const scheduledDate = task.scheduledDate || null
-  if (scheduledDate && scheduledDate > date) return null
-
   const dismissedDate = task.dismissedDate || null
   if (dismissedDate && dismissedDate <= date) return null
 

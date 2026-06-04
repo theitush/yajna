@@ -98,6 +98,5 @@ export function isVisibleToday(task) {
   const y = yesterday()
   if (task.status === 'active') return true
   if (task.status === 'done' && (task.doneDate === t || task.doneDate === y)) return true
-  if (task.status === 'scheduled' && task.scheduledDate && task.scheduledDate <= t) return true
   return false
 }

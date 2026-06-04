@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import useAppStore from '../../store/useAppStore'
-import { today } from '../../lib/dates'
 import HashtagTextarea from '../HashtagAutocomplete'
 import TagSelector from '../TagSelector'
 
@@ -23,15 +22,13 @@ function renderWithHashtags(text) {
 }
 
 export default function TaskCard({ task, defaultExpanded = false, defaultEditingTitle = false }) {
-  const { markTaskDone, markTaskActive, markTaskReviewed, deleteTask, moveToBacklog, scheduleTask, updateTask } = useAppStore()
+  const { markTaskDone, markTaskActive, markTaskReviewed, deleteTask, moveToBacklog, updateTask } = useAppStore()
   // Subscribe to anything that can change the tag pool, then ask the store.
   useAppStore(s => s.notes)
   useAppStore(s => s.tasks)
   useAppStore(s => s.currentDay)
   useAppStore(s => s.journalTagPool)
   const allTags = useAppStore.getState().getAllTags()
-  const [showReschedule, setShowReschedule] = useState(false)
-  const [scheduleDate, setScheduleDate] = useState('')
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [editingTitle, setEditingTitle] = useState(defaultEditingTitle)
   const [editExplanation, setEditExplanation] = useState(task.explanation || '')
@@ -147,7 +144,6 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
     })
     setExpanded(false)
     setEditingTitle(false)
-    setShowReschedule(false)
     setConfirmDelete(false)
   }, [editExplanation, editFeedback, editTags, task.id, task.title, updateTask, deleteTask])
 
@@ -234,13 +230,6 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
     e.stopPropagation()
     setEditingTitle(true)
     setExpanded(true)
-  }
-
-  const handleSchedule = () => {
-    if (scheduleDate) {
-      scheduleTask(task.id, scheduleDate)
-      setShowReschedule(false)
-    }
   }
 
   const handleX = () => {
@@ -402,14 +391,6 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
         </span>
 
         {/* Status badges */}
-        {!expanded && task.status === 'scheduled' && (
-          <span style={{
-            fontSize: '11px', padding: '2px 8px', borderRadius: '20px', fontWeight: 500, flexShrink: 0,
-            background: 'rgba(245,158,11,0.15)', color: '#FCD34D', border: '1px solid rgba(245,158,11,0.3)',
-          }}>
-            {task.scheduledDate}
-          </span>
-        )}
         {!expanded && task.status === 'backlog' && (
           <span style={{
             fontSize: '11px', padding: '2px 8px', borderRadius: '20px', fontWeight: 500, flexShrink: 0,
@@ -524,61 +505,31 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
 
           {!isDone && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', paddingTop: '4px' }}>
-              <button
-                onClick={() => setShowReschedule(s => !s)}
-                style={{
-                  fontSize: '12px', padding: '4px 10px', borderRadius: '8px',
-                  background: 'rgba(107,163,214,0.1)', color: 'var(--accent)',
-                  border: '1px solid rgba(107,163,214,0.25)', cursor: 'pointer',
-                  fontFamily: 'var(--font-body)',
-                }}
-              >
-                Reschedule
-              </button>
-            </div>
-          )}
-
-          {showReschedule && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <input
-                  type="date"
-                  value={scheduleDate}
-                  min={today()}
-                  onChange={e => setScheduleDate(e.target.value)}
-                  style={{
-                    flex: 1, fontSize: '12px',
-                    background: 'var(--bg-secondary)',
-                    border: '1px solid var(--border-mid)',
-                    borderRadius: '8px', padding: '6px 10px',
-                    color: 'var(--text-primary)',
-                    fontFamily: 'var(--font-body)',
-                    outline: 'none',
-                  }}
-                />
+              {task.status === 'backlog' ? (
                 <button
-                  onClick={handleSchedule}
+                  onClick={() => { markTaskActive(task.id); commitEdits() }}
                   style={{
-                    fontSize: '12px', padding: '6px 12px', borderRadius: '8px',
-                    background: 'rgba(107,163,214,0.15)', color: 'var(--accent)',
-                    border: '1px solid rgba(107,163,214,0.3)', cursor: 'pointer',
+                    fontSize: '12px', padding: '4px 10px', borderRadius: '8px',
+                    background: 'rgba(107,163,214,0.1)', color: 'var(--accent)',
+                    border: '1px solid rgba(107,163,214,0.25)', cursor: 'pointer',
                     fontFamily: 'var(--font-body)',
                   }}
                 >
-                  Set date
+                  Move to active
                 </button>
-              </div>
-              <button
-                onClick={() => { moveToBacklog(task.id); setShowReschedule(false) }}
-                style={{
-                  fontSize: '12px', padding: '4px 10px', borderRadius: '8px',
-                  background: 'var(--bg-secondary)', color: 'var(--text-secondary)',
-                  border: '1px solid var(--border-light)', cursor: 'pointer',
-                  fontFamily: 'var(--font-body)', textAlign: 'left',
-                }}
-              >
-                Move to backlog
-              </button>
+              ) : (
+                <button
+                  onClick={() => { moveToBacklog(task.id); commitEdits() }}
+                  style={{
+                    fontSize: '12px', padding: '4px 10px', borderRadius: '8px',
+                    background: 'var(--bg-secondary)', color: 'var(--text-secondary)',
+                    border: '1px solid var(--border-light)', cursor: 'pointer',
+                    fontFamily: 'var(--font-body)',
+                  }}
+                >
+                  Move to backlog
+                </button>
+              )}
             </div>
           )}
         </div>

@@ -45,7 +45,6 @@ export default function TasksPanel({ date }) {
         .filter(task => {
           if (task.status === 'active') return true
           if (task.status === 'done' && (task.doneDate === today || task.doneDate === yesterday)) return true
-          if (task.status === 'scheduled' && task.scheduledDate && task.scheduledDate <= today) return true
           return false
         })
         .sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity))

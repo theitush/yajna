@@ -6,7 +6,6 @@ export const TASK_STATUS = {
   DONE: 'done',
   DISMISSED: 'dismissed',
   BACKLOG: 'backlog',
-  SCHEDULED: 'scheduled',
 }
 
 export const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '453487156075-v3drv8hq708jmkbntgubs4tq31fd3qm9.apps.googleusercontent.com'

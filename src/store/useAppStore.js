@@ -121,7 +121,6 @@ const useAppStore = create((set, get) => ({
       createdDate: today(),
       doneDate: null,
       dismissedDate: null,
-      scheduledDate: null,
       order: maxOrder + 1,
       createdAt: now,
       updatedAt: now,
@@ -144,7 +143,6 @@ const useAppStore = create((set, get) => ({
       createdDate: date,
       doneDate: null,
       dismissedDate: null,
-      scheduledDate: null,
       order: maxOrder + 1,
       createdAt: now,
       updatedAt: now,
@@ -196,9 +194,6 @@ const useAppStore = create((set, get) => ({
   },
   moveToBacklog: async (id) => {
     await get().updateTask(id, { status: 'backlog' })
-  },
-  scheduleTask: async (id, date) => {
-    await get().updateTask(id, { status: 'scheduled', scheduledDate: date })
   },
   setTaskReviewedForDate: async (id, date, reviewed) => {
     const task = get().tasks.find(t => t.id === id)
