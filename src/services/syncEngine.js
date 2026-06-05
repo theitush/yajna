@@ -586,11 +586,56 @@ async function pollRemote(storeSetter) {
     // Advance localLastSeq to the manifest head. On cold start we adopt the
     // head as-is — we just enumerated every entity file, so anything older is
     // covered by the per-id merges above.
-    if (headSeq > localLastSeq) {
+    //
+    // BUT: a per-id fetch can come back null when the manifest flagged that id
+    // as an UPSERT (Drive read miss / eventual consistency). The merge helpers
+    // skip such ids (only deletes write a tombstone), so the entity never lands
+    // in IDB. If we still advanced the floor to headSeq, that change would be
+    // marked "seen" and never retried — a permanent silent drop (the "missing
+    // dismissed/done task" bug; confirmed via binOnDrive=true on a missing id).
+    //
+    // So cap the advance to just below the lowest unresolved upsert seq. The
+    // next poll re-diffs from there and refetches the id (the transient miss is
+    // gone by then). Deletes with null bytes are intentional (tombstone written
+    // above), so they don't hold the floor back. Cold start enumerates the full
+    // folder, so there are no manifest-diff "unresolved" ids to guard.
+    let advanceTo = headSeq
+    if (!coldStart) {
+      const resolvedBytes = new Map() // `${type}:${id}` -> hasBytes
+      for (const { id, bytes } of taskDocs) resolvedBytes.set(`task:${id}`, !!bytes)
+      for (const { id, bytes } of noteDocs) resolvedBytes.set(`note:${id}`, !!bytes)
+      for (const { id, bytes } of journalDocs) resolvedBytes.set(`journal:${id}`, !!bytes)
+      if (configDoc) resolvedBytes.set(`config:${configDoc.id}`, !!configDoc.bytes)
+      let minUnresolvedSeq = Infinity
+      const unresolved = []
+      for (const type of ['task', 'note', 'journal', 'config']) {
+        for (const [id, change] of changedByType[type]) {
+          if (change.op === 'delete') continue
+          if (resolvedBytes.get(`${type}:${id}`) === false) {
+            const seq = change.seq || 0
+            if (seq > 0 && seq < minUnresolvedSeq) minUnresolvedSeq = seq
+            unresolved.push(`${type}:${id.slice(0, 8)}@${seq}`)
+          }
+        }
+      }
+      if (minUnresolvedSeq !== Infinity) {
+        advanceTo = Math.min(headSeq, minUnresolvedSeq - 1)
+        // Force the NEXT poll to re-diff (bypass the modifiedTime hash gate):
+        // nothing on Drive will change to bump the hash, so without this the
+        // held-back id would only retry when some unrelated change moves the
+        // manifest. The transient null read is gone by next tick, so the
+        // refetch succeeds and the floor finally advances past it.
+        forceNextPoll = true
+        logSync('poll seq advance HELD BACK (unresolved upsert)', {
+          headSeq, advanceTo, unresolved,
+        })
+      }
+    }
+    if (advanceTo > localLastSeq) {
       // Probe: seq floor advanced after a full poll. From here on, any change
-      // with seq <= headSeq is considered "seen" and diffManifest will skip it.
-      logSync('poll seq advance', { from: localLastSeq, to: headSeq })
-      await setLocalLastSeq(headSeq)
+      // with seq <= advanceTo is considered "seen" and diffManifest will skip it.
+      logSync('poll seq advance', { from: localLastSeq, to: advanceTo })
+      await setLocalLastSeq(advanceTo)
     }
 
     if (forced) {
