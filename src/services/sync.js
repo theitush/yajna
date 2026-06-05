@@ -204,6 +204,14 @@ export async function mergeConfigDoc(configDoc) {
 export async function mergeTaskDocs(taskDocs, changedMap) {
   const local = await getAllTasksRaw()
   const localById = new Map(local.map(t => [t.id, t]))
+  // Locally-dirty ids carry an unsynced row edit (e.g. made while sync was
+  // paused/offline). updateTask owns row fields and only marks the row dirty —
+  // it does NOT re-serialize the doc until pushTasks runs. So a pull that lands
+  // first (resume does pull-before-push) would materialize the row from the
+  // stale doc and OVERWRITE the user's edit locally, then push the reverted
+  // value. We must fold the dirty local row's fields onto the merged doc so the
+  // edit survives the pull and is what gets pushed. (canonical ownership split)
+  const dirtyTasks = await getDirty('task').catch(() => ({}))
   const writeRows = []
   const writeDocBytes = new Map() // id → bytes
   for (const { id, bytes } of taskDocs) {
@@ -254,6 +262,17 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
       mergedDoc = await applyTaskFields(remoteDoc, l)
     } else {
       mergedDoc = remoteDoc
+    }
+
+    // If this id has an unsynced local edit (dirty), the local ROW is the source
+    // of truth for its owned fields — the doc above may still be pre-edit (the
+    // offline-edit-then-resume revert bug). Re-apply the local row's fields so
+    // the merge can't clobber the user's pending edit and pushTasks ships it.
+    if (l && dirtyTasks[id]) {
+      mergedDoc = await applyTaskFields(mergedDoc, l)
+      logSync('mergeTaskDocs preserved dirty local edit', {
+        id: id.slice(0, 8), status: l.status,
+      })
     }
 
     const mergedBytes = await saveDoc(mergedDoc)
