@@ -215,6 +215,19 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
       if (change?.op === 'delete') {
         writeRows.push({ id, deleted: true, deletedAt: change.at, updatedAt: change.at })
         localById.delete(id)
+      } else {
+        // BUG SITE: manifest flagged this id as an upsert, but its .bin came
+        // back null (Drive read miss / eventual consistency). We skip it here —
+        // yet the caller still advances localLastSeq past this change, so this
+        // id is NEVER retried. That permanently drops the task on this device
+        // (matches "missing dismissed/done tasks"). Probe records every such
+        // silent skip so we can confirm the count + ids.
+        logSync('mergeTaskDocs SKIP upsert with null bytes (silent loss)', {
+          id: id.slice(0, 8),
+          op: change?.op || null,
+          seq: change?.seq ?? null,
+          hadLocalRow: !!l,
+        })
       }
       continue
     }

@@ -112,10 +112,40 @@ export async function flushSyncLogToDrive() {
     const head = ids?.rootId ? await readManifest(ids.rootId).catch(() => null) : null
     const manifestHeadSeq = head?.manifest?.seq || 0
     const rawTasks = await getAllTasksRaw()
+    const localIds = new Set(rawTasks.map(t => t.id))
+
+    // Reconcile: which task ids does the manifest reference that are NOT in
+    // local IDB? For each, does its .bin still exist on Drive? This separates
+    // the two failure modes for the "missing dismissed/done tasks" bug:
+    //   - binOnDrive=true  → fetch/merge miss: the .bin is there, but a poll
+    //     skipped it (null-bytes read miss) yet still advanced the seq floor.
+    //   - binOnDrive=false → the producing device never wrote the .bin (push
+    //     failure), so no device can ever pull it.
+    let missingTasks = null
+    try {
+      const manTaskIds = new Set(
+        (head?.manifest?.changes || [])
+          .filter(c => c.type === 'task' && c.op !== 'delete')
+          .map(c => c.id)
+      )
+      const missingIds = [...manTaskIds].filter(id => !localIds.has(id))
+      let binNames = new Set()
+      if (missingIds.length && ids?.tasksFolderId) {
+        const files = await listFolder(ids.tasksFolderId)
+        binNames = new Set(
+          files.map(f => /^(.+)\.bin$/.exec(f.name || '')?.[1]).filter(Boolean)
+        )
+      }
+      missingTasks = missingIds.map(id => ({ id: id.slice(0, 8), full: id, binOnDrive: binNames.has(id) }))
+    } catch (e) {
+      missingTasks = { error: String(e?.message || e) }
+    }
+
     snapshot = {
       localLastSeq,
       manifestHeadSeq,
       taskCount: rawTasks.length,
+      missingTasks,
       tasks: rawTasks.map(t => ({
         id: t.id,
         title: (t.title || '').slice(0, 40),
