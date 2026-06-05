@@ -10,8 +10,9 @@
  *
  * This is a temporary debug aid — remove once the staleness root cause is fixed.
  */
-import { getMeta, putMeta, getAllAudio } from './db'
+import { getMeta, putMeta, getAllAudio, getAllTasksRaw } from './db'
 import { getDriveFileIds, findFile, writeJsonFile, listFolder } from './drive'
+import { readManifest } from './manifest'
 
 const LOG_KEY = 'sync_debug_log'
 // Retain by time, not count: a dump should be "what happened recently" so the
@@ -96,10 +97,42 @@ export async function flushSyncLogToDrive() {
   const deviceId = (await getMeta('device_id')) || 'unknown'
   const name = `_debug_synclog_${deviceId}.json`
   const log = await getSyncLog()
+
+  // Frozen-state snapshot: capture WHAT this device currently believes, so a
+  // stale phone can be diagnosed after the fact without a console. The decisive
+  // signals for the stale-tasks bug:
+  //   - localLastSeq: the seq floor. If it's >= the seq of a laptop task change
+  //     that isn't in `tasks` below, that change was permanently skipped.
+  //   - tasks: every local task row (id/title/updatedAt/deleted). Diff against
+  //     the laptop's manifest to see exactly which ids are missing locally.
+  //   - manifestHeadSeq: the remote head this device can see right now.
+  let snapshot = null
+  try {
+    const localLastSeq = (await getMeta('manifest_last_seq')) || 0
+    const head = ids?.rootId ? await readManifest(ids.rootId).catch(() => null) : null
+    const manifestHeadSeq = head?.manifest?.seq || 0
+    const rawTasks = await getAllTasksRaw()
+    snapshot = {
+      localLastSeq,
+      manifestHeadSeq,
+      taskCount: rawTasks.length,
+      tasks: rawTasks.map(t => ({
+        id: t.id,
+        title: (t.title || '').slice(0, 40),
+        done: !!t.done,
+        deleted: !!t.deleted,
+        updatedAt: t.updatedAt || null,
+      })),
+    }
+  } catch (e) {
+    snapshot = { error: String(e?.message || e) }
+  }
+
   const payload = {
     deviceId,
     flushedAt: new Date().toISOString(),
     userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : null,
+    snapshot,
     entryCount: log.length,
     entries: log,
   }
