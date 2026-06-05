@@ -275,7 +275,14 @@ async function pollRemote(storeSetter) {
       forceNextPoll = false
     } else {
       hash = await getRemoteHash(ids)
-      if (hash === lastRemoteHash) return
+      if (hash === lastRemoteHash) {
+        // Probe: hash gate short-circuited this poll. If the laptop's task
+        // changes are stuck, this is one place they'd be skipped — the manifest
+        // modifiedTime already matched lastRemoteHash (e.g. stamped by our own
+        // push's line-689 hash refresh) so we never even diff/fetch.
+        logSync('poll hash-gate skip', { hash, lastRemoteHash })
+        return
+      }
     }
 
     // Only surface 'syncing' for forced polls — the ones the user perceives as a
@@ -307,6 +314,20 @@ async function pollRemote(storeSetter) {
         }
       }
     }
+
+    // Probe: the seq floor + what this poll resolved to fetch. If the laptop's
+    // tasks are stale, the decisive question is whether they appear in
+    // `taskIds` here. Empty taskIds while headSeq advanced past their seq =
+    // Theory A (localLastSeq already covered them, so they were never fetched).
+    logSync('poll diff', {
+      forced,
+      coldStart,
+      localLastSeq,
+      headSeq,
+      taskIds: Array.from(changedByType.task.keys()).map(id => id.slice(0, 8)),
+      taskOps: Array.from(changedByType.task.values()).map(c => c.op),
+      journalIds: Array.from(changedByType.journal.keys()),
+    })
 
     // 2. Config is now a per-entity Automerge doc (config/config.bin). Only
     //    fetch it when the manifest flagged it (or on cold start) — no more
@@ -353,6 +374,14 @@ async function pollRemote(storeSetter) {
 
     // A local write raced with our pull — discard, the user's edit is fresher.
     if (writeGeneration !== startGen || pushesInFlight > 0) {
+      // Probe: bailed AFTER fetching docs but BEFORE merge. Nothing reached IDB
+      // this poll, and seq was NOT advanced — a later poll should retry. If
+      // tasks were fetched here, note them so we can see the retry land.
+      logSync('poll guard-1 discard (pre-merge)', {
+        genChanged: writeGeneration !== startGen,
+        pushesInFlight,
+        fetchedTaskIds: taskDocs.map(d => d.id.slice(0, 8)),
+      })
       if (forced) setStatus({ state: 'synced' })
       return
     }
@@ -474,6 +503,18 @@ async function pollRemote(storeSetter) {
     }
 
     if (writeGeneration !== startGen || pushesInFlight > 0) {
+      // Probe: bailed AFTER the IDB merge but BEFORE storeSetter + seq advance.
+      // This is the suspected lethal guard: tasks ARE now in IDB, but the store
+      // won't repaint AND localLastSeq is NOT advanced here (good — retry
+      // possible). The danger is a later push stamping lastRemoteHash so the
+      // hash gate skips every retry. mergedTaskCount tells us IDB got the data.
+      logSync('poll guard-2 discard (post-merge, pre-store)', {
+        genChanged: writeGeneration !== startGen,
+        pushesInFlight,
+        mergedTaskCount: mergedTasks.length,
+        headSeq,
+        localLastSeq,
+      })
       if (forced) setStatus({ state: 'synced' })
       return
     }
@@ -546,6 +587,9 @@ async function pollRemote(storeSetter) {
     // head as-is — we just enumerated every entity file, so anything older is
     // covered by the per-id merges above.
     if (headSeq > localLastSeq) {
+      // Probe: seq floor advanced after a full poll. From here on, any change
+      // with seq <= headSeq is considered "seen" and diffManifest will skip it.
+      logSync('poll seq advance', { from: localLastSeq, to: headSeq })
       await setLocalLastSeq(headSeq)
     }
 
@@ -686,7 +730,16 @@ async function executePush(pushFn) {
     setStatus({ state: 'synced' })
     try {
       const ids = await getDriveFileIds()
-      if (ids) lastRemoteHash = await getRemoteHash(ids)
+      if (ids) {
+        const before = lastRemoteHash
+        lastRemoteHash = await getRemoteHash(ids)
+        // Probe: a completed PUSH just stamped lastRemoteHash to the current
+        // manifest time. If a concurrent poll had skipped task fetch/store, this
+        // stamp can make the next poll's hash gate skip the retry — the prime
+        // suspect for "stale even though laptop changed tasks". The manifest
+        // time now reflects BOTH our push and any laptop task change.
+        logSync('push hash stamp', { before, after: lastRemoteHash })
+      }
     } catch { /* best-effort hash refresh */ }
   } catch (e) {
     console.warn('Push failed:', e.message || e)
