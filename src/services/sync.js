@@ -9,7 +9,7 @@ import {
   getDirty, clearDirty, putAudio, getAllAudio,
   getTaskDocBytes, putTaskWithDoc, putTaskDocBytes, getTask,
   getNoteDocBytes, putNoteWithDoc,
-  getJournalDocBytes, putJournalWithDoc, getAllJournals,
+  getJournalDocBytes, putJournalWithDoc, getAllJournals, getJournal,
   getConfigDocBytes, putConfigWithDoc,
 } from './db'
 import {
@@ -1013,6 +1013,32 @@ export async function pushJournal(dayDoc) {
  * Automerge that distinction collapses — pushJournal *is* the merge-and-push.
  */
 export const mergeAndPushJournal = pushJournal
+
+/**
+ * Flush everything that accumulated dirty while sync was paused (the manual
+ * "go offline" toggle). Tasks/notes/config push by draining their own dirty
+ * sets; journals are per-day, so we iterate the journal dirty set and push each
+ * day's current local doc. Audio is covered by pushPendingAudio at the call
+ * site (it lives in audio.js). Each push is independent and best-effort: one
+ * failing bucket must not block the others. Returns nothing — the sync engine,
+ * restarted alongside this, owns the resulting status.
+ */
+export async function flushPendingSync() {
+  await pushTasks().catch(e => console.warn('flushPendingSync: tasks', e?.message || e))
+  await pushNotes().catch(e => console.warn('flushPendingSync: notes', e?.message || e))
+  await pushConfig().catch(e => console.warn('flushPendingSync: config', e?.message || e))
+
+  try {
+    const dirty = await getDirty('journal')
+    const dates = Object.keys(dirty || {})
+    for (const date of dates) {
+      const doc = await getJournal(date)
+      if (doc) await pushJournal(doc).catch(e => console.warn('flushPendingSync: journal', date, e?.message || e))
+    }
+  } catch (e) {
+    console.warn('flushPendingSync: journal drain', e?.message || e)
+  }
+}
 
 /**
  * Initial sync on connect: merge local data with Drive, then push merged result.

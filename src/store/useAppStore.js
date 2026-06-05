@@ -10,8 +10,8 @@ import {
   getAllTasksRaw, getAllNotesRaw, getAllAudio,
 } from '../services/db'
 import { extractHashtags } from '../lib/hashtags'
-import { pushTasks, pushNotes, pushJournal, pushConfig, initialSyncStreaming, mergeAndPushJournal } from '../services/sync'
-import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, retryNow, setPollInterval } from '../services/syncEngine'
+import { pushTasks, pushNotes, pushJournal, pushConfig, initialSyncStreaming, mergeAndPushJournal, flushPendingSync } from '../services/sync'
+import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, retryNow, setPollInterval, pullNow } from '../services/syncEngine'
 import { pushAudio, pushPendingAudio, ensureAudioLocal, softDeleteAudio, restoreAudio, hardDeleteAudio, collectAudioIdsFromBlocks, audioBlockHtml } from '../services/audio'
 import { putAudio, getAudio } from '../services/db'
 import { withAuthRetry } from '../services/auth'
@@ -52,7 +52,8 @@ function attachAudioVisibilityReplay(getState) {
   audioVisibilityHandlerAttached = true
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') return
-    if (getState().mode === MODE_OFFLINE) return
+    // Skip while permanently offline OR manually paused — no uploads either way.
+    if (!getState().driveEnabled) return
     pushPendingAudio().catch(e => console.warn('pushPendingAudio (on resume) failed', e))
   })
 }
@@ -90,9 +91,17 @@ const useAppStore = create((set, get) => ({
     } catch {}
   },
 
-  // Helper: should we push to Drive?
+  // Manual "go offline" toggle for a Drive-mode user (distinct from MODE_OFFLINE,
+  // which is the permanent no-Drive choice made at login). While paused, local
+  // writes keep landing in IDB but nothing is pushed and the poll engine is
+  // stopped — useful for working offline on the go. Resuming flushes whatever
+  // changed and restarts polling. NOT persisted: a reload comes back online.
+  syncPaused: false,
+
+  // Helper: should we push to Drive? False in permanent offline mode AND while
+  // the user has manually paused sync. Every push call site routes through this.
   get driveEnabled() {
-    return get().mode !== MODE_OFFLINE
+    return get().mode !== MODE_OFFLINE && !get().syncPaused
   },
 
   // Tasks
@@ -128,7 +137,7 @@ const useAppStore = create((set, get) => ({
     await putTask(task)
     logSync('addTask', { id: task.id.slice(0, 8), hasTitle: !!task.title, status: task.status })
     set(s => ({ tasks: [...s.tasks, task] }))
-    if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
+    if (get().driveEnabled) withRetry(pushTasks)()
     return task
   },
   addTaskForDate: async (title, date, explanation = '') => {
@@ -150,7 +159,7 @@ const useAppStore = create((set, get) => ({
     await putTask(task)
     set(s => ({ tasks: [...s.tasks, task] }))
     get().bumpReviewVersion()
-    if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
+    if (get().driveEnabled) withRetry(pushTasks)()
     return task
   },
   updateTask: async (id, updates) => withTaskLock(id, async () => {
@@ -178,7 +187,7 @@ const useAppStore = create((set, get) => ({
     })
     set(s => ({ tasks: s.tasks.map(t => t.id === id ? updated : t) }))
     get().bumpReviewVersion()
-    if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
+    if (get().driveEnabled) withRetry(pushTasks)()
   }),
   markTaskDone: async (id) => {
     await get().updateTask(id, { status: 'done', doneDate: today() })
@@ -253,7 +262,7 @@ const useAppStore = create((set, get) => ({
     await putTask(tomb)
     set(s => ({ tasks: s.tasks.filter(t => t.id !== id) }))
     get().bumpReviewVersion()
-    if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
+    if (get().driveEnabled) withRetry(pushTasks)()
   },
   reorderTasks: (orderedIds) => {
     const tasks = get().tasks
@@ -270,7 +279,7 @@ const useAppStore = create((set, get) => ({
     if (changed.length === 0) return
     set({ tasks: updated })
     putTasks(changed).then(() => {
-      if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
+      if (get().driveEnabled) withRetry(pushTasks)()
     }).catch(console.error)
   },
 
@@ -294,7 +303,7 @@ const useAppStore = create((set, get) => ({
     }
     await putNote(note)
     set(s => ({ notes: [...s.notes, note] }))
-    if (get().mode !== MODE_OFFLINE) withRetry(pushNotes)()
+    if (get().driveEnabled) withRetry(pushNotes)()
     return note
   },
   updateNote: async (id, updates) => {
@@ -321,7 +330,7 @@ const useAppStore = create((set, get) => ({
     const updated = patched
     await putNote(updated)
     set(s => ({ notes: s.notes.map(n => n.id === id ? updated : n) }))
-    if (get().mode !== MODE_OFFLINE) withRetry(pushNotes)()
+    if (get().driveEnabled) withRetry(pushNotes)()
   },
   deleteNote: async (id) => {
     // Keep title + blocks so the trashed note is still viewable (and so the
@@ -343,7 +352,7 @@ const useAppStore = create((set, get) => ({
       : { id, deleted: true, deletedAt: now, updatedAt: now }
     await putNote(tomb)
     set(s => ({ notes: s.notes.filter(n => n.id !== id) }))
-    if (get().mode !== MODE_OFFLINE) withRetry(pushNotes)()
+    if (get().driveEnabled) withRetry(pushNotes)()
   },
 
   // Journals (per-day docs keyed by date YYYY-MM-DD).
@@ -432,7 +441,7 @@ const useAppStore = create((set, get) => ({
       }
       await putConfigWithDoc(seeded, null)
       set({ config: seeded })
-      if (get().mode !== MODE_OFFLINE) withRetry(pushConfig)()
+      if (get().driveEnabled) withRetry(pushConfig)()
       config = seeded
     }
 
@@ -455,13 +464,13 @@ const useAppStore = create((set, get) => ({
         await putTasks(changed)
         set({ tasks: updatedTasks })
         get().bumpReviewVersion()
-        if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
+        if (get().driveEnabled) withRetry(pushTasks)()
       }
 
       const nextConfig = { ...config, autoDismissCompletedLastRunDate: t }
       await putConfigWithDoc(nextConfig, null)
       set({ config: nextConfig })
-      if (get().mode !== MODE_OFFLINE) withRetry(pushConfig)()
+      if (get().driveEnabled) withRetry(pushConfig)()
     }
 
     // Show the locally-stored doc immediately so the editor doesn't flash empty
@@ -483,7 +492,7 @@ const useAppStore = create((set, get) => ({
       set({ reviews: nextReviews })
     }
 
-    if (get().mode !== MODE_OFFLINE) {
+    if (get().driveEnabled) {
       try {
         const merged = await mergeAndPushJournal(doc).catch(() => null)
         if (merged) {
@@ -559,7 +568,7 @@ const useAppStore = create((set, get) => ({
     if (currentDoc) set({ currentDay: updated })
 
     get().bumpReviewVersion()
-    if (get().mode !== MODE_OFFLINE) {
+    if (get().driveEnabled) {
       withRetry(() => pushJournal(updated))()
     }
   },
@@ -593,7 +602,7 @@ const useAppStore = create((set, get) => ({
     set({ reviews: nextReviews })
 
     get().bumpReviewVersion()
-    if (get().mode !== MODE_OFFLINE) {
+    if (get().driveEnabled) {
       withRetry(() => pushJournal(updated))()
     }
   },
@@ -626,7 +635,7 @@ const useAppStore = create((set, get) => ({
     await putJournal(updated)
     if (currentDoc) set({ currentDay: updated })
     get().bumpReviewVersion()
-    if (get().mode !== MODE_OFFLINE) withRetry(() => pushJournal(updated))()
+    if (get().driveEnabled) withRetry(() => pushJournal(updated))()
   },
 
   // Audio (local-first, lazy Drive sync). Metadata (driveFileId, transcript,
@@ -640,7 +649,7 @@ const useAppStore = create((set, get) => ({
     const mimeType = blob.type || 'audio/webm'
     const createdAt = new Date().toISOString()
     await putAudio({ id, blob, mimeType, duration, createdAt })
-    if (get().mode !== MODE_OFFLINE) {
+    if (get().driveEnabled) {
       ;(async () => {
         try {
           const driveFileId = await pushAudio(id)
@@ -697,7 +706,7 @@ const useAppStore = create((set, get) => ({
       trashedTasks: s.trashedTasks.filter(t => t.id !== id),
       tasks: [...s.tasks.filter(t => t.id !== id), restored],
     }))
-    if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
+    if (get().driveEnabled) withRetry(pushTasks)()
   },
   restoreTrashedNote: async (id) => {
     const raw = (await getAllNotesRaw()).find(n => n.id === id)
@@ -710,7 +719,7 @@ const useAppStore = create((set, get) => ({
       trashedNotes: s.trashedNotes.filter(n => n.id !== id),
       notes: [...s.notes.filter(n => n.id !== id), restored],
     }))
-    if (get().mode !== MODE_OFFLINE) withRetry(pushNotes)()
+    if (get().driveEnabled) withRetry(pushNotes)()
   },
   // Restore a trashed audio back into its source note/journal entry. If the
   // source was itself trashed or purged, returns { ok: false, reason } and
@@ -745,7 +754,7 @@ const useAppStore = create((set, get) => ({
       set(s => ({
         notes: [...s.notes.filter(n => n.id !== updatedNote.id), updatedNote],
       }))
-      if (get().mode !== MODE_OFFLINE) withRetry(pushNotes)()
+      if (get().driveEnabled) withRetry(pushNotes)()
     } else if (rec.sourceType === 'journal') {
       const date = dayKey(rec.sourceId)
       const doc = await getJournal(date)
@@ -757,7 +766,7 @@ const useAppStore = create((set, get) => ({
       await putJournal(updatedDoc)
       await restoreAudio(id)
       set(s => (s.currentDay?.date === date ? { currentDay: updatedDoc, currentDayRev: s.currentDayRev + 1 } : {}))
-      if (get().mode !== MODE_OFFLINE) withRetry(() => pushJournal(updatedDoc))()
+      if (get().driveEnabled) withRetry(() => pushJournal(updatedDoc))()
     } else {
       return { ok: false, reason: 'Unknown audio source type.' }
     }
@@ -810,7 +819,7 @@ const useAppStore = create((set, get) => ({
     const now = new Date().toISOString()
     await putTask({ id, deleted: true, deletedAt: raw.deletedAt || now, updatedAt: now, purged: true })
     set(s => ({ trashedTasks: s.trashedTasks.filter(t => t.id !== id) }))
-    if (get().mode !== MODE_OFFLINE) withRetry(pushTasks)()
+    if (get().driveEnabled) withRetry(pushTasks)()
   },
   purgeTrashedNote: async (id) => {
     const raw = (await getAllNotesRaw()).find(n => n.id === id)
@@ -825,7 +834,7 @@ const useAppStore = create((set, get) => ({
     set(s => ({ trashedNotes: s.trashedNotes.filter(n => n.id !== id) }))
     const all = await getAllAudio()
     set({ trashedAudio: all.filter(a => a.deleted) })
-    if (get().mode !== MODE_OFFLINE) withRetry(pushNotes)()
+    if (get().driveEnabled) withRetry(pushNotes)()
   },
 
   // Config
@@ -842,7 +851,7 @@ const useAppStore = create((set, get) => ({
     // clobbering this edit.
     await putConfigWithDoc(config, null)
     set({ config })
-    if (get().mode !== MODE_OFFLINE) withRetry(pushConfig)()
+    if (get().driveEnabled) withRetry(pushConfig)()
   },
 
   // Sync (Drive mode only)
@@ -881,7 +890,71 @@ const useAppStore = create((set, get) => ({
       })
       return
     }
+    // While manually paused, ignore engine-emitted status. A poll that was
+    // already in flight when the user paused can resolve afterward and emit
+    // 'synced'/'syncing', which would flicker the dot back on and contradict the
+    // 'offline' we set. The toggle owns the status while paused.
+    if (get().syncPaused) return
     set({ syncStatus: s, syncing: s.state === 'syncing' })
+  },
+  /**
+   * Manual offline toggle for a Drive-mode user. Clicking the sync status text
+   * pauses (work fully local, no pushes/polls), clicking again resumes (flush +
+   * re-poll). No-op for permanent MODE_OFFLINE users — they have no engine to
+   * stop and nothing to resume to.
+   *
+   * Pause: stopSyncEngine() drains cleanly — any in-flight push/poll finishes on
+   * its own (executePush/pollRemote aren't aborted mid-flight; we just stop
+   * scheduling new ones and drop listeners), then it sets status 'offline'.
+   * Because driveEnabled now also checks syncPaused, every subsequent local edit
+   * lands in IDB + dirty set but issues no push.
+   *
+   * Resume: flip the flag first (so flushPendingSync's pushes pass driveEnabled),
+   * flush everything that piled up, then restart the engine to resume polling.
+   */
+  toggleSyncPause: async () => {
+    if (get().mode === MODE_OFFLINE) return
+    const pausing = !get().syncPaused
+    if (pausing) {
+      set({ syncPaused: true })
+      try { stopSyncEngine() } catch {}
+      // stopSyncEngine sets status 'offline'; make it explicit + stop the spinner.
+      set({ syncStatus: { state: 'offline' }, syncing: false })
+      return
+    }
+
+    // Resuming. PULL BEFORE PUSH: if another device changed the same entities
+    // while we were paused, we must merge its state into our local Automerge
+    // docs FIRST, then push. Push-first would still CRDT-merge (push* read the
+    // remote .bin), but pull-first is what makes last-write-wins scalar fields
+    // (task status/doneDate, note title, config values) resolve correctly and
+    // gets the other device's changes onto our screen before we upload.
+    set({ syncPaused: false, syncStatus: { state: 'syncing' }, syncing: true })
+
+    // Restart the poll engine first so pullNow has a running engine + storeSetter.
+    // The onSyncStatus listener registered at boot survives stopSyncEngine (it
+    // only clears timers, not the listener Set), so we must NOT re-add it here or
+    // setSyncStatus would fire twice per status change.
+    const intervalMs = (get().config?.syncInterval || 1) * 1000
+    startSyncEngine((data) => set(data), intervalMs, () => get())
+
+    try {
+      // 1. Pull: drain remote changes into local docs + the store.
+      await pullNow()
+      // 2. Push: flush everything that piled up locally while paused. Routed
+      //    through withRetry so it bumps writeGeneration (concurrent interval
+      //    polls discard their in-flight results) and joins the engine's
+      //    single-flight push coalescing — no direct push racing a poll. Each
+      //    push re-merges against the now-current remote .bin, so it can't
+      //    clobber what we just pulled.
+      await withRetry(flushPendingSync)()
+      await pushPendingAudio().catch(e => console.warn('resume: pushPendingAudio', e))
+    } catch (e) {
+      console.warn('resume pull/flush failed', e)
+    }
+    // Kick a final poll so the dot settles to 'synced' and any change our push
+    // produced is reflected. The engine's interval polling carries on from here.
+    retryNow()
   },
   /**
    * Run the initial Drive merge. Hydrates the store per-bucket as each

@@ -26,8 +26,11 @@ function statusDot(syncStatus) {
   }
 }
 
-function statusLabel(syncStatus) {
+function statusLabel(syncStatus, syncPaused) {
   if (syncStatus.isAuth) return 'sign in'
+  // User-initiated pause reads differently from a dropped connection: make it
+  // obvious the click was honored and how to come back.
+  if (syncPaused) return 'offline \u00b7 tap to sync'
   switch (syncStatus.state) {
     case 'synced': return 'synced'
     case 'syncing': return 'syncing\u2026'
@@ -42,8 +45,12 @@ function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
   const reviewVersion = useAppStore(s => s.reviewVersion)
   const config = useAppStore(s => s.config)
   const [journalDocs, setJournalDocs] = useState([])
-  const isClickable = syncStatus.state === 'waiting' || syncStatus.state === 'offline' || syncStatus.isAuth
   const isDriveMode = useAppStore(s => s.mode === MODE_DRIVE)
+  const syncPaused = useAppStore(s => s.syncPaused)
+  const toggleSyncPause = useAppStore(s => s.toggleSyncPause)
+  // A Drive-mode user can always click the status to pause/resume manual sync.
+  // The legacy clickable states (retry/reconnect/re-auth) still apply too.
+  const isClickable = isDriveMode || syncStatus.state === 'waiting' || syncStatus.state === 'offline' || syncStatus.isAuth
 
   // Same rollover-aware bound as ReviewPage so the badge count matches the list
   // exactly (only PAST days, today excluded).
@@ -77,7 +84,15 @@ function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
       handleConnectDrive()
       return
     }
-    if (isDriveMode && syncStatus.state === 'offline') {
+    // Manual pause/resume takes precedence for Drive-mode users. Resume when
+    // paused; otherwise (synced/syncing/waiting) pause. Both go through the
+    // same toggle, which flushes + restarts polling on resume.
+    if (isDriveMode && syncPaused) {
+      toggleSyncPause()
+    } else if (isDriveMode && syncStatus.state !== 'offline') {
+      toggleSyncPause()
+    } else if (isDriveMode && syncStatus.state === 'offline') {
+      // Not paused but offline = dropped connection; retry as before.
       retryNow()
     } else if (syncStatus.state === 'offline') {
       handleConnectDrive()
@@ -100,7 +115,11 @@ function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
         </div>
         <div
           onClick={handleClick}
-          title={isClickable ? 'Click to retry now' : undefined}
+          title={
+            isDriveMode
+              ? (syncPaused ? 'Click to go back online and sync' : 'Click to work offline')
+              : (isClickable ? 'Click to retry now' : undefined)
+          }
           style={{
             display: 'flex', alignItems: 'center', gap: '5px', marginTop: '6px',
             cursor: isClickable ? 'pointer' : 'default',
@@ -117,7 +136,7 @@ function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
             fontSize: '11px',
             color: 'var(--text-tertiary)',
           }}>
-            {statusLabel(syncStatus)}
+            {statusLabel(syncStatus, syncPaused)}
           </span>
         </div>
       </div>

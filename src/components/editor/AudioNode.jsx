@@ -296,6 +296,7 @@ function AudioNodeView({ node, editor, getPos, extension }) {
   const trashAudio = useAppStore(s => s.trashAudio)
   const readOnly = !!extension?.options?.readOnly
   const config = useAppStore(s => s.config)
+  const syncPaused = useAppStore(s => s.syncPaused)
   const audioRef = useRef(null)
   const [objectUrl, setObjectUrl] = useState(null)
   const [playing, setPlaying] = useState(false)
@@ -428,6 +429,10 @@ function AudioNodeView({ node, editor, getPos, extension }) {
   const handleTranscribe = async () => {
     setConfirmRetranscribe(false)
     setTranscriptError(null)
+    if (syncPaused || !navigator.onLine) {
+      setTranscriptError('Offline — will transcribe when back online')
+      return
+    }
     const apiKey = config?.groqApiKey
     if (!apiKey) {
       setTranscriptError('Add your Groq API key in Settings first')
@@ -475,6 +480,14 @@ function AudioNodeView({ node, editor, getPos, extension }) {
   useEffect(() => {
     if (!node.attrs.autoTranscribe) return
     if (transcript || transcribing) return
+    // Offline (no network) or manually paused: transcription is a Groq API call,
+    // so it can't run. Leave the autoTranscribe flag SET (don't clear it) and
+    // bail — the effect re-fires when syncPaused/onLine flips, transcribing the
+    // clip automatically once we're back online. Show a hint meanwhile.
+    if (syncPaused || !navigator.onLine) {
+      setTranscriptError('Offline — will transcribe when back online')
+      return
+    }
     // Clear the flag eagerly so we don't retry on every render.
     if (editor && typeof getPos === 'function' && !readOnly) {
       const pos = getPos()
@@ -493,7 +506,7 @@ function AudioNodeView({ node, editor, getPos, extension }) {
     }
     handleTranscribe()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [node.attrs.autoTranscribe])
+  }, [node.attrs.autoTranscribe, syncPaused])
 
   // Legacy hydrate: pre-migration clips kept createdAt/transcript only in IDB.
   // Backfill them onto the node so chronological tinting + transcript display

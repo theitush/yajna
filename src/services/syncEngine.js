@@ -237,6 +237,19 @@ export function setPollInterval(ms) {
   }
 }
 
+/**
+ * Force one full poll now and resolve when it settles. Unlike retryNow(), this
+ * returns the poll promise so callers can pull-before-push (e.g. resuming from
+ * manual offline: drain the remote into local Automerge docs first, so the
+ * subsequent push merges on top of the other device's changes instead of
+ * racing them). Requires the engine to be running (startSyncEngine first).
+ */
+export async function pullNow() {
+  if (!running) return
+  forceNextPoll = true
+  await pollRemote(_storeSetter)
+}
+
 async function pollRemote(storeSetter) {
   if (!running || pushesInFlight > 0) return
   // Drop this tick if a previous poll is still running — see pollInFlight.
