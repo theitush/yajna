@@ -276,11 +276,8 @@ async function pollRemote(storeSetter) {
     } else {
       hash = await getRemoteHash(ids)
       if (hash === lastRemoteHash) {
-        // Probe: hash gate short-circuited this poll. If the laptop's task
-        // changes are stuck, this is one place they'd be skipped — the manifest
-        // modifiedTime already matched lastRemoteHash (e.g. stamped by our own
-        // push's line-689 hash refresh) so we never even diff/fetch.
-        logSync('poll hash-gate skip', { hash, lastRemoteHash })
+        // Hash gate short-circuit: manifest modifiedTime already matched
+        // lastRemoteHash, so nothing changed remotely since our last poll.
         return
       }
     }
