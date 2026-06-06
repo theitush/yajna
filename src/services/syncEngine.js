@@ -42,6 +42,14 @@ let status = { state: 'synced' }
 let running = false
 let pendingPush = null
 let lastRemoteHash = null
+// Highest manifest seq we've observed (from the last manifest read). The hash
+// gate below skips a poll when the manifest's modifiedTime is unchanged — but
+// that's only safe if we're actually CAUGHT UP. A device's own push stamps
+// lastRemoteHash to a modifiedTime that may already include the OTHER device's
+// writes we haven't pulled (seq floor < head), so hash-equality alone would
+// suppress catch-up forever (the "mobile journal goes stale" bug). We gate on
+// hash AND localLastSeq >= lastKnownHeadSeq, so being behind always re-polls.
+let lastKnownHeadSeq = 0
 let _storeSetter = null
 let _storeGetter = null
 // Generation counter: bumped whenever a local write/push occurs. A poll that
@@ -94,6 +102,7 @@ export function startSyncEngine(storeSetter, intervalMs, storeGetter) {
   pollIntervalMs = intervalMs || DEFAULT_POLL_INTERVAL
   retryCount = 0
   lastRemoteHash = null
+  lastKnownHeadSeq = 0
 
   window.addEventListener('online', handleOnline)
   window.addEventListener('offline', handleOffline)
@@ -144,6 +153,7 @@ export function stopSyncEngine() {
   pendingPush = null
   retryCount = 0
   lastRemoteHash = null
+  lastKnownHeadSeq = 0
   window.removeEventListener('online', handleOnline)
   window.removeEventListener('offline', handleOffline)
   document.removeEventListener('visibilitychange', handleVisibility)
@@ -276,9 +286,19 @@ async function pollRemote(storeSetter) {
     } else {
       hash = await getRemoteHash(ids)
       if (hash === lastRemoteHash) {
-        // Hash gate short-circuit: manifest modifiedTime already matched
-        // lastRemoteHash, so nothing changed remotely since our last poll.
-        return
+        // Hash gate: the manifest's modifiedTime is unchanged since we last
+        // stamped it. That only means "caught up" if our seq floor has actually
+        // reached the head we last saw — otherwise we have unpulled changes the
+        // hash can't see (e.g. our own push stamped a modifiedTime that already
+        // included the other device's writes). Skip ONLY when caught up; if
+        // we're behind, fall through and re-diff so we finally pull them.
+        const seqNow = await getLocalLastSeq()
+        if (seqNow >= lastKnownHeadSeq) {
+          return
+        }
+        logSync('poll hash-gate bypass (behind head)', {
+          localLastSeq: seqNow, lastKnownHeadSeq,
+        })
       }
     }
 
@@ -299,6 +319,9 @@ async function pollRemote(storeSetter) {
       coldStart = true
     } else {
       headSeq = head.manifest.seq || 0
+      // Remember the head so the hash gate (above, next poll) knows whether
+      // we're caught up. Monotonic: never let a transient lower read regress it.
+      if (headSeq > lastKnownHeadSeq) lastKnownHeadSeq = headSeq
       const diff = diffManifest(head.manifest, localLastSeq)
       if (diff.gap) {
         coldStart = true
@@ -770,19 +793,16 @@ async function executePush(pushFn) {
     retryStartTime = 0
     pendingPush = null
     setStatus({ state: 'synced' })
-    try {
-      const ids = await getDriveFileIds()
-      if (ids) {
-        const before = lastRemoteHash
-        lastRemoteHash = await getRemoteHash(ids)
-        // Probe: a completed PUSH just stamped lastRemoteHash to the current
-        // manifest time. If a concurrent poll had skipped task fetch/store, this
-        // stamp can make the next poll's hash gate skip the retry — the prime
-        // suspect for "stale even though laptop changed tasks". The manifest
-        // time now reflects BOTH our push and any laptop task change.
-        logSync('push hash stamp', { before, after: lastRemoteHash })
-      }
-    } catch { /* best-effort hash refresh */ }
+    // A push advanced the manifest head past our local seq floor (our own
+    // changes, and possibly the OTHER device's writes that landed since our
+    // last poll). We must NOT stamp lastRemoteHash to the current modifiedTime:
+    // that's exactly what made the next poll's hash gate skip catch-up, leaving
+    // the device stale ("mobile journal won't update"). Instead force the next
+    // poll to re-diff. It re-reads the manifest, refreshes lastKnownHeadSeq,
+    // advances our seq floor past our own (content-identical) push, and pulls
+    // anything the other device wrote. One extra poll cycle, always correct.
+    forceNextPoll = true
+    logSync('push done -> force next poll', {})
   } catch (e) {
     console.warn('Push failed:', e.message || e)
     if (isAuthError(e)) {
