@@ -26,7 +26,7 @@ import { migrateConfigToAutomergeIfNeeded } from './configAutomergeMigration'
 import { migrateAudioInlineIfNeeded } from './audioInlineMigration'
 import {
   createDoc, loadDoc, saveDoc, mergeDoc, sharesAncestry,
-  applyTaskFields, materializeTaskRow,
+  applyTaskFields, materializeTaskRow, mergeTaskLWW,
   applyNoteFields, materializeNoteRow,
   materializeJournalRow,
   applyConfigFields, materializeConfigRow,
@@ -254,7 +254,12 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
       const localDoc = await loadDoc(localBytes)
       // Heal disjoint-root local docs (see mergeJournalDocs for rationale).
       if (await sharesAncestry(localDoc, remoteDoc)) {
-        mergedDoc = await mergeDoc(localDoc, remoteDoc)
+        // Per-field wall-clock LWW, NOT a bare Automerge.merge. A plain merge
+        // resolves each concurrent scalar by actor-id (not time), so a newer
+        // edit can revert and `updatedAt` runs backwards — the live "edits
+        // disappear" bug. mergeTaskLWW merges history then picks each field from
+        // the parent with the newer per-field stamp. (proven: scripts/repro-task-lww.mjs)
+        mergedDoc = await mergeTaskLWW(localDoc, remoteDoc)
       } else {
         mergedDoc = newerDoc(localDoc, remoteDoc, materializeTaskRow)
       }
@@ -279,8 +284,10 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
     const mergedRow = materializeTaskRow(mergedDoc)
     // Diagnostic: did this poll-merge change what the user has locally? If the
     // merged row's status/title/explanation differs from the local row, this is
-    // the moment a synced edit gets reverted. `path` tells us which merge branch
-    // produced it (ancestry-merge vs disjoint-root newerDoc vs adopt-remote).
+    // the moment a synced edit could get reverted. `path` tells us which merge
+    // branch produced it (lww = per-field wall-clock; newerDoc = disjoint-root;
+    // adoptRemote = no local bytes). `updBackwards` is the proof-of-fix signal:
+    // after the LWW change it must NEVER be true on the `lww` path.
     if (l) {
       const changedFields = []
       if ((mergedRow.status || '') !== (l.status || '')) changedFields.push('status')
@@ -288,9 +295,10 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
       if ((mergedRow.explanation || '') !== (l.explanation || '')) changedFields.push('explanation')
       if ((mergedRow.updatedAt || '') !== (l.updatedAt || '')) changedFields.push('updatedAt')
       if (changedFields.length) {
-        const path = localBytes ? (await sharesAncestry(await loadDoc(localBytes), remoteDoc) ? 'merge' : 'newerDoc') : (l ? 'adoptRemote' : 'remote')
+        const path = localBytes ? (await sharesAncestry(await loadDoc(localBytes), remoteDoc) ? 'lww' : 'newerDoc') : (l ? 'adoptRemote' : 'remote')
+        const updBackwards = new Date(mergedRow.updatedAt || 0).getTime() < new Date(l.updatedAt || 0).getTime()
         logSync('mergeTaskDocs CHANGED local', {
-          id: id.slice(0, 8), path, changedFields,
+          id: id.slice(0, 8), path, changedFields, updBackwards,
           localStatus: l.status, mergedStatus: mergedRow.status,
           localUpd: l.updatedAt, mergedUpd: mergedRow.updatedAt,
         })
