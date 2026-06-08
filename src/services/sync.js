@@ -8,7 +8,7 @@ import {
   putMeta, getAllTasksRaw, getAllNotesRaw, purgeTombstones,
   getDirty, clearDirty, putAudio, getAllAudio,
   getTaskDocBytes, putTaskWithDoc, putTaskDocBytes, getTask,
-  getNoteDocBytes, putNoteWithDoc,
+  getNoteDocBytes, putNoteWithDoc, getNoteRaw,
   getJournalDocBytes, putJournalWithDoc, getAllJournals, getJournal,
   getConfigDocBytes, putConfigWithDoc,
 } from './db'
@@ -820,15 +820,19 @@ export async function pushTasks() {
   const localById = new Map(localTasks.map(t => [t.id, t]))
   const deviceId = await getDeviceId()
   const changes = []
-  const pushedIds = []
+  // { id: token } of what we actually shipped, for the compare-and-clear below.
+  // Capturing the token BEFORE re-reading the row is what closes the lost-update:
+  // an edit that lands after this and bumps the token won't be cleared.
+  const pushedTokens = {}
 
   for (const id of dirtyIds) {
+    const token = dirty[id]
     const local = localById.get(id)
     if (!local) {
       // Local row gone but still dirty — nothing to push and no doc to ship.
       // Mark resolved so we don't retry forever; the delete tombstone (if
       // any) already went through a normal local edit and was pushed earlier.
-      pushedIds.push(id)
+      pushedTokens[id] = token
       continue
     }
 
@@ -870,16 +874,19 @@ export async function pushTasks() {
       at: new Date().toISOString(),
       deviceId,
     })
-    pushedIds.push(id)
+    pushedTokens[id] = token
   }
 
   // Clear dirty BEFORE the manifest append. If the manifest write fails the
   // entity files are already authoritative and the next poll on another device
   // will pick them up via cold-start fallback. We don't want to re-push the
   // entities on retry just because the manifest hint failed.
-  await clearDirty('task', pushedIds)
+  // Compare-and-clear by token: an edit that re-dirtied an id AFTER we captured
+  // its token (the mark-done-then-feedback race) keeps a newer token and is
+  // left dirty for the coalesced follow-up push — so its fields aren't dropped.
+  await clearDirty('task', pushedTokens)
   if (changes.length) await appendChanges(ids.rootId, changes)
-  return pushedIds.length
+  return Object.keys(pushedTokens).length
 }
 
 /**
@@ -899,16 +906,23 @@ export async function pushNotes() {
   const localById = new Map(localNotes.map(n => [n.id, n]))
   const deviceId = await getDeviceId()
   const changes = []
-  const pushedIds = []
+  // { id: token } shipped — see pushTasks for the mid-push re-dirty rationale.
+  const pushedTokens = {}
 
   for (const id of dirtyIds) {
+    const token = dirty[id]
     const local = localById.get(id)
     if (!local) {
       // Local row gone but still dirty — drop from dirty set; the soft-delete
       // tombstone (if any) was pushed in an earlier iteration.
-      pushedIds.push(id)
+      pushedTokens[id] = token
       continue
     }
+
+    // Re-read fresh right before serializing: the top-of-function snapshot can
+    // be stale if a second edit to the same note landed after it (same
+    // fire-and-forget race as pushTasks). Ship the latest fields.
+    const fresh = (await getNoteRaw(id)) || local
 
     // Base doc: own bytes, else adopt remote .bin root, else createDoc.
     // (Same disjoint-root avoidance as pushTasks/pushJournal.)
@@ -918,30 +932,32 @@ export async function pushNotes() {
       doc = await loadDoc(existingBytes)
     } else {
       const remoteBytes = await readEntityBinFile(ids.notesFolderId, id).catch(() => null)
-      doc = remoteBytes ? await loadDoc(remoteBytes) : await createDoc('note', local)
+      doc = remoteBytes ? await loadDoc(remoteBytes) : await createDoc('note', fresh)
     }
-    doc = await applyNoteFields(doc, local)
+    doc = await applyNoteFields(doc, fresh)
     const bytes = await saveDoc(doc)
 
     // Persist bytes locally before upload so a mid-push crash can't leave the
     // remote ahead of the local doc.
-    await putNoteWithDoc(local, bytes, { fromSync: true })
+    await putNoteWithDoc(fresh, bytes, { fromSync: true })
 
     await writeEntityBinFile(ids.notesFolderId, id, bytes)
 
     changes.push({
       type: 'note',
       id,
-      op: local.deleted ? 'delete' : 'upsert',
+      op: fresh.deleted ? 'delete' : 'upsert',
       at: new Date().toISOString(),
       deviceId,
     })
-    pushedIds.push(id)
+    pushedTokens[id] = token
   }
 
-  await clearDirty('note', pushedIds)
+  // Compare-and-clear by token (see pushTasks): a note re-edited mid-push keeps
+  // its newer token and is re-shipped by the coalesced follow-up push.
+  await clearDirty('note', pushedTokens)
   if (changes.length) await appendChanges(ids.rootId, changes)
-  return pushedIds.length
+  return Object.keys(pushedTokens).length
 }
 
 /**
@@ -958,6 +974,7 @@ export async function pushConfig() {
   if (!ids?.configFolderId) return null
   const dirty = await getDirty('config')
   if (!dirty.config) return null
+  const token = dirty.config
 
   const local = await getConfig()
   const existingBytes = await getConfigDocBytes()
@@ -978,7 +995,8 @@ export async function pushConfig() {
   await writeEntityBinFile(ids.configFolderId, 'config', bytes)
 
   // Clear dirty before the manifest append (same rationale as pushTasks).
-  await clearDirty('config', ['config'])
+  // Token-gated: a setting changed mid-push keeps a newer token and re-ships.
+  await clearDirty('config', { config: token })
   await appendChanges(ids.rootId, [{
     type: 'config', id: 'config', op: 'upsert',
     at: new Date().toISOString(), deviceId: await getDeviceId(),
@@ -1006,6 +1024,12 @@ export async function pushJournal(dayDoc) {
   }
   const date = dayKey(dayDoc.date)
   const source = { ...dayDoc, date }
+
+  // Capture the dirty token for this date NOW, before any await. The clear at
+  // the end is gated on it: a journal edit that re-dirties this date mid-push
+  // bumps the token, so its clear is skipped and the next push re-ships it
+  // (same lost-update fix as pushTasks).
+  const dirtyToken = (await getDirty('journal'))[date]
 
   // Guard: never push a brand-new, never-edited EMPTY day. Opening "today" on a
   // device calls this (loadJournal → mergeAndPushJournal) even when the user has
@@ -1064,7 +1088,11 @@ export async function pushJournal(dayDoc) {
 
   // Resolved successfully — drop from the per-day dirty set (the markDirty
   // call inside putJournal on the user-edit path adds an entry here).
-  await clearDirty('journal', [date]).catch(() => {})
+  // Token-gated: if the day was re-edited mid-push it carries a newer token and
+  // stays dirty for the next push. If it wasn't dirty at entry (loadJournal
+  // pull-push), dirtyToken is undefined and the compare-and-clear only removes
+  // the date when it's STILL absent — so a concurrent edit is never wiped.
+  await clearDirty('journal', { [date]: dirtyToken }).catch(() => {})
   return merged
 }
 

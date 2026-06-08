@@ -218,6 +218,13 @@ export async function getAllNotesRaw() {
   return all.map(stripDoc)
 }
 
+// Single-note fresh read (mirrors getTask). Used by pushNotes to re-read the
+// row right before serializing, so a second edit landing mid-push isn't lost.
+export async function getNoteRaw(id) {
+  const db = await getDB()
+  return stripDoc(await db.get(STORE_NOTES, id))
+}
+
 /**
  * Phase C: per-note Automerge document bytes live alongside the materialized
  * row under the `_doc` key. Same shape as task doc bytes.
@@ -417,21 +424,37 @@ export async function putMeta(key, value) {
  * Per-entity dirty tracking for Phase B push path. The bulk push helpers
  * (`pushTasks`/`pushNotes`/etc) no longer rewrite the entire array — they
  * drain this set and push only the touched ids, then append a single manifest
- * batch. Keyed in meta as `dirty_<type>` → { [id]: true }.
+ * batch. Keyed in meta as `dirty_<type>` → { [id]: token }.
  *
- * Race-safe by virtue of how it's used: `markDirty` is called *before* the
- * push fires (puts inside store actions, push scheduled via withRetry). If a
- * push completes and then another mutation happens, the next push picks the
- * new id up. The `clearDirty(ids)` call only removes the ids we just pushed,
- * so a write that landed mid-push survives into the next round.
+ * The VALUE is a strictly-increasing dirty TOKEN, not a bare `true`. This is
+ * load-bearing: a push is fire-and-forget from updateTask, so a SECOND edit to
+ * the same id can land WHILE a push is mid-flight (mark-done, then type
+ * feedback ~1s later — proven from device logs). With a boolean flag the second
+ * markDirty is a no-op (flag already set), and the first push's clearDirty wipes
+ * the flag the second edit was relying on — so the coalesced follow-up push
+ * finds nothing dirty and the second edit NEVER reaches Drive (the "stale
+ * feedback on the other device" data loss). With a token, the second markDirty
+ * bumps the value; the push captures the token it actually shipped and
+ * clearDirty only removes the id when the stored token still equals it. A newer
+ * edit's token survives → the coalesced push re-ships it.
  */
+let dirtyTokenSeq = 0
+function nextDirtyToken() {
+  // Process-monotonic + wall-clock so it's strictly increasing within a session
+  // and doesn't collide on sub-ms double-writes (Date.now() alone can repeat).
+  dirtyTokenSeq += 1
+  return Date.now() * 1000 + (dirtyTokenSeq % 1000)
+}
+
 export async function markDirty(type, id) {
   if (!id) return
   const db = await getDB()
   const key = `dirty_${type}`
   const current = (await db.get(STORE_META, key)) || {}
-  if (current[id]) return
-  current[id] = true
+  // Always bump the token, even if already dirty: a second edit mid-push must
+  // produce a NEWER token than the one the in-flight push captured, so its
+  // clearDirty can't claim this edit was already shipped.
+  current[id] = nextDirtyToken()
   await db.put(STORE_META, current, key)
 }
 
@@ -440,12 +463,25 @@ export async function getDirty(type) {
   return (await db.get(STORE_META, `dirty_${type}`)) || {}
 }
 
-export async function clearDirty(type, ids) {
+/**
+ * Clear dirty entries after a successful push. `pushed` is either:
+ *  - an array of ids → unconditional clear (singletons / callers that don't
+ *    track per-id tokens), or
+ *  - a { id: token } map → compare-and-clear: only remove an id when its stored
+ *    token STILL equals the token captured at push time. If a concurrent edit
+ *    bumped the token mid-push, the entry survives so the next push re-ships it.
+ */
+export async function clearDirty(type, pushed) {
+  const isMap = pushed && !Array.isArray(pushed)
+  const ids = isMap ? Object.keys(pushed) : pushed
   if (!ids?.length) return
   const db = await getDB()
   const key = `dirty_${type}`
   const current = (await db.get(STORE_META, key)) || {}
-  for (const id of ids) delete current[id]
+  for (const id of ids) {
+    if (isMap && current[id] !== pushed[id]) continue // re-dirtied mid-push — keep
+    delete current[id]
+  }
   await db.put(STORE_META, current, key)
 }
 
