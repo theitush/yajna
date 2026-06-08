@@ -27,7 +27,7 @@ import { migrateAudioInlineIfNeeded } from './audioInlineMigration'
 import {
   createDoc, loadDoc, saveDoc, mergeDoc, sharesAncestry,
   applyTaskFields, materializeTaskRow, mergeTaskLWW,
-  applyNoteFields, materializeNoteRow,
+  applyNoteFields, materializeNoteRow, mergeNoteLWW,
   materializeJournalRow,
   applyConfigFields, materializeConfigRow,
 } from './automergeDoc'
@@ -376,7 +376,9 @@ export async function mergeNoteDocs(noteDocs, changedMap) {
       const localDoc = await loadDoc(localBytes)
       // Heal disjoint-root local docs (see mergeJournalDocs for rationale).
       if (await sharesAncestry(localDoc, remoteDoc)) {
-        mergedDoc = await mergeDoc(localDoc, remoteDoc)
+        // Per-field wall-clock LWW for scalar fields (blocks stay on Automerge's
+        // id-keyed merge). Same actor-id-not-time fix as tasks — see mergeTaskLWW.
+        mergedDoc = await mergeNoteLWW(localDoc, remoteDoc)
       } else {
         mergedDoc = newerDoc(localDoc, remoteDoc, materializeNoteRow)
       }

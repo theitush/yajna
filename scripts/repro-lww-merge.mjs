@@ -177,12 +177,48 @@ console.log('\n=== C) REAL src/ functions (applyTaskFields + resolveTaskLWW) —
 }
 const realFailures = failures
 
+// D) NOTES use the same fix (mergeNoteLWW), but `blocks` must be left to
+// Automerge's id-keyed merge — scalar LWW must NOT clobber the note body.
+const { applyNoteFields, mergeNoteLWW } = await import('../src/services/automergeDoc.js')
+failures = 0
+console.log('\n=== D) REAL notes (applyNoteFields + mergeNoteLWW) — expected PASS ===')
+{
+  const A2 = await import('@automerge/automerge')
+  const C0 = '2026-06-06T09:00:00.000Z'
+  const noteEdit = async (bytes, patch, atMs) => {
+    const doc = A2.load(bytes)
+    const row = {}
+    for (const [k, v] of Object.entries(doc)) { if (k !== '_fts') row[k] = JSON.parse(JSON.stringify(v)) }
+    Object.assign(row, patch, { updatedAt: new Date(atMs).toISOString() })
+    return A2.save(await applyNoteFields(doc, row))
+  }
+  // Base note with a title + one body block.
+  let base = A2.save(await createDoc('note', {
+    id: 'n1', title: 'orig', createdAt: C0, updatedAt: '2026-06-06T10:00:00.000Z',
+    blocks: [{ id: 'b1', html: '<p>body</p>', deleted: false, updatedAt: C0, order: 'a0' }],
+  }))
+  // Laptop retitles (older); phone edits the body block (newer). Title LWW must
+  // pick laptop's title; the body edit must survive (blocks not LWW-clobbered).
+  const laptop = await noteEdit(base, { title: 'laptop title' }, ms('2026-06-06T16:48:00.000Z'))
+  const phone = await noteEdit(base, {
+    blocks: [{ id: 'b1', html: '<p>phone body</p>', deleted: false, updatedAt: '2026-06-06T20:18:00.000Z', order: 'a0' }],
+  }, ms('2026-06-06T20:18:00.000Z'))
+  const m = await mergeNoteLWW(A2.load(laptop), A2.load(phone))
+  const mb = await mergeNoteLWW(A2.load(phone), A2.load(laptop))
+  const body = (d) => (d.blocks || []).find(b => b.id === 'b1')?.html
+  check('D-S1 title LWW = laptop (older but only title edit)', m.title === 'laptop title', `title=${m.title}`)
+  check('D-S1 body block preserved (not LWW-clobbered)', body(m) === '<p>phone body</p>', `body=${body(m)}`)
+  check('D-S1 converges both directions', m.title === mb.title && body(m) === body(mb), `LP={${m.title},${body(m)}} PL={${mb.title},${body(mb)}}`)
+}
+const noteFailures = failures
+
 console.log('\n=== SUMMARY ===')
 console.log(`  current mechanism failures: ${currentFailures}  (bug reproduced if > 0)`)
 console.log(`  prototype fix failures:     ${fixedFailures}  (prototype correct if 0)`)
-console.log(`  REAL src/ failures:         ${realFailures}  (shipped code correct if 0)`)
-if (currentFailures > 0 && fixedFailures === 0 && realFailures === 0) {
-  console.log('  RESULT: ✓ bug reproduced AND fix proven in real code')
+console.log(`  REAL task src/ failures:    ${realFailures}  (shipped code correct if 0)`)
+console.log(`  REAL note src/ failures:    ${noteFailures}  (shipped code correct if 0)`)
+if (currentFailures > 0 && fixedFailures === 0 && realFailures === 0 && noteFailures === 0) {
+  console.log('  RESULT: ✓ bug reproduced AND task+note fix proven in real code')
   process.exit(0)
 } else {
   console.log('  RESULT: ✗ unexpected — investigate')

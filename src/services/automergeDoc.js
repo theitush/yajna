@@ -39,7 +39,8 @@ const TASK_NON_FIELDS = new Set(['_doc', '_fts'])
 // Config is a flat key/value map (singleton entity). `_doc` is the only
 // non-business field; everything else is a real setting.
 const CONFIG_NON_FIELDS = new Set(['_doc'])
-const NOTE_NON_FIELDS = new Set(['_doc', 'body'])
+// `_fts` is the per-field LWW timestamp map (same as tasks — see TASK_NON_FIELDS).
+const NOTE_NON_FIELDS = new Set(['_doc', 'body', '_fts'])
 // Per-block fields. `id` is the stable identifier (the join key across devices).
 // `html` is the content (field-level LWW per block). `order` is a fractional-
 // index key (see blocks.js fiBetween): ordering is carried by this FIELD, not by
@@ -229,12 +230,34 @@ export async function changeDoc(doc, mutator) {
 export async function applyTaskFields(doc, source) {
   const Automerge = await getAutomerge()
   const fields = shapeTaskFields(source)
-  // Wall-clock stamp for per-field LWW. Automerge's own conflict resolution is
-  // by actor-id, NOT time, so a plain merge can revert a newer concurrent edit
-  // (and `updatedAt` runs backwards). We record, per field, the wall-clock time
-  // it last actually changed in `_fts`; mergeTaskLWW keeps the value whose
-  // `_fts` is newest. Use the row's own updatedAt (stable across re-pushes of
-  // the same edit), falling back to now for a fresh edit with no clock.
+  return Automerge.change(doc, (d) => stampLWW(d, fields, source))
+}
+
+/**
+ * Per-field wall-clock LWW merge of two shared-ancestry task docs. See
+ * lwwMergeFields for the full rationale (the bare-Automerge.merge actor-id bug).
+ */
+export async function mergeTaskLWW(localDoc, remoteDoc) {
+  const Automerge = await getAutomerge()
+  const merged = Automerge.merge(Automerge.clone(localDoc), remoteDoc)
+  return Automerge.change(merged, (d) => lwwMergeFields(d, localDoc, remoteDoc))
+}
+
+/**
+ * Write side of per-field wall-clock LWW. Records, per field, the wall-clock
+ * time it last actually changed in `_fts`, so the merge side (lwwMergeFields)
+ * can keep the value whose `_fts` is newest — Automerge's own conflict
+ * resolution is by actor-id, NOT time, so a plain merge can revert a newer
+ * concurrent edit (and `updatedAt` runs backwards). Runs INSIDE an
+ * Automerge.change on doc `d`; `fields` is the shaped business-field map;
+ * `source` supplies the wall clock (updatedAt) and the stable createdAt floor.
+ * `skipKeys` lists fields whose conflict resolution is NOT scalar LWW (e.g. a
+ * note's `blocks` list, merged by Automerge's own id-keyed reconcile) — they're
+ * still assigned, just not stamped/LWW-resolved.
+ */
+function stampLWW(d, fields, source, skipKeys = null) {
+  // Use the row's own updatedAt (stable across re-pushes of the same edit),
+  // falling back to now for a fresh edit with no clock.
   const stamp = ((t) => Number.isFinite(t) && t > 0 ? t : Date.now())(
     new Date(source?.updatedAt || 0).getTime()
   )
@@ -242,58 +265,55 @@ export async function applyTaskFields(doc, source) {
   // docs, or fields untouched since creation). MUST be stable + identical on
   // every device — otherwise an untouched field would look freshly-written on
   // one branch and wrongly win a merge. `createdAt` is set once at creation and
-  // shared via the common Automerge ancestor, so it's the natural floor. Clamp
-  // to `stamp` so a (mis)dated createdAt in the future can't out-rank a real
-  // edit; an untouched field's clock must never exceed this edit's time.
+  // shared via the common Automerge ancestor. Clamp to `stamp` so a (mis)dated
+  // future createdAt can't out-rank a real edit.
   const floor = Math.min(
     stamp,
     ((t) => Number.isFinite(t) && t > 0 ? t : 0)(new Date(source?.createdAt || 0).getTime())
   )
-  return Automerge.change(doc, (d) => {
-    if (!d._fts) d._fts = {}
-    // Remove keys not in source. Stamp the deletion with `stamp` so a delete
-    // (e.g. clearing `feedback`) wins over a concurrent older edit by recency.
-    for (const k of Object.keys(d)) {
-      if (k === '_fts') continue
-      if (!(k in fields)) {
-        delete d[k]
-        d._fts[k] = stamp
-      }
+  if (!d._fts) d._fts = {}
+  // Remove keys not in source. Stamp the deletion with `stamp` so a delete
+  // (e.g. clearing `feedback`) wins over a concurrent older edit by recency.
+  for (const k of Object.keys(d)) {
+    if (k === '_fts' || (skipKeys && skipKeys.has(k))) continue
+    if (!(k in fields)) {
+      delete d[k]
+      d._fts[k] = stamp
     }
-    // Assign / overwrite. Only mutate (and bump `_fts`) when the value actually
-    // changed — an untouched field keeps its existing stamp so it can't beat a
-    // real concurrent edit. Fields with no stamp yet get the stable `floor`.
-    for (const [k, v] of Object.entries(fields)) {
-      if (!shallowEqual(d[k], v)) {
-        d[k] = v
-        d._fts[k] = stamp
-      } else if (d._fts[k] == null) {
-        d._fts[k] = floor
-      }
+  }
+  // Assign / overwrite. Only mutate (and bump `_fts`) when the value actually
+  // changed — an untouched field keeps its existing stamp so it can't beat a
+  // real concurrent edit. Fields with no stamp yet get the stable `floor`.
+  for (const [k, v] of Object.entries(fields)) {
+    if (skipKeys && skipKeys.has(k)) continue
+    if (!shallowEqual(d[k], v)) {
+      d[k] = v
+      d._fts[k] = stamp
+    } else if (d._fts[k] == null) {
+      d._fts[k] = floor
     }
-  })
+  }
 }
 
 /**
- * Per-field wall-clock LWW merge of two shared-ancestry task docs. Replaces a
- * bare `Automerge.merge`, which resolves each concurrent scalar by actor-id
- * order (not time) — so a genuinely newer edit can lose, and `updatedAt` can
- * resolve to a different actor than the field that "won", running backwards and
- * corrupting the disjoint-root tiebreak on the next device.
+ * Merge side of per-field wall-clock LWW. Replaces a bare `Automerge.merge`,
+ * which resolves each concurrent scalar by actor-id order (not time) — so a
+ * genuinely newer edit can lose, and `updatedAt` can resolve to a different
+ * actor than the field that "won", running backwards and corrupting the
+ * disjoint-root tiebreak on the next device.
  *
- * We still `Automerge.merge` for history convergence (so the result descends
- * from both and future merges stay clean), then overwrite each field with the
- * value from whichever PARENT's `_fts[field]` is newer. Reading from the parents
- * (not the merged doc) is what makes this desync-proof: the merged doc may have
+ * The caller `Automerge.merge`s for history convergence first; this then runs
+ * INSIDE a follow-up Automerge.change on the merged doc `d`, overwriting each
+ * field with the value from whichever PARENT's `_fts[field]` is newer. Reading
+ * from the parents (not `d`) is what makes it desync-proof: `d` may have
  * collapsed `field` and `_fts[field]` to different actors, but each parent's
  * pair is internally consistent. Fields untouched on a branch carry their
  * ancestor stamp (or `createdAt` floor), so they never beat a real edit. Ties
- * go to the remote (stable, matches newerDoc). Both devices compare the same two
- * parents, so they converge to an identical doc. Returns the merged doc.
+ * go to remote (stable, matches newerDoc). Both devices compare the same two
+ * parents → converge to an identical doc. `skipKeys` (e.g. a note's `blocks`)
+ * are left exactly as Automerge.merge produced them.
  */
-export async function mergeTaskLWW(localDoc, remoteDoc) {
-  const Automerge = await getAutomerge()
-  const merged = Automerge.merge(Automerge.clone(localDoc), remoteDoc)
+function lwwMergeFields(d, localDoc, remoteDoc, skipKeys = null) {
   const lf = localDoc._fts || {}
   const rf = remoteDoc._fts || {}
   const lFloor = new Date(localDoc.createdAt || 0).getTime()
@@ -301,33 +321,33 @@ export async function mergeTaskLWW(localDoc, remoteDoc) {
   const lUpd = new Date(localDoc.updatedAt || 0).getTime()
   const rUpd = new Date(remoteDoc.updatedAt || 0).getTime()
   const keys = new Set(
-    [...Object.keys(localDoc), ...Object.keys(remoteDoc)].filter(k => k !== '_fts')
+    [...Object.keys(localDoc), ...Object.keys(remoteDoc)].filter(
+      k => k !== '_fts' && !(skipKeys && skipKeys.has(k))
+    )
   )
-  return Automerge.change(merged, (d) => {
-    if (!d._fts) d._fts = {}
-    for (const k of keys) {
-      // Per-field stamp; fall back to the branch's createdAt floor, never to
-      // updatedAt (that would make every untouched field look freshly written).
-      const lt = lf[k] ?? lFloor
-      const rt = rf[k] ?? rFloor
-      const localWins = lt > rt // tie -> remote
-      const winner = localWins ? localDoc : remoteDoc
-      const wt = localWins ? lt : rt
-      if (k in winner) {
-        const v = cloneForAutomerge(winner[k])
-        if (!shallowEqual(d[k], v)) d[k] = v
-      } else if (k in d) {
-        delete d[k] // winner deleted this field
-      }
-      if (d._fts[k] !== wt) d._fts[k] = wt
+  if (!d._fts) d._fts = {}
+  for (const k of keys) {
+    // Per-field stamp; fall back to the branch's createdAt floor, never to
+    // updatedAt (that would make every untouched field look freshly written).
+    const lt = lf[k] ?? lFloor
+    const rt = rf[k] ?? rFloor
+    const localWins = lt > rt // tie -> remote
+    const winner = localWins ? localDoc : remoteDoc
+    const wt = localWins ? lt : rt
+    if (k in winner) {
+      const v = cloneForAutomerge(winner[k])
+      if (!shallowEqual(d[k], v)) d[k] = v
+    } else if (k in d) {
+      delete d[k] // winner deleted this field
     }
-    // updatedAt is a field too, but make sure the row clock never goes backwards
-    // relative to either parent — it's the disjoint-root tiebreak key elsewhere.
-    const newestUpd = Math.max(lUpd, rUpd)
-    if (new Date(d.updatedAt || 0).getTime() < newestUpd) {
-      d.updatedAt = new Date(newestUpd).toISOString()
-    }
-  })
+    if (d._fts[k] !== wt) d._fts[k] = wt
+  }
+  // updatedAt is a field too, but make sure the row clock never goes backwards
+  // relative to either parent — it's the disjoint-root tiebreak key elsewhere.
+  const newestUpd = Math.max(lUpd, rUpd)
+  if (new Date(d.updatedAt || 0).getTime() < newestUpd) {
+    d.updatedAt = new Date(newestUpd).toISOString()
+  }
 }
 
 function shallowEqual(a, b) {
@@ -417,19 +437,16 @@ function dedupeLiveBlocksById(blocks) {
  *    is the one expensive case; for steady-state editing the editor reports
  *    the same order it received from the previous render and we no-op.
  */
+const NOTE_LWW_SKIP = new Set(['blocks'])
+
 export async function applyNoteFields(doc, source) {
   const Automerge = await getAutomerge()
   const fields = shapeNoteFields(source)
   return Automerge.change(doc, (d) => {
-    // Top-level fields (everything except `blocks`).
-    for (const k of Object.keys(d)) {
-      if (k === 'blocks') continue
-      if (!(k in fields)) delete d[k]
-    }
-    for (const [k, v] of Object.entries(fields)) {
-      if (k === 'blocks') continue
-      if (!shallowEqual(d[k], v)) d[k] = v
-    }
+    // Top-level scalar fields (title, tags, deleted, …): per-field wall-clock
+    // LWW, same as tasks. `blocks` is skipped — it's a CRDT list reconciled by
+    // the id-keyed passes below + Automerge merge, NOT scalar LWW.
+    stampLWW(d, fields, source, NOTE_LWW_SKIP)
 
     // Blocks: id-keyed reconcile.
     if (!Array.isArray(d.blocks)) d.blocks = []
@@ -474,6 +491,21 @@ export async function applyNoteFields(doc, source) {
 }
 
 /**
+ * Per-field wall-clock LWW merge of two shared-ancestry note docs. Same fix as
+ * mergeTaskLWW (bare Automerge.merge resolves scalars by actor-id, not time, so
+ * a newer edit reverts). `blocks` is left to Automerge's own merge — the
+ * append-only + id-keyed-reconcile machinery (see applyNoteFields) is the
+ * correct CRDT resolution for the note body; overwriting it wholesale by LWW
+ * would reintroduce the block-loss/duplication bug. Only scalar fields (title,
+ * tags, deleted, …) get per-field LWW.
+ */
+export async function mergeNoteLWW(localDoc, remoteDoc) {
+  const Automerge = await getAutomerge()
+  const merged = Automerge.merge(Automerge.clone(localDoc), remoteDoc)
+  return Automerge.change(merged, (d) => lwwMergeFields(d, localDoc, remoteDoc, NOTE_LWW_SKIP))
+}
+
+/**
  * Sort materialized blocks by their fractional-index `order` key (id tiebreak,
  * matching blocks.js sortByOrder so HTML and row order agree). The Automerge
  * list is append-only, so its physical order is meaningless — `order` is the
@@ -510,7 +542,7 @@ export function materializeNoteRow(doc) {
   if (!doc) return null
   const out = {}
   for (const [k, v] of Object.entries(doc)) {
-    if (k === 'blocks') continue
+    if (k === 'blocks' || k === '_fts') continue
     out[k] = plainCopy(v)
   }
   // Blocks: filter nothing here — the UI's getNotes filters by note-level
