@@ -172,9 +172,26 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Render external changes into the editor. Keyed on currentDayRev (bumped
-  // only by navigation/load, sync-poll merge, or audio restore), so the effect
-  // runs for genuine remote content and never for the echo of our own save.
+  // Render external changes into the editor. Keyed on the STORE CONTENT itself
+  // (`content`), not only on the `currentDayRev` side-channel counter.
+  //
+  // Why: the editor's source of truth is the store's currentDay. currentDayRev
+  // was a hand-bumped "external origin" signal, but a poll-merge only bumps it
+  // when the merge changed content vs the store (syncEngine contentChanged
+  // guard). Once the editor drifts behind a store that already matches Drive —
+  // e.g. the store updated while we were mid-type, or a rev bump landed during a
+  // setContent race — every later poll sees store==Drive (blocksChanged:false),
+  // never bumps rev, so this effect never re-ran and the editor stayed frozen
+  // until a FOREIGN write finally flipped the rev gate. That is the "stale on
+  // phone, fresh the instant I opened the laptop" bug (proven 2026-06-08: store
+  // remoteLen 4403 vs editor editorLen 3444 for the whole stale window).
+  // Depending on the actual rendered content makes this a reconcile-against-
+  // source, so it re-checks whenever the store text changes — no writer has to
+  // remember to bump a counter. currentDayRev stays in deps so navigation/audio-
+  // restore can force a repaint even when the string is unchanged. This does NOT
+  // reintroduce the typing lag (the worker/debounce work): the two guards below
+  // still bail on mid-type (no cursor reset) and on identical content (no
+  // rebuild on our own save echo) regardless of what triggered the effect.
   useEffect(() => {
     if (!editor) return
     const remoteContent = dayDoc ? blocksToHtml(dayDoc.blocks) : ''
@@ -206,7 +223,7 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
     if (editor.getHTML() === remoteContent) return
     editor.commands.setContent(remoteContent, { emitUpdate: false })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor, currentDayRev])
+  }, [editor, content, currentDayRev])
 
   useEffect(() => {
     if (!onInsertText) return
