@@ -297,6 +297,10 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
       if (!!mergedRow.title !== !!l.title) changedFields.push('title')
       if ((mergedRow.explanation || '') !== (l.explanation || '')) changedFields.push('explanation')
       if ((mergedRow.updatedAt || '') !== (l.updatedAt || '')) changedFields.push('updatedAt')
+      // Probe: `order` carries task position. The "stale order on the other
+      // device" report needs to know whether the merge actually adopted the
+      // remote's new order or kept the local one — order isn't checked above.
+      if ((mergedRow.order ?? null) !== (l.order ?? null)) changedFields.push('order')
       if (changedFields.length) {
         const path = localBytes ? (await sharesAncestry(await loadDoc(localBytes), remoteDoc) ? 'lww' : 'newerDoc') : (l ? 'adoptRemote' : 'remote')
         const updBackwards = new Date(mergedRow.updatedAt || 0).getTime() < new Date(l.updatedAt || 0).getTime()
@@ -304,6 +308,7 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
           id: id.slice(0, 8), path, changedFields, updBackwards,
           localStatus: l.status, mergedStatus: mergedRow.status,
           localUpd: l.updatedAt, mergedUpd: mergedRow.updatedAt,
+          localOrder: l.order ?? null, mergedOrder: mergedRow.order ?? null,
         })
       }
     }

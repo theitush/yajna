@@ -131,7 +131,17 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
 
   const commitEdits = useCallback(() => {
     const titleVal = String(titleRef.current?.innerText || '').trim()
-    if (!titleVal && !editExplanation.trim() && !editFeedback.trim() && !editTags.trim()) {
+    // Auto-delete ONLY a still-blank brand-new card. Gate on the PERSISTED title
+    // (task.title), never on the live contentEditable read alone: when a second
+    // card is created in quick succession, its mousedown fires this card's
+    // click-outside while the title element is mid-remount (the `key` flips on
+    // editingTitle) so titleRef reads empty for a tick — deleting a task whose
+    // title was already saved. Drive still has the upsert, so the next poll
+    // resurrects it: the "created two tasks, one vanished then reappeared" bug.
+    const persistedTitle = (task.title || '').trim()
+    const isBlank = !titleVal && !persistedTitle
+      && !editExplanation.trim() && !editFeedback.trim() && !editTags.trim()
+    if (isBlank) {
       deleteTask(task.id)
       return
     }

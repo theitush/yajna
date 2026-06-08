@@ -277,6 +277,16 @@ const useAppStore = create((set, get) => ({
       return next
     })
     if (changed.length === 0) return
+    // Probe: which ids got a new order, and to what. `order` here is the index
+    // within the (filtered) view that produced `orderedIds`, so two devices with
+    // different visible subsets can stamp divergent orders for the same id — the
+    // suspected "order stale on the other device" cause. Logs the write so the
+    // next merge log (mergeTaskDocs CHANGED local: localOrder/mergedOrder) can be
+    // paired against what was actually pushed.
+    logSync('reorderTasks', {
+      orderedIds: orderedIds.map(id => id.slice(0, 8)),
+      changed: changed.map(t => ({ id: t.id.slice(0, 8), order: t.order })),
+    })
     set({ tasks: updated })
     putTasks(changed).then(() => {
       if (get().driveEnabled) withRetry(pushTasks)()
