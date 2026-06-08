@@ -28,7 +28,7 @@ import {
   createDoc, loadDoc, saveDoc, mergeDoc, sharesAncestry,
   applyTaskFields, materializeTaskRow, mergeTaskLWW,
   applyNoteFields, materializeNoteRow, mergeNoteLWW,
-  materializeJournalRow,
+  materializeJournalRow, reconcileLiveRow,
   applyConfigFields, materializeConfigRow,
 } from './automergeDoc'
 import { journalApply, journalMerge } from './automergeWorkerClient'
@@ -204,14 +204,6 @@ export async function mergeConfigDoc(configDoc) {
 export async function mergeTaskDocs(taskDocs, changedMap) {
   const local = await getAllTasksRaw()
   const localById = new Map(local.map(t => [t.id, t]))
-  // Locally-dirty ids carry an unsynced row edit (e.g. made while sync was
-  // paused/offline). updateTask owns row fields and only marks the row dirty —
-  // it does NOT re-serialize the doc until pushTasks runs. So a pull that lands
-  // first (resume does pull-before-push) would materialize the row from the
-  // stale doc and OVERWRITE the user's edit locally, then push the reverted
-  // value. We must fold the dirty local row's fields onto the merged doc so the
-  // edit survives the pull and is what gets pushed. (canonical ownership split)
-  const dirtyTasks = await getDirty('task').catch(() => ({}))
   const writeRows = []
   const writeDocBytes = new Map() // id → bytes
   for (const { id, bytes } of taskDocs) {
@@ -269,15 +261,26 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
       mergedDoc = remoteDoc
     }
 
-    // If this id has an unsynced local edit (dirty), the local ROW is the source
-    // of truth for its owned fields — the doc above may still be pre-edit (the
-    // offline-edit-then-resume revert bug). Re-apply the local row's fields so
-    // the merge can't clobber the user's pending edit and pushTasks ships it.
-    if (l && dirtyTasks[id]) {
-      mergedDoc = await applyTaskFields(mergedDoc, l)
-      logSync('mergeTaskDocs preserved dirty local edit', {
-        id: id.slice(0, 8), status: l.status,
-      })
+    // Re-assert the live ROW's authority over the merge. updateTask owns row
+    // fields and only marks dirty — it does NOT re-serialize the doc until
+    // pushTasks runs, so the ROW can be NEWER than the doc bytes we just merged
+    // (offline/paused edits, AND the single-device poll-vs-push race where a
+    // force-poll merge lands before push re-serializes). materializing the merge
+    // over a newer row would revert the user's edit (status flips back, typed
+    // text vanishes, updatedAt backwards). reconcileLiveRow re-folds the row
+    // ONLY when it's strictly newer than the merged doc, stamping `_fts` at the
+    // row clock so the edit also wins the next cross-device merge and pushTasks
+    // ships it. The dirty flag can't gate this (pushTasks clearDirty()s before
+    // the racing merge reads it) — recency is the timing-independent authority.
+    // (proven: scripts/repro-row-ahead-merge.mjs)
+    if (l) {
+      const before = mergedDoc
+      mergedDoc = await reconcileLiveRow(mergedDoc, l, applyTaskFields, materializeTaskRow)
+      if (mergedDoc !== before) {
+        logSync('mergeTaskDocs row authority re-fold', {
+          id: id.slice(0, 8), status: l.status, rowUpd: l.updatedAt,
+        })
+      }
     }
 
     const mergedBytes = await saveDoc(mergedDoc)
@@ -386,6 +389,16 @@ export async function mergeNoteDocs(noteDocs, changedMap) {
       mergedDoc = await applyNoteFields(remoteDoc, l)
     } else {
       mergedDoc = remoteDoc
+    }
+
+    // Re-assert the live ROW's authority — same row-ahead-of-doc skew as tasks
+    // (updateNote writes the row + defers doc serialization to pushNotes), so a
+    // poll-merge can land before the edit is in the doc. applyNoteFields re-folds
+    // scalars by LWW and reconciles `blocks` id-keyed (append-only, never
+    // tombstones a freshly-merged remote block), so the body is body-safe.
+    // (proven: scripts/repro-row-ahead-merge.mjs section C)
+    if (l) {
+      mergedDoc = await reconcileLiveRow(mergedDoc, l, applyNoteFields, materializeNoteRow)
     }
 
     const mergedBytes = await saveDoc(mergedDoc)

@@ -244,6 +244,42 @@ export async function mergeTaskLWW(localDoc, remoteDoc) {
 }
 
 /**
+ * Re-assert the live IndexedDB ROW's authority over a just-merged doc.
+ *
+ * A task/note is stored as two views of one record: the plain ROW (owned by the
+ * UI write path, updateTask/putNote) and the Automerge `_doc` bytes (owned by
+ * the push path, which re-serializes the row via applyFields and stamps `_fts`).
+ * updateTask writes ONLY the row and defers doc serialization to pushTasks — so
+ * for a window the row is NEWER than the doc. A poll-merge that lands in that
+ * window reads the STALE doc, and even a correct per-field LWW merge can only
+ * pick between two values that are both behind the live row. Materializing that
+ * merge back over the row then reverts the user's edit (status flips back, typed
+ * text vanishes, updatedAt runs backwards — the live single-device regression).
+ *
+ * The dirty flag can't gate this reliably: pushTasks calls clearDirty() before
+ * the racing poll-merge reads the dirty set, so the guard misses. The correct,
+ * timing-independent invariant is data-authority, not scheduling: the ROW is
+ * authoritative for its owned fields until the doc catches up. So if the live
+ * row is strictly newer than the merged doc, re-fold the row onto the merge
+ * (applyFields stamps `_fts` at the row's clock, so the edit also wins the next
+ * cross-device merge and pushTasks ships it). If the doc is current or ahead —
+ * the normal case, where push already serialized a newer state and the row is
+ * just a stale read — leave the merge untouched.
+ *
+ * `applyFields` is the type's row->doc serializer (applyTaskFields/applyNoteFields);
+ * `materialize` reads the merged doc's updatedAt for the recency compare.
+ */
+export async function reconcileLiveRow(mergedDoc, liveRow, applyFields, materialize) {
+  if (!liveRow) return mergedDoc
+  const rowUpd = new Date(liveRow.updatedAt || 0).getTime()
+  const docUpd = new Date(materialize(mergedDoc)?.updatedAt || 0).getTime()
+  // Strictly newer row = an unserialized local edit the merge couldn't see.
+  // Equal/older row = doc is current or ahead; nothing to re-assert.
+  if (rowUpd <= docUpd) return mergedDoc
+  return applyFields(mergedDoc, liveRow)
+}
+
+/**
  * Write side of per-field wall-clock LWW. Records, per field, the wall-clock
  * time it last actually changed in `_fts`, so the merge side (lwwMergeFields)
  * can keep the value whose `_fts` is newest — Automerge's own conflict
