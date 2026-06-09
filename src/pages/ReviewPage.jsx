@@ -884,10 +884,19 @@ const commentEditButtonStyle = {
 }
 
 function ModeToggle({ mode, onChange }) {
-  // Soft green for the safe view; soft amber for edit (a gentle "you're touching past days" warning).
+  // Soft green for the safe view (same shading as completed task cards); soft amber for edit
+  // (a gentle "you're touching past days" warning).
   const TONES = {
-    review: { bg: `rgba(${PALETTE.emerald},0.85)`, shadow: `0 1px 6px rgba(${PALETTE.emerald},0.35)` },
-    edit:    { bg: `rgba(${PALETTE.amber},0.9)`,   shadow: `0 1px 6px rgba(${PALETTE.amber},0.4)`   },
+    review: {
+      bg: `linear-gradient(135deg, rgba(${PALETTE.emerald},0.12), rgba(${PALETTE.emerald},0.05))`,
+      color: 'var(--green-400)',
+      shadow: `inset 0 0 0 1px rgba(${PALETTE.emerald},0.24)`,
+    },
+    edit: {
+      bg: `linear-gradient(135deg, rgba(${PALETTE.amber},0.12), rgba(${PALETTE.amber},0.05))`,
+      color: '#FBBF24',
+      shadow: `inset 0 0 0 1px rgba(${PALETTE.amber},0.24)`,
+    },
   }
   const segmentStyle = (active, tone) => ({
     display: 'inline-flex',
@@ -901,7 +910,7 @@ function ModeToggle({ mode, onChange }) {
     borderRadius: '999px',
     cursor: 'pointer',
     background: active ? tone.bg : 'transparent',
-    color: active ? 'white' : 'var(--text-secondary)',
+    color: active ? tone.color : 'var(--text-secondary)',
     boxShadow: active ? tone.shadow : 'none',
     transition: 'background 0.15s, color 0.15s, box-shadow 0.15s',
   })
