@@ -503,40 +503,39 @@ const useAppStore = create((set, get) => ({
     }
 
     if (get().driveEnabled) {
-      try {
-        const merged = await mergeAndPushJournal(doc).catch(() => null)
-        if (merged) {
-          doc = merged
-          await putJournal(doc)
-          // Adopt the merge result only if the user has NOT edited since we
-          // showed the optimistic doc. Reference identity is the test: a typed
-          // edit's debounced save replaces currentDay with a fresh object, so
-          // `shown !== optimistic` means edits are in flight and `merged` is
-          // stale — leave the live (edited) doc alone; its own push carries it.
-          const shown = get().currentDay
-          const userEditedSinceLoad = shown !== optimistic
-          if (!userEditedSinceLoad && shown?.date === doc.date) {
-            // No in-flight edit. Re-set only when content actually differs, so
-            // an identical merge doesn't churn a fresh reference and re-fire
-            // JournalPanel's reconcile effect for nothing (the stale-then-flick).
-            const changed =
-              blocksToHtml(shown.blocks) !== blocksToHtml(doc.blocks) ||
-              (shown.reviewedAt || null) !== (doc.reviewedAt || null)
-            if (changed) set(s => ({ currentDay: doc, currentDayRev: s.currentDayRev + 1 }))
-          }
-          if (!userEditedSinceLoad && doc.reviewedAt) {
-            const nextReviews = { ...get().reviews, [doc.date]: doc.reviewedAt }
-            set({ reviews: nextReviews })
-          }
-          return doc
+      const merged = await mergeAndPushJournal(doc).catch(() => null)
+      if (merged) {
+        doc = merged
+        await putJournal(doc)
+        // Adopt the merge result only if the user has NOT edited since we
+        // showed the optimistic doc. Reference identity is the test: a typed
+        // edit's debounced save replaces currentDay with a fresh object, so
+        // `shown !== optimistic` means edits are in flight and `merged` is
+        // stale — leave the live (edited) doc alone; its own push carries it.
+        const shown = get().currentDay
+        const userEditedSinceLoad = shown !== optimistic
+        if (!userEditedSinceLoad && shown?.date === doc.date) {
+          // No in-flight edit. Re-set only when content actually differs, so
+          // an identical merge doesn't churn a fresh reference and re-fire
+          // JournalPanel's reconcile effect for nothing (the stale-then-flick).
+          const changed =
+            blocksToHtml(shown.blocks) !== blocksToHtml(doc.blocks) ||
+            (shown.reviewedAt || null) !== (doc.reviewedAt || null)
+          if (changed) set(s => ({ currentDay: doc, currentDayRev: s.currentDayRev + 1 }))
         }
-      } finally {
+        if (!userEditedSinceLoad && doc.reviewedAt) {
+          const nextReviews = { ...get().reviews, [doc.date]: doc.reviewedAt }
+          set({ reviews: nextReviews })
+        }
         // The Today gate (SurfaceLoadingGate bucket="today") tracks JOURNAL
-        // readiness, which is exactly this merge — the streaming sync's `today`
-        // bucket only covers config, not the per-day journal merge. Lift the
-        // gate once the merge settles (success OR failure): a stale-but-local
-        // view is fine, and leaving it gated would freeze the editor forever.
+        // readiness, which is exactly this merge. Lift it only on SUCCESS:
+        // during warm boot the first loadJournal runs before Drive is
+        // initialized, so its merge fails — marking ready there lifted the
+        // gate on stale local data, defeating the gate entirely. On failure
+        // the gate is lifted by runInitialSync's done/error handlers (or the
+        // post-connect loadJournal that runs once Drive is ready).
         get().markSyncReady('today')
+        return doc
       }
     } else {
       get().markSyncReady('today')
@@ -1114,8 +1113,15 @@ const useAppStore = create((set, get) => ({
       getTasks(), getNotes(), getConfig(),
     ])
     set({ tasks, notes, config: config || {} })
-    // No Drive merge to wait on — every surface is immediately editable.
-    get().markAllSyncReady()
+    if (get().mode === MODE_OFFLINE) {
+      // No Drive merge to wait on — every surface is immediately editable.
+      get().markAllSyncReady()
+    }
+    // Drive mode reuses this as the warm-boot local preload. Gates stay DOWN:
+    // the data just loaded is a stale local snapshot, and lifting the gates
+    // here is what let the user type over data the first merge hadn't landed
+    // yet. runInitialSync / loadJournal lift each bucket as its merge settles
+    // (with markAllSyncReady fallbacks on every connect-failure path).
     await get().rebuildReviewsFromJournals().catch(() => {})
     get().loadJournalTagPool()
   },

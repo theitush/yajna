@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import JournalPanel from '../components/today/JournalPanel'
 import TasksPanel from '../components/today/TasksPanel'
+import SurfaceLoadingGate from '../components/layout/SurfaceLoadingGate'
 import useAppStore from '../store/useAppStore'
 import useMediaQuery, { MD_BREAKPOINT } from '../lib/useMediaQuery'
 
@@ -86,8 +87,13 @@ function DesktopLayout({ insertTextRef, showTasks, toggleTasks }) {
           transition: 'width 0.3s ease',
           background: 'var(--bg-primary)',
         }}>
-          <div style={{ width: '340px', height: '100%' }}>
-            <TasksPanel />
+          {/* The page-level gate (bucket="today") only tracks the journal
+              merge — tasks merge separately, so the panel gets its own gate
+              to block task edits on a stale list without freezing the editor. */}
+          <div style={{ width: '340px', height: '100%', display: 'flex', flexDirection: 'column' }}>
+            <SurfaceLoadingGate bucket="tasks" label="Loading tasks...">
+              <TasksPanel />
+            </SurfaceLoadingGate>
           </div>
         </div>
       </div>
@@ -130,7 +136,11 @@ function MobileLayout({ insertTextRef, panel, setPanel }) {
           {panel === 'journal' ? (
             <JournalPanel onInsertText={insertTextRef} />
           ) : (
-            <TasksPanel />
+            <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+              <SurfaceLoadingGate bucket="tasks" label="Loading tasks...">
+                <TasksPanel />
+              </SurfaceLoadingGate>
+            </div>
           )}
         </div>
       </div>

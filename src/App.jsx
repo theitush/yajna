@@ -25,6 +25,7 @@ export default function App() {
     isAuthenticated, isInitializing, initError,
     setAuthenticated, setInitializing, setInitError,
     setMode, runInitialSync, bootOffline, loadJournal, fetchUserEmail, setSyncStatus,
+    markAllSyncReady,
   } = useAppStore()
   const syncStatus = useAppStore(s => s.syncStatus)
   const mode = useAppStore(s => s.mode)
@@ -102,6 +103,9 @@ export default function App() {
                 setSyncStatus({ state: 'error', message: 'Session expired', isAuth: true })
               } else {
                 setSyncStatus({ state: 'offline' })
+                // Connect failed before runInitialSync could lift the surface
+                // gates — release them so local data stays usable offline.
+                markAllSyncReady()
               }
             }
           })()
@@ -129,6 +133,15 @@ export default function App() {
           // Connect to Drive in the background — app is already usable
           setSyncStatus({ state: 'syncing' })
           ;(async () => {
+            // Definitely-offline fast path: don't make the user wait out a
+            // network timeout behind the surface gates just to edit local
+            // data. `onLine === false` is reliable (false = no network); the
+            // connect attempt below still runs in case the flag is wrong —
+            // gates are one-way so lifting them early here can't conflict.
+            if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+              setSyncStatus({ state: 'offline' })
+              markAllSyncReady()
+            }
             const tBoot = performance.now()
             const lap = (label, from) => { console.log(`[boot] ${label}: ${(performance.now() - from).toFixed(0)}ms`); return performance.now() }
             try {
@@ -172,6 +185,9 @@ export default function App() {
                   setSyncStatus({ state: 'error', message: 'Session expired', isAuth: true })
                 } else {
                   setSyncStatus({ state: 'offline' })
+                  // Connect failed before runInitialSync could lift the surface
+                  // gates — release them so local data stays usable offline.
+                  markAllSyncReady()
                 }
               }
             } catch (e) {
@@ -180,6 +196,7 @@ export default function App() {
                 setSyncStatus({ state: 'error', message: 'Session expired', isAuth: true })
               } else {
                 setSyncStatus({ state: 'offline' })
+                markAllSyncReady()
               }
             }
           })()
