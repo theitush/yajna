@@ -73,6 +73,9 @@ export default function App() {
           await storeRefreshBlob(redirectResult.refreshBlob)
           await putMeta(MODE_KEY, MODE_DRIVE)
           setMode(MODE_DRIVE)
+          // Best effort: mark this origin's storage durable so Firefox can't
+          // evict IDB data + the offline shell cache under disk pressure.
+          requestStoragePersistence().catch(() => {})
           await bootOffline()
           await loadJournal()
           setAuthenticated(true)
@@ -126,6 +129,9 @@ export default function App() {
         if (savedMode === MODE_DRIVE && GOOGLE_CLIENT_ID) {
           // Show the app immediately from local data
           setMode(MODE_DRIVE)
+          // Best effort: durable storage for IDB + the offline shell cache.
+          // No-op once granted; Firefox remembers a denial without re-prompting.
+          requestStoragePersistence().catch(() => {})
           await bootOffline()
           await loadJournal()
           setAuthenticated(true)
