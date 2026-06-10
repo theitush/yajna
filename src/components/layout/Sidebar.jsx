@@ -109,6 +109,10 @@ function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
           letterSpacing: '-0.5px', color: 'var(--text-primary)', lineHeight: 1,
         }}>
           Yajna
+          {' '}
+          <span style={{ fontSize: '11px', fontFamily: 'var(--font-body)', color: 'var(--text-tertiary)', letterSpacing: 0 }}>
+            {__APP_VERSION__}
+          </span>
         </div>
         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px', letterSpacing: '0.3px' }}>
           journal · notes · todos

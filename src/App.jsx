@@ -349,6 +349,7 @@ export default function App() {
             </button>
             <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <span style={{ fontFamily: 'var(--font-display)', fontSize: '20px', fontWeight: 400, color: 'var(--text-primary)' }}>Yajna</span>
+              <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '10px' }}>{__APP_VERSION__}</span>
               <span style={{
                 width: 7, height: 7, borderRadius: '50%',
                 background: syncDotColor,

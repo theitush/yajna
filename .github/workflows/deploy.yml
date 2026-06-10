@@ -19,6 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: the build stamps __APP_VERSION__ from the commit
+          # count (vite.config.js); a shallow clone would always say v0.1.
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
