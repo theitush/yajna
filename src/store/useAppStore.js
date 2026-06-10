@@ -134,10 +134,19 @@ const useAppStore = create((set, get) => ({
       createdAt: now,
       updatedAt: now,
     }
-    await putTask(task)
-    logSync('addTask', { id: task.id.slice(0, 8), hasTitle: !!task.title, status: task.status })
+    // A contentless card (the "+" button) is a DRAFT: in-memory only, never
+    // written to IDB or pushed. It becomes real on the first updateTask that
+    // gives it content (title, explanation, …) — updateTask strips the flag
+    // and persists. A draft abandoned blank is simply forgotten
+    // (discardDraftTask), so no blank task ever exists in IDB/Drive and there
+    // is nothing to auto-delete — the source of the "created task vanished
+    // then reappeared" bugs.
+    const isDraft = !(title?.trim() || explanation?.trim())
+    if (isDraft) task.draft = true
+    else await putTask(task)
+    logSync('addTask', { id: task.id.slice(0, 8), hasTitle: !!task.title, status: task.status, draft: isDraft })
     set(s => ({ tasks: [...s.tasks, task] }))
-    if (get().driveEnabled) withRetry(pushTasks)()
+    if (!isDraft && get().driveEnabled) withRetry(pushTasks)()
     return task
   },
   addTaskForDate: async (title, date, explanation = '') => {
@@ -156,10 +165,13 @@ const useAppStore = create((set, get) => ({
       createdAt: now,
       updatedAt: now,
     }
-    await putTask(task)
+    // Same draft semantics as addTask.
+    const isDraft = !(title?.trim() || explanation?.trim())
+    if (isDraft) task.draft = true
+    else await putTask(task)
     set(s => ({ tasks: [...s.tasks, task] }))
     get().bumpReviewVersion()
-    if (get().driveEnabled) withRetry(pushTasks)()
+    if (!isDraft && get().driveEnabled) withRetry(pushTasks)()
     return task
   },
   updateTask: async (id, updates) => withTaskLock(id, async () => {
@@ -175,7 +187,9 @@ const useAppStore = create((set, get) => ({
     const fallback = get().tasks.find(t => t.id === id)
     const task = fromDb || fallback
     if (!task) return
-    const updated = { ...task, ...updates, updatedAt: new Date().toISOString() }
+    // The first write of a draft strips the in-memory flag — this putTask is
+    // what turns a draft into a real, persisted task.
+    const { draft, ...updated } = { ...task, ...updates, updatedAt: new Date().toISOString() }
     await putTask(updated)
     logSync('updateTask', {
       id: id.slice(0, 8),
@@ -184,6 +198,7 @@ const useAppStore = create((set, get) => ({
       updHasTitle: !!updated.title,
       updates: Object.keys(updates),
       status: updated.status,
+      ...(draft ? { wasDraft: true } : {}),
     })
     set(s => ({ tasks: s.tasks.map(t => t.id === id ? updated : t) }))
     get().bumpReviewVersion()
@@ -238,11 +253,24 @@ const useAppStore = create((set, get) => ({
     dailyReviews[date] = { ...prior, comments }
     await get().updateTask(id, { dailyReviews })
   },
-  deleteTask: async (id) => {
+  deleteTask: async (id) => withTaskLock(id, async () => {
+    // A still-draft task was never persisted — nothing to tombstone, just
+    // forget it.
+    const storeRow = get().tasks.find(t => t.id === id)
+    if (storeRow?.draft) {
+      logSync('deleteTask', { id: id.slice(0, 8), draft: true })
+      set(s => ({ tasks: s.tasks.filter(t => t.id !== id) }))
+      get().bumpReviewVersion()
+      return
+    }
     // Keep display fields on the tombstone so Trash can show the task without
     // re-hydrating content. Title/createdAt survive; everything else is fine
     // to drop. Status is preserved so we can skip done/reviewed tasks in Trash.
-    const existing = get().tasks.find(t => t.id === id)
+    //
+    // Locked + IDB-based for the same reason as updateTask: an unlocked
+    // store-snapshot tombstone can interleave with an in-flight updateTask
+    // putTask, and whichever write lands second silently wins the row.
+    const existing = (await getTask(id)) || storeRow
     const now = new Date().toISOString()
     const tomb = existing
       ? {
@@ -260,10 +288,25 @@ const useAppStore = create((set, get) => ({
         }
       : { id, deleted: true, deletedAt: now, updatedAt: now }
     await putTask(tomb)
+    logSync('deleteTask', { id: id.slice(0, 8), hadTitle: !!existing?.title, status: tomb.status || null })
     set(s => ({ tasks: s.tasks.filter(t => t.id !== id) }))
     get().bumpReviewVersion()
     if (get().driveEnabled) withRetry(pushTasks)()
-  },
+  }),
+  // Abandoning a card that still looks blank. Only ever removes a DRAFT —
+  // a real (persisted) task is never deleted by this path. Locked so it
+  // queues behind an in-flight updateTask from the same gesture (a title
+  // blur commits via async updateTask while the caller's render closure
+  // still reads an empty title — the "created task vanished then
+  // reappeared" race); once that write lands the draft flag is gone and
+  // this no-ops.
+  discardDraftTask: async (id) => withTaskLock(id, async () => {
+    const row = get().tasks.find(t => t.id === id)
+    logSync('discardDraftTask', { id: id.slice(0, 8), stillDraft: !!row?.draft, hasRow: !!row })
+    if (!row?.draft) return
+    set(s => ({ tasks: s.tasks.filter(t => t.id !== id) }))
+    get().bumpReviewVersion()
+  }),
   reorderTasks: (orderedIds) => {
     const tasks = get().tasks
     const now = new Date().toISOString()
@@ -288,7 +331,11 @@ const useAppStore = create((set, get) => ({
       changed: changed.map(t => ({ id: t.id.slice(0, 8), order: t.order })),
     })
     set({ tasks: updated })
-    putTasks(changed).then(() => {
+    // Drafts keep their new order in memory only; it persists with the draft
+    // itself on the first content commit (updateTask).
+    const persistable = changed.filter(t => !t.draft)
+    if (persistable.length === 0) return
+    putTasks(persistable).then(() => {
       if (get().driveEnabled) withRetry(pushTasks)()
     }).catch(console.error)
   },

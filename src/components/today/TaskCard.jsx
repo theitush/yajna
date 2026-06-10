@@ -22,7 +22,7 @@ function renderWithHashtags(text) {
 }
 
 export default function TaskCard({ task, defaultExpanded = false, defaultEditingTitle = false }) {
-  const { markTaskDone, markTaskActive, markTaskReviewed, deleteTask, moveToBacklog, updateTask } = useAppStore()
+  const { markTaskDone, markTaskActive, markTaskReviewed, deleteTask, discardDraftTask, moveToBacklog, updateTask } = useAppStore()
   // Subscribe to anything that can change the tag pool, then ask the store.
   useAppStore(s => s.notes)
   useAppStore(s => s.tasks)
@@ -131,18 +131,17 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
 
   const commitEdits = useCallback(() => {
     const titleVal = String(titleRef.current?.innerText || '').trim()
-    // Auto-delete ONLY a still-blank brand-new card. Gate on the PERSISTED title
-    // (task.title), never on the live contentEditable read alone: when a second
-    // card is created in quick succession, its mousedown fires this card's
-    // click-outside while the title element is mid-remount (the `key` flips on
-    // editingTitle) so titleRef reads empty for a tick — deleting a task whose
-    // title was already saved. Drive still has the upsert, so the next poll
-    // resurrects it: the "created two tasks, one vanished then reappeared" bug.
-    const persistedTitle = (task.title || '').trim()
-    const isBlank = !titleVal && !persistedTitle
+    // Nothing to save: if this card is an unpersisted draft the store forgets
+    // it, otherwise discardDraftTask is a no-op. The store decides under the
+    // per-id lock — no persisted-title gate needed here, and deleteTask must
+    // never be called from this path.
+    const isBlank = !titleVal
       && !editExplanation.trim() && !editFeedback.trim() && !editTags.trim()
     if (isBlank) {
-      deleteTask(task.id)
+      discardDraftTask(task.id)
+      setExpanded(false)
+      setEditingTitle(false)
+      setConfirmDelete(false)
       return
     }
     updateTask(task.id, {
@@ -154,7 +153,7 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
     setExpanded(false)
     setEditingTitle(false)
     setConfirmDelete(false)
-  }, [editExplanation, editFeedback, editTags, task.id, task.title, updateTask, deleteTask])
+  }, [editExplanation, editFeedback, editTags, task.id, task.title, updateTask, discardDraftTask])
 
   const handleClickOutside = useCallback((e) => {
     if (cardRef.current && !cardRef.current.contains(e.target)) {

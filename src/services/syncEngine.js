@@ -540,7 +540,11 @@ async function pollRemote(storeSetter) {
     }
 
     if (storeSetter) {
-      const visibleTasks = mergedTasks.filter(t => !t.deleted)
+      // Draft tasks live only in store memory (never in IDB/Drive), so a
+      // wholesale store set from merged rows would silently drop them —
+      // carry them over.
+      const draftTasks = (_storeGetter?.()?.tasks || []).filter(t => t.draft)
+      const visibleTasks = [...mergedTasks.filter(t => !t.deleted), ...draftTasks]
       const visibleNotes = mergedNotes.filter(n => !n.deleted)
       // Diagnostic: which task ids was the store showing that this poll is about
       // to drop (or add)? A drop here is the "task vanishes for a few seconds"
