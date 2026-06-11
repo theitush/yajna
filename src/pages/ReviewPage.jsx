@@ -7,6 +7,7 @@ import { getAllJournals } from '../services/db'
 import useAppStore from '../store/useAppStore'
 import { formatDate, currentJournalDay } from '../lib/dates'
 import { buildReviewDays } from '../lib/review'
+import { sortByOrder } from '../lib/blocks'
 import { RTLExtension } from '../components/editor/RTLExtension'
 import { AudioNode, PALETTE, rankAudioItems } from '../components/editor/AudioNode'
 import { BlockIdExtension } from '../components/editor/BlockIdExtension'
@@ -184,7 +185,7 @@ function JournalBlock({ block, comments, commentsOpen, onOpenComment, onCloseCom
 }
 
 function ReviewJournalPane({ day, title = 'Journal', openCommentKey, onOpenComment, onCloseComment, onToggleReview, onAddBlockComment, highlightBlockId, highlightRef }) {
-  const blocks = (day.journalEntry?.blocks || []).filter(block => !block.deleted)
+  const blocks = sortByOrder((day.journalEntry?.blocks || []).filter(block => !block.deleted))
 
   // Each JournalBlock renders into its own editor, so rankInDoc would only
   // see one audio at a time. Collect every audio across the day's blocks here
@@ -230,9 +231,9 @@ function ReviewJournalPane({ day, title = 'Journal', openCommentKey, onOpenComme
             No journal entry for this day.
           </div>
         ) : (
-          blocks.map(block => (
+          blocks.map((block, i) => (
             <JournalBlock
-              key={block.id}
+              key={`${block.id}-${i}`}
               block={block}
               audioRanks={audioRanks}
               comments={day.journalEntry?.blockComments?.[block.id] || []}

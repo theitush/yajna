@@ -153,7 +153,7 @@ export function blocksToHtml(blocks) {
 // Sort by fractional-index `order`, tie-breaking by id so devices with
 // duplicate/missing keys still converge. Blocks missing `order` sort to
 // the end (legacy data before the fractional-index migration).
-function sortByOrder(blocks) {
+export function sortByOrder(blocks) {
   return blocks.slice().sort((a, b) => {
     const ao = a.order, bo = b.order
     if (ao == null && bo == null) return 0
