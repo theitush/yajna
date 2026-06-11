@@ -26,3 +26,6 @@ export const STORE_REVIEWS = 'reviews'
 export const MODE_DRIVE = 'drive'
 export const MODE_OFFLINE = 'offline'
 export const MODE_KEY = 'yajna_mode'
+// Manual "go offline" toggle persisted across reloads: a Drive-mode user who
+// paused sync stays paused on reopen until they explicitly resume.
+export const SYNC_PAUSED_KEY = 'yajna_sync_paused'

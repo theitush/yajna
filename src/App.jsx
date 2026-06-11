@@ -6,7 +6,7 @@ import { initDriveStructure } from './services/drive'
 import { migrateDriveJournalsIfNeeded } from './services/journalMigration'
 import { getMeta, putMeta } from './services/db'
 import { requestStoragePersistence } from './services/storage'
-import { GOOGLE_CLIENT_ID, MODE_DRIVE, MODE_OFFLINE, MODE_KEY } from './lib/constants'
+import { GOOGLE_CLIENT_ID, MODE_DRIVE, MODE_OFFLINE, MODE_KEY, SYNC_PAUSED_KEY } from './lib/constants'
 
 import LoginScreen from './components/auth/LoginScreen'
 import Sidebar from './components/layout/Sidebar'
@@ -135,6 +135,17 @@ export default function App() {
           await bootOffline()
           await loadJournal()
           setAuthenticated(true)
+
+          // Honor a manual "go offline" pause across reopens: if the user paused
+          // sync last session, stay fully local and DON'T connect to Drive in the
+          // background. Lift the surface gates so local data is editable, and
+          // leave syncPaused set so driveEnabled blocks pushes until they resume.
+          if (await getMeta(SYNC_PAUSED_KEY)) {
+            useAppStore.setState({ syncPaused: true })
+            setSyncStatus({ state: 'offline' })
+            markAllSyncReady()
+            return
+          }
 
           // Connect to Drive in the background — app is already usable
           setSyncStatus({ state: 'syncing' })

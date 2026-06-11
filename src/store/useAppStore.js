@@ -2,12 +2,13 @@ import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
 import { today, dayKey, currentJournalDay } from '../lib/dates'
 import { detectBrowserTimezone } from '../lib/timezones'
-import { MODE_OFFLINE } from '../lib/constants'
+import { MODE_OFFLINE, SYNC_PAUSED_KEY } from '../lib/constants'
 import {
   getTasks, putTask, putTasks, getTask,
   getNotes, putNote,
   getJournal, putJournal, getAllJournals, getConfig, putConfigWithDoc,
   getAllTasksRaw, getAllNotesRaw, getAllAudio,
+  putMeta,
 } from '../services/db'
 import { extractHashtags } from '../lib/hashtags'
 import { pushTasks, pushNotes, pushJournal, pushConfig, initialSyncStreaming, mergeAndPushJournal, flushPendingSync } from '../services/sync'
@@ -95,7 +96,9 @@ const useAppStore = create((set, get) => ({
   // which is the permanent no-Drive choice made at login). While paused, local
   // writes keep landing in IDB but nothing is pushed and the poll engine is
   // stopped — useful for working offline on the go. Resuming flushes whatever
-  // changed and restarts polling. NOT persisted: a reload comes back online.
+  // changed and restarts polling. PERSISTED (SYNC_PAUSED_KEY): a reopen stays
+  // paused until the user explicitly resumes — App boot reads the flag and skips
+  // the background Drive connect when set.
   syncPaused: false,
 
   // Helper: should we push to Drive? False in permanent offline mode AND while
@@ -973,6 +976,8 @@ const useAppStore = create((set, get) => ({
     const pausing = !get().syncPaused
     if (pausing) {
       set({ syncPaused: true })
+      // Persist so a reopen stays offline until the user resumes.
+      putMeta(SYNC_PAUSED_KEY, true).catch(() => {})
       try { stopSyncEngine() } catch {}
       // stopSyncEngine sets status 'offline'; make it explicit + stop the spinner.
       set({ syncStatus: { state: 'offline' }, syncing: false })
@@ -986,6 +991,7 @@ const useAppStore = create((set, get) => ({
     // (task status/doneDate, note title, config values) resolve correctly and
     // gets the other device's changes onto our screen before we upload.
     set({ syncPaused: false, syncStatus: { state: 'syncing' }, syncing: true })
+    putMeta(SYNC_PAUSED_KEY, false).catch(() => {})
 
     // Restart the poll engine first so pullNow has a running engine + storeSetter.
     // The onSyncStatus listener registered at boot survives stopSyncEngine (it
