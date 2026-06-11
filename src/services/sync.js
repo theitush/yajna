@@ -796,15 +796,15 @@ export async function pullFromDrive() {
 
 /**
  * Push all dirty tasks to Drive (Phase C — Automerge). Drains the dirty set,
- * mutates each task's local Automerge doc with the row's fields, blind-uploads
- * the binary doc to `tasks/<id>.bin`, and dual-writes the legacy `.json` so
- * pre-Phase-C builds on other devices keep working through the dual-write
- * window. Appends a single batched manifest entry.
+ * merges each task's remote .bin into the local Automerge doc, applies the
+ * row's fields, uploads `tasks/<id>.bin`, and appends a single batched
+ * manifest entry.
  *
- * No pre-merge read needed: Automerge's merge is commutative + idempotent, so
- * any other device's concurrent edit will be folded in on the next pull. This
- * replaces the Phase B per-id read-merge-write loop and removes the entire
- * race window around tasks.
+ * Push is read-MERGE-write. "Fold in on the next pull" doesn't hold: the
+ * upload replaces the only shared copy, and the device whose changes it
+ * overwrites already cleared its dirty token on its own successful push — it
+ * never re-pushes, so a blind upload erases its changes from Drive for good
+ * (proven on journals 2026-06-11; same hole here).
  *
  * Caller is expected to be wrapped in `withRetry` from syncEngine — failures
  * leave the dirty set intact so the next attempt retries the same ids.
@@ -842,15 +842,25 @@ export async function pushTasks() {
     // feedback) can land after the snapshot. We must ship the latest fields.
     const fresh = (await getTask(id)) || local
 
-    // Pick the base doc: our own bytes, else adopt the remote .bin's root, else
-    // (first writer) createDoc. Forking a fresh root when a remote already
-    // exists breaks Automerge.merge across devices (the staleness bug).
+    // Pick the base doc: our own bytes merged with the remote .bin, else adopt
+    // the remote's root, else (first writer) createDoc. Forking a fresh root
+    // when a remote already exists breaks Automerge.merge across devices (the
+    // staleness bug).
     const existingBytes = await getTaskDocBytes(id)
+    const remoteBytes = await readEntityBinFile(ids.tasksFolderId, id).catch(() => null)
     let doc
     if (existingBytes) {
       doc = await loadDoc(existingBytes)
+      if (remoteBytes) {
+        const remoteDoc = await loadDoc(remoteBytes)
+        // Same per-field wall-clock LWW as the pull side (mergeTaskDocs) — a
+        // bare Automerge.merge resolves concurrent scalars by actor-id, not
+        // time. Disjoint roots reconcile by recency, also as on pull.
+        doc = (await sharesAncestry(doc, remoteDoc))
+          ? await mergeTaskLWW(doc, remoteDoc)
+          : newerDoc(doc, remoteDoc, materializeTaskRow)
+      }
     } else {
-      const remoteBytes = await readEntityBinFile(ids.tasksFolderId, id).catch(() => null)
       doc = remoteBytes ? await loadDoc(remoteBytes) : await createDoc('task', fresh)
     }
     doc = await applyTaskFields(doc, fresh)
@@ -863,8 +873,6 @@ export async function pushTasks() {
     // canonical ownership split: updateTask owns row fields, push owns doc bytes.
     await putTaskDocBytes(id, bytes)
 
-    // Blind upload — no pre-merge read. Other devices' edits get folded in
-    // on the next pull via Automerge.merge.
     await writeEntityBinFile(ids.tasksFolderId, id, bytes)
 
     changes.push({
@@ -891,9 +899,9 @@ export async function pushTasks() {
 
 /**
  * Push all dirty notes to Drive (Phase C — Automerge). Mirrors pushTasks:
- * load-or-create the local Automerge doc, apply the row's fields into it,
- * blind-upload `notes/<id>.bin`. No pre-merge read — Automerge's merge picks
- * up concurrent device edits on the next pull.
+ * merge the remote .bin into the local Automerge doc, apply the row's fields,
+ * upload `notes/<id>.bin`. Read-merge-write — see pushTasks for why a blind
+ * upload loses other devices' not-yet-pulled edits permanently.
  */
 export async function pushNotes() {
   const ids = await getDriveFileIds()
@@ -924,14 +932,20 @@ export async function pushNotes() {
     // fire-and-forget race as pushTasks). Ship the latest fields.
     const fresh = (await getNoteRaw(id)) || local
 
-    // Base doc: own bytes, else adopt remote .bin root, else createDoc.
-    // (Same disjoint-root avoidance as pushTasks/pushJournal.)
+    // Base doc: own bytes merged with the remote .bin, else adopt the remote
+    // root, else createDoc. (Same merge + disjoint-root rules as pushTasks.)
     const existingBytes = await getNoteDocBytes(id)
+    const remoteBytes = await readEntityBinFile(ids.notesFolderId, id).catch(() => null)
     let doc
     if (existingBytes) {
       doc = await loadDoc(existingBytes)
+      if (remoteBytes) {
+        const remoteDoc = await loadDoc(remoteBytes)
+        doc = (await sharesAncestry(doc, remoteDoc))
+          ? await mergeNoteLWW(doc, remoteDoc)
+          : newerDoc(doc, remoteDoc, materializeNoteRow)
+      }
     } else {
-      const remoteBytes = await readEntityBinFile(ids.notesFolderId, id).catch(() => null)
       doc = remoteBytes ? await loadDoc(remoteBytes) : await createDoc('note', fresh)
     }
     doc = await applyNoteFields(doc, fresh)
@@ -962,10 +976,11 @@ export async function pushNotes() {
 
 /**
  * Push config to Drive (Automerge singleton). Mirrors pushTasks for the single
- * "config" id: drain the dirty flag, base the doc on our own bytes → else the
- * remote .bin root → else createDoc, apply the row's fields, blind-upload
- * config/config.bin, append a manifest entry. No pre-merge read — other
- * devices' concurrent setting edits fold in on the next pull via Automerge.
+ * "config" id: drain the dirty flag, merge the remote .bin into our own bytes
+ * (→ else adopt the remote root → else createDoc), apply the row's fields,
+ * upload config/config.bin, append a manifest entry. Read-merge-write — see
+ * pushTasks for why a blind upload loses other devices' not-yet-pulled edits.
+ * Plain mergeDoc, matching the config pull side (config isn't per-field LWW'd).
  *
  * Caller is expected to be wrapped in `withRetry` from syncEngine.
  */
@@ -978,11 +993,17 @@ export async function pushConfig() {
 
   const local = await getConfig()
   const existingBytes = await getConfigDocBytes()
+  const remoteBytes = await readEntityBinFile(ids.configFolderId, 'config').catch(() => null)
   let doc
   if (existingBytes) {
     doc = await loadDoc(existingBytes)
+    if (remoteBytes) {
+      const remoteDoc = await loadDoc(remoteBytes)
+      doc = (await sharesAncestry(doc, remoteDoc))
+        ? await mergeDoc(doc, remoteDoc)
+        : newerDoc(doc, remoteDoc, materializeConfigRow)
+    }
   } else {
-    const remoteBytes = await readEntityBinFile(ids.configFolderId, 'config').catch(() => null)
     doc = remoteBytes ? await loadDoc(remoteBytes) : await createDoc('config', local || {})
   }
   doc = await applyConfigFields(doc, local || {})
@@ -1006,10 +1027,12 @@ export async function pushConfig() {
 
 /**
  * Push a per-day journal doc to Drive (Phase C — Automerge). Mirrors
- * pushTasks/pushNotes: load-or-create the local Automerge doc, apply the row's
- * fields into it, blind-upload `journals/<date>.bin`, append a manifest entry.
- * No pre-merge read — Automerge's merge picks up other devices' concurrent
- * edits on the next pull.
+ * pushTasks/pushNotes: load the local Automerge doc, MERGE the remote .bin into
+ * it, apply the row's fields, upload `journals/<date>.bin`, append a manifest
+ * entry. Push is read-merge-write: the upload replaces the only shared copy, so
+ * it must contain the remote's changes too — "fold in on the next pull" doesn't
+ * work for a device whose push already succeeded and cleared its dirty token
+ * (it never re-pushes, so a blind upload erases its changes from Drive).
  */
 export async function pushJournal(dayDoc) {
   if (!dayDoc?.date) {
@@ -1054,7 +1077,9 @@ export async function pushJournal(dayDoc) {
   }
 
   // Pick the base doc we apply local fields onto. Priority:
-  //   1. our own persisted bytes (shared Automerge ancestry — normal case)
+  //   1. our own persisted bytes MERGED with the remote .bin (normal case —
+  //      push is read-merge-write so the upload never erases another device's
+  //      not-yet-pulled changes from the shared file)
   //   2. the remote .bin if one exists (adopt its root so our upload shares
   //      ancestry with every other device — never fork a disjoint root)
   //   3. only if neither exists are we the first writer → createDoc
@@ -1062,10 +1087,9 @@ export async function pushJournal(dayDoc) {
   // cross-device "0 merged blocks" staleness bug: a disjoint-root doc can't be
   // Automerge.merge'd with the others, so each pull silently drops content.
   // Gather byte inputs on the main thread (IDB + network — non-blocking I/O),
-  // then hand the synchronous Automerge load→apply→save chain to the worker so
-  // it never freezes the editor. Disjoint-root reconcile (the staleness heal)
-  // lives inside journalApply, unchanged. We always read the remote .bin so the
-  // worker can detect a disjoint local root, exactly as the inline code did.
+  // then hand the synchronous Automerge load→merge→apply→save chain to the
+  // worker so it never freezes the editor. The merge + disjoint-root reconcile
+  // both live inside journalApply, shared by worker and inline fallback.
   const existingBytes = await getJournalDocBytes(date)
   const remoteBytes = await readEntityBinFile(ids.journalsFolderId, date).catch(() => null)
   const { bytes, row: merged } = await journalApply({ existingBytes, remoteBytes, source })
