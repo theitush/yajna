@@ -418,16 +418,21 @@ export default function App() {
           >
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, maxWidth: 320, textAlign: 'center', padding: '0 20px' }}>
               <div style={{ width: 22, height: 22, border: '2px solid rgba(255,255,255,0.35)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-              {coldPull?.active ? (
+              {coldPull?.retrying ? (
+                <>
+                  <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.95)', fontWeight: 500 }}>Connection hiccup — retrying</div>
+                  <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.75)', lineHeight: 1.5 }}>
+                    Some files didn't download on the first pass. Retrying automatically until everything lands — this needs a stable connection. Nothing is lost; the app unlocks as soon as the pull completes.
+                  </div>
+                </>
+              ) : (
                 <>
                   <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.95)', fontWeight: 500 }}>First-time setup on this device</div>
                   <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.75)', lineHeight: 1.5 }}>
-                    Pulling everything from Drive — this can take a few minutes. The app is locked until it's done so your edits don't conflict with what's being downloaded. Leave the app open.
+                    Pulling everything from Drive — this can take a few minutes and needs a stable connection. The app is locked until it's done so your edits don't conflict with what's being downloaded. Leave the app open.
                   </div>
                   <ColdPullProgress progress={coldPull.progress} />
                 </>
-              ) : (
-                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.9)' }}>Syncing...</div>
               )}
             </div>
             <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>

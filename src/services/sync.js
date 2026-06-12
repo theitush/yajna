@@ -166,8 +166,14 @@ export async function resolveTaskDocs(folderId, coldStart, changedMap) {
 export async function resolveConfigDoc(folderId, coldStart, changedMap) {
   if (!folderId) return null
   if (!coldStart && !(changedMap && changedMap.size)) return null
-  const bytes = await readEntityBinFile(folderId, 'config').catch(() => null)
-  return { id: 'config', bytes }
+  try {
+    const bytes = await readEntityBinFile(folderId, 'config')
+    return { id: 'config', bytes }
+  } catch (e) {
+    // Read failure ≠ missing file: carry the error so the floor-hold and the
+    // cold-pull completeness check see it (same contract as the batched readers).
+    return { id: 'config', bytes: null, err: String(e?.message || e).slice(0, 140) }
+  }
 }
 
 /**
@@ -234,6 +240,36 @@ export function findUnresolvedUpserts(changedByType, resolved) {
     }
   }
   return { minSeq, unresolved, errSample }
+}
+
+/**
+ * Cold-start counterpart of findUnresolvedUpserts. A cold pull enumerates the
+ * full folder, so there are no manifest seqs to cap the floor to — the only
+ * safe floor adoption is all-or-nothing. Every cold-start entry came from a
+ * folder listing (fileId known), so `err` unambiguously means "the file is on
+ * Drive but its download failed" — a genuinely missing file has no err and is
+ * fine to skip. A null bucket means that resolve stage never ran/failed
+ * outright. Either kind of failure means adopting headSeq would mark the holes
+ * "seen" forever (the silent-drop class); callers must leave the floor
+ * untouched so the next pass re-detects the gap and re-runs the pull until one
+ * clean pass.
+ */
+export function findColdPullFailures(resolved) {
+  const failures = []
+  let errSample = null
+  for (const type of Object.keys(resolved)) {
+    const docs = resolved[type]
+    if (docs === null) {
+      failures.push(`${type}:*`)
+      continue
+    }
+    for (const d of docs) {
+      if (!d?.err) continue
+      failures.push(`${type}:${String(d.id).slice(0, 8)}`)
+      if (!errSample) errSample = d.err
+    }
+  }
+  return { failures, errSample }
 }
 
 export async function mergeTaskDocs(taskDocs, changedMap) {
@@ -798,19 +834,32 @@ async function mergeWithDriveImpl(resolvers, onProgress = null) {
   })
 
   const [mergedConfig] = await Promise.all([stage1, stage2, stage3, stage4])
-  if (inspection.coldStart && onProgress) {
-    onProgress({ phase: 'cold-start-done' })
-  }
 
-  // Advance localLastSeq once everything has been applied. On cold start the
-  // head seq is the new floor. Same unresolved-upsert guard as pollOnce: an
-  // upsert whose fetch failed above was skipped by the merge helpers, and
-  // advancing past it would mark it "seen" forever — the boot-path silent
-  // drop that left a device 22 tasks stale on 2026-06-12 after one fetch
-  // batch failed. Hold the floor just below it; the engine's first poll is
-  // always forced, re-diffs from there, and refetches.
+  // Advance localLastSeq once everything has been applied. Same
+  // unresolved-upsert guard as pollOnce: an upsert whose fetch failed above
+  // was skipped by the merge helpers, and advancing past it would mark it
+  // "seen" forever — the boot-path silent drop that left a device 22 tasks
+  // stale on 2026-06-12 after one fetch batch failed. Diff path: hold the
+  // floor just below the lowest unresolved seq; the engine's first poll is
+  // always forced, re-diffs from there, and refetches. Cold path: no seqs to
+  // hold to, so adopting the head is all-or-nothing — any download failure
+  // means we keep the old floor, the engine's poll re-detects the gap, and
+  // the cold pull re-runs (with the engine's backoff) until one clean pass.
   let advanceTo = inspection.headSeq
-  if (!inspection.coldStart) {
+  let coldIncomplete = false
+  if (inspection.coldStart) {
+    const { failures, errSample } = findColdPullFailures(resolved)
+    if (failures.length) {
+      coldIncomplete = true
+      advanceTo = inspection.localLastSeq
+      logSync('cold pull INCOMPLETE — head NOT adopted', {
+        headSeq: inspection.headSeq,
+        failureCount: failures.length,
+        failures: failures.slice(0, 30),
+        errSample,
+      })
+    }
+  } else {
     const { minSeq, unresolved, errSample } = findUnresolvedUpserts(inspection.changedByType, resolved)
     if (minSeq !== Infinity) {
       advanceTo = Math.min(advanceTo, minSeq - 1)
@@ -821,6 +870,13 @@ async function mergeWithDriveImpl(resolvers, onProgress = null) {
   }
   if (advanceTo > inspection.localLastSeq) {
     await setLocalLastSeq(advanceTo).catch(() => {})
+  }
+
+  if (inspection.coldStart && onProgress) {
+    // `incomplete` keeps the boot overlay up (in "retrying" mode) instead of
+    // unlocking the app over data with holes; the sync engine clears it after
+    // its first clean cold pull.
+    onProgress({ phase: 'cold-start-done', incomplete: coldIncomplete })
   }
 
   putMeta(LAST_SYNC_KEY, Date.now()).catch(() => {})

@@ -22,7 +22,7 @@ import {
   resolveJournalDocs, mergeJournalDocs,
   resolveConfigDoc, mergeConfigDoc,
   flushPendingSync, hasPendingSync,
-  findUnresolvedUpserts,
+  findUnresolvedUpserts, findColdPullFailures,
 } from './sync'
 import { readManifest, diffManifest, getLocalLastSeq, setLocalLastSeq } from './manifest'
 import { blocksToHtml } from '../lib/blocks'
@@ -75,6 +75,14 @@ let pollInFlight = false
 // When true, the next pollRemote skips the modifiedTime hash check and
 // fetches directly.
 let forceNextPoll = true
+// Cold-pull retry pacing. An incomplete cold pull keeps the seq floor where it
+// was, so every subsequent poll re-detects the gap — without a backoff that's
+// a full folder re-enumeration every 1s tick, hammering Drive on exactly the
+// flaky connection that caused the failure. Exponential (RETRY_BASE_MS →
+// RETRY_MAX_MS); forced polls (reconnect, tab focus, manual retry) bypass it,
+// since those are the "connection might be back" moments.
+let coldRetryAt = 0
+let coldRetryCount = 0
 
 export function notifyLocalWrite() {
   writeGeneration++
@@ -104,6 +112,8 @@ export function startSyncEngine(storeSetter, intervalMs, storeGetter) {
   retryCount = 0
   lastRemoteHash = null
   lastKnownHeadSeq = 0
+  coldRetryAt = 0
+  coldRetryCount = 0
 
   window.addEventListener('online', handleOnline)
   window.addEventListener('offline', handleOffline)
@@ -167,6 +177,8 @@ export function stopSyncEngine() {
   retryCount = 0
   lastRemoteHash = null
   lastKnownHeadSeq = 0
+  coldRetryAt = 0
+  coldRetryCount = 0
   window.removeEventListener('online', handleOnline)
   window.removeEventListener('offline', handleOffline)
   document.removeEventListener('visibilitychange', handleVisibility)
@@ -269,6 +281,9 @@ async function pollRemote(storeSetter) {
   if (pollInFlight) return
   pollInFlight = true
   const startGen = writeGeneration
+  // Hoisted out of the try so the catch can pace a cold pull that THREW
+  // mid-enumeration (same backoff as one that completed with holes).
+  let coldStart = false
   try {
     const ids = await getDriveFileIds()
     if (!ids) return
@@ -315,7 +330,6 @@ async function pollRemote(storeSetter) {
     const head = await readManifest(ids.rootId)
     const localLastSeq = await getLocalLastSeq()
     let changedByType = { task: new Map(), note: new Map(), audio: new Map(), journal: new Map(), config: new Map() }
-    let coldStart = false
     let headSeq = 0
     if (!head) {
       // No manifest yet; treat like a cold start so we don't miss anything.
@@ -336,6 +350,13 @@ async function pollRemote(storeSetter) {
           bucket.set(c.id, c)
         }
       }
+    }
+
+    // A previous cold pull was incomplete (head not adopted), so this tick
+    // would re-enumerate the entire Drive folder. Wait out the backoff —
+    // forced polls (reconnect/focus/manual) skip it and retry immediately.
+    if (coldStart && !forced && Date.now() < coldRetryAt) {
+      return
     }
 
     // Probe: the seq floor + what this poll resolved to fetch. If the laptop's
@@ -610,21 +631,45 @@ async function pollRemote(storeSetter) {
       storeSetter(update)
     }
 
-    // Advance localLastSeq to the manifest head. On cold start we adopt the
-    // head as-is — we just enumerated every entity file, so anything older is
-    // covered by the per-id merges above.
+    // Advance localLastSeq to the manifest head — unless something this poll
+    // was supposed to fetch didn't arrive. A per-id fetch can come back null
+    // when the manifest flagged that id as an UPSERT (Drive read miss or
+    // fetch failure). The merge helpers skip such ids, so the entity never
+    // lands in IDB. If we still advanced the floor to headSeq, that change
+    // would be marked "seen" and never retried — a permanent silent drop.
     //
-    // BUT: a per-id fetch can come back null when the manifest flagged that id
-    // as an UPSERT (Drive read miss or swallowed fetch failure). The merge
-    // helpers skip such ids, so the entity never lands in IDB. If we still
-    // advanced the floor to headSeq, that change would be marked "seen" and
-    // never retried — a permanent silent drop. So cap the advance to just
-    // below the lowest unresolved upsert seq (findUnresolvedUpserts, shared
-    // with the boot merge) and retry next poll. Cold start enumerates the full
-    // folder, so there are no manifest-diff "unresolved" ids to guard.
+    // Diff path: cap the advance to just below the lowest unresolved upsert
+    // seq (findUnresolvedUpserts, shared with the boot merge) and retry next
+    // poll. Cold path: no per-change seqs exist, so adopting the head is
+    // all-or-nothing — any download failure keeps the old floor, the gap
+    // re-detects, and the whole pull re-runs under coldRetryAt's backoff
+    // until one clean pass.
     let advanceTo = headSeq
     let heldBack = false
-    if (!coldStart) {
+    if (coldStart) {
+      const { failures, errSample } = findColdPullFailures({
+        task: taskDocs,
+        note: noteDocs,
+        journal: journalDocs,
+        config: configDoc ? [configDoc] : [],
+      })
+      if (failures.length) {
+        heldBack = true
+        advanceTo = localLastSeq
+        coldRetryCount++
+        coldRetryAt = Date.now() + Math.min(RETRY_BASE_MS * 2 ** coldRetryCount, RETRY_MAX_MS)
+        logSync('poll cold pull INCOMPLETE — head NOT adopted', {
+          headSeq,
+          failureCount: failures.length,
+          failures: failures.slice(0, 30),
+          errSample,
+          retryInMs: coldRetryAt - Date.now(),
+        })
+      } else {
+        coldRetryCount = 0
+        coldRetryAt = 0
+      }
+    } else {
       const { minSeq, unresolved, errSample } = findUnresolvedUpserts(changedByType, {
         task: taskDocs,
         note: noteDocs,
@@ -668,8 +713,25 @@ async function pollRemote(storeSetter) {
     // green dot (the next poll is already forced).
     if (heldBack) setStatus({ state: 'syncing' })
     else if (forced) setStatus({ state: 'synced' })
+
+    // If the boot cold-pull overlay is still up (the initial pull finished
+    // with holes), reflect this pass's outcome: a clean cold pull unlocks the
+    // app; another incomplete one keeps it locked in "retrying" mode.
+    if (coldStart && storeSetter && _storeGetter?.()?.coldPull?.active) {
+      storeSetter({
+        coldPull: heldBack
+          ? { active: true, retrying: true, progress: {} }
+          : { active: false, retrying: false, progress: {} },
+      })
+    }
   } catch (e) {
     console.warn('Poll failed:', e.message || e)
+    if (coldStart) {
+      // The pull threw mid-flight (e.g. a folder listing died). Same pacing
+      // as an incomplete pass — don't re-enumerate everything next 1s tick.
+      coldRetryCount++
+      coldRetryAt = Date.now() + Math.min(RETRY_BASE_MS * 2 ** coldRetryCount, RETRY_MAX_MS)
+    }
     if (isAuthError(e)) {
       // Auth dead and silent refresh can't recover (withAuthRetry already
       // tried). Stop polling so we don't ping Drive every second with a

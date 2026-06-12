@@ -1042,16 +1042,25 @@ const useAppStore = create((set, get) => ({
     const onProgress = (evt) => {
       if (!evt) return
       if (evt.phase === 'cold-start-begin') {
-        set({ coldPull: { active: true, progress: {} } })
+        set({ coldPull: { active: true, retrying: false, progress: {} } })
       } else if (evt.phase === 'cold-start-progress') {
         set(s => ({
           coldPull: {
             active: true,
+            retrying: s.coldPull?.retrying || false,
             progress: { ...(s.coldPull?.progress || {}), [evt.label]: { current: evt.current, total: evt.total } },
           },
         }))
       } else if (evt.phase === 'cold-start-done') {
-        set({ coldPull: { active: false, progress: {} } })
+        if (evt.incomplete) {
+          // The first pull finished with download failures (flaky connection)
+          // and did NOT adopt the seq floor. Keep the app locked and say we're
+          // retrying — the sync engine re-runs the cold pull with backoff and
+          // clears this after the first clean pass.
+          set({ coldPull: { active: true, retrying: true, progress: {} } })
+        } else {
+          set({ coldPull: { active: false, retrying: false, progress: {} } })
+        }
       }
     }
 
@@ -1119,7 +1128,13 @@ const useAppStore = create((set, get) => ({
         get().markSyncReady('today')
       })().catch(() => { get().markSyncReady('journals'); get().markSyncReady('today') })
 
-      set({ lastSync: Date.now(), syncing: false, coldPull: { active: false, progress: {} } })
+      // Don't clear a "retrying" overlay here: an incomplete cold pull keeps
+      // the app locked until the engine's first clean pass (which clears it).
+      set(s => ({
+        lastSync: Date.now(),
+        syncing: false,
+        coldPull: s.coldPull?.retrying ? s.coldPull : { active: false, retrying: false, progress: {} },
+      }))
 
       onSyncStatus((s) => {
         useAppStore.getState().setSyncStatus(s)
@@ -1141,7 +1156,15 @@ const useAppStore = create((set, get) => ({
       // Don't keep surfaces gated if the merge bailed — local data is still
       // viewable; the next poll will hydrate fresh remote data.
       get().markAllSyncReady()
-      set({ coldPull: { active: false, progress: {} } })
+      // A cold pull that THREW is as incomplete as one with holes: keep the
+      // overlay locked in "retrying" so the engine's re-pull (gap re-detected,
+      // floor never advanced) unlocks it after a clean pass. Auth-dead is the
+      // exception — nothing will retry until re-login, so don't lock forever.
+      set(s => ({
+        coldPull: s.coldPull?.active && !isAuth
+          ? { active: true, retrying: true, progress: {} }
+          : { active: false, retrying: false, progress: {} },
+      }))
       // Only spin up the poll engine when auth is healthy. With a dead token
       // the engine would just loop pollRemote every second, briefly setting
       // status back to 'syncing' on each tick and producing the

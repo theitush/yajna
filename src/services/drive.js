@@ -473,16 +473,14 @@ export async function writeBinaryFile(parentId, name, bytes, existingFileId = nu
 
 /**
  * Per-entity binary helpers. Filename is `<id>.bin`. Returns null on missing
- * file so cold-start callers can be tolerant.
+ * file so cold-start callers can be tolerant; a failed DOWNLOAD throws — the
+ * batched readers' rule, so callers can tell "not there" from "couldn't read"
+ * (most wrap with .catch(() => null) when they don't care).
  */
 export async function readEntityBinFile(folderId, id) {
   const fileId = await findFile(folderId, `${id}.bin`)
   if (!fileId) return null
-  try {
-    return await readBinaryFile(fileId)
-  } catch {
-    return null
-  }
+  return readBinaryFile(fileId)
 }
 
 export async function writeEntityBinFile(folderId, id, bytes) {
