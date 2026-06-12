@@ -21,6 +21,7 @@ import {
   resolveNoteDocs, mergeNoteDocs,
   resolveJournalDocs, mergeJournalDocs,
   resolveConfigDoc, mergeConfigDoc,
+  flushPendingSync, hasPendingSync,
 } from './sync'
 import { readManifest, diffManifest, getLocalLastSeq, setLocalLastSeq } from './manifest'
 import { blocksToHtml } from '../lib/blocks'
@@ -40,7 +41,6 @@ let retryStartTime = 0
 let listeners = new Set()
 let status = { state: 'synced' }
 let running = false
-let pendingPush = null
 let lastRemoteHash = null
 // Highest manifest seq we've observed (from the last manifest read). The hash
 // gate below skips a poll when the manifest's modifiedTime is unchanged — but
@@ -115,7 +115,25 @@ export function startSyncEngine(storeSetter, intervalMs, storeGetter) {
     setStatus({ state: 'synced' })
     forceNextPoll = true
     startPolling(storeSetter)
+    // Drain edits stranded by a previous session. Dirty tokens persist in IDB,
+    // but the push that was supposed to ship them died with the page — without
+    // this, an offline-created task never pushes until this device happens to
+    // run pushTasks again (proven: two tasks created offline on 2026-06-11
+    // never left the phone).
+    flushStranded()
   }
+}
+
+/**
+ * Push whatever the persisted dirty set still holds. The dirty tokens in IDB
+ * are the durable record of unpushed work; any in-memory closure parked for
+ * retry dies with the page (tab kill, reload, background freeze), so every
+ * recovery path — boot, reconnect, tab focus, retry timer, manual retry —
+ * must re-derive its work from here instead. No-op when nothing is dirty.
+ */
+async function flushStranded() {
+  const pending = await hasPendingSync().catch(() => false)
+  if (pending) executePush(flushPendingSync)
 }
 
 function handleVisibility() {
@@ -124,20 +142,15 @@ function handleVisibility() {
   if (!navigator.onLine) return
   // Firefox (esp. mobile) freezes backgrounded tabs, so a push that was in
   // flight when the user navigated away can stall indefinitely. When the tab
-  // comes back, flush any parked push before polling — otherwise device 2
+  // comes back, flush anything still dirty before polling — otherwise device 2
   // won't see device 1's changes until device 1 makes another edit.
-  if (pendingPush) {
-    clearTimeout(retryTimer)
-    clearInterval(countdownTimer)
-    retryTimer = null
-    countdownTimer = null
-    retryCount = 0
-    retryStartTime = 0
-    setStatus({ state: 'syncing' })
-    const fn = pendingPush
-    pendingPush = null
-    executePush(fn)
-  }
+  clearTimeout(retryTimer)
+  clearInterval(countdownTimer)
+  retryTimer = null
+  countdownTimer = null
+  retryCount = 0
+  retryStartTime = 0
+  flushStranded()
   forceNextPoll = true
   pollRemote(_storeSetter)
 }
@@ -150,7 +163,6 @@ export function stopSyncEngine() {
   pollTimer = null
   retryTimer = null
   countdownTimer = null
-  pendingPush = null
   retryCount = 0
   lastRemoteHash = null
   lastKnownHeadSeq = 0
@@ -170,17 +182,11 @@ export function retryNow() {
   retryCount = 0
   retryStartTime = 0
 
-  if (pendingPush) {
-    setStatus({ state: 'syncing' })
-    const fn = pendingPush
-    pendingPush = null
-    executePush(fn)
-  } else {
-    setStatus({ state: 'syncing' })
-    pollRemote(_storeSetter).then(() => {
-      if (status.state === 'syncing') setStatus({ state: 'synced' })
-    })
-  }
+  setStatus({ state: 'syncing' })
+  flushStranded()
+  pollRemote(_storeSetter).then(() => {
+    if (status.state === 'syncing') setStatus({ state: 'synced' })
+  })
 }
 
 async function ensureValidToken() {
@@ -210,14 +216,10 @@ function handleOnline() {
   clearTimeout(retryTimer)
   clearInterval(countdownTimer)
 
-  if (pendingPush) {
-    setStatus({ state: 'syncing' })
-    const fn = pendingPush
-    pendingPush = null
-    executePush(fn)
-  } else {
-    setStatus({ state: 'synced' })
-  }
+  // flushStranded flips status to 'syncing' itself (via executePush) only when
+  // the dirty set actually has work.
+  setStatus({ state: 'synced' })
+  flushStranded()
 
   // Reconnect is a real "load" — force the next poll so it surfaces the spinner
   // and skips the hash short-circuit, like wake-from-focus does.
@@ -723,8 +725,7 @@ async function getRemoteHash(ids) {
   return times.join('|')
 }
 
-function scheduleRetry(pushFn) {
-  pendingPush = pushFn
+function scheduleRetry() {
   if (!navigator.onLine) {
     setStatus({ state: 'offline' })
     return
@@ -736,6 +737,8 @@ function scheduleRetry(pushFn) {
 
   const elapsed = Date.now() - retryStartTime
   if (elapsed > 30000) {
+    // Giving up is safe: the unpushed work lives in the persisted dirty set,
+    // and the next reconnect/focus/boot flushStranded retries it.
     console.warn('Sync retry limit reached (30s). Staying offline.')
     setStatus({ state: 'offline' })
     return
@@ -763,9 +766,9 @@ function scheduleRetry(pushFn) {
       setStatus({ state: 'offline' })
       return
     }
-    const fn = pendingPush
-    pendingPush = null
-    executePush(fn)
+    // Retry from the durable dirty set, not the closure that failed — it's a
+    // superset of that closure's work and re-reads current local state.
+    executePush(flushPendingSync)
   }, delayMs)
 }
 
@@ -778,13 +781,14 @@ async function executePush(pushFn) {
     return
   }
   if (!navigator.onLine) {
-    scheduleRetry(pushFn)
+    scheduleRetry()
     return
   }
 
   const hasToken = await ensureValidToken()
   if (!hasToken) {
-    pendingPush = pushFn
+    // No parking needed: the dirty set holds the work; after re-login the
+    // boot/retryNow flushStranded ships it.
     setStatus({ state: 'error', message: 'Session expired', isAuth: true })
     return
   }
@@ -795,7 +799,6 @@ async function executePush(pushFn) {
     await pushFn()
     retryCount = 0
     retryStartTime = 0
-    pendingPush = null
     setStatus({ state: 'synced' })
     // A push advanced the manifest head past our local seq floor (our own
     // changes, and possibly the OTHER device's writes that landed since our
@@ -810,10 +813,9 @@ async function executePush(pushFn) {
   } catch (e) {
     console.warn('Push failed:', e.message || e)
     if (isAuthError(e)) {
-      pendingPush = pushFn
       setStatus({ state: 'error', message: 'Session expired', isAuth: true })
     } else {
-      scheduleRetry(pushFn)
+      scheduleRetry()
     }
   } finally {
     pushesInFlight--
@@ -835,7 +837,6 @@ export function withRetry(pushFn) {
     clearInterval(countdownTimer)
     retryTimer = null
     countdownTimer = null
-    pendingPush = null
     return executePush(pushFn)
   }
 }

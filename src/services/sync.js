@@ -1127,29 +1127,54 @@ export async function pushJournal(dayDoc) {
 export const mergeAndPushJournal = pushJournal
 
 /**
- * Flush everything that accumulated dirty while sync was paused (the manual
- * "go offline" toggle). Tasks/notes/config push by draining their own dirty
- * sets; journals are per-day, so we iterate the journal dirty set and push each
- * day's current local doc. Audio is covered by pushPendingAudio at the call
- * site (it lives in audio.js). Each push is independent and best-effort: one
- * failing bucket must not block the others. Returns nothing — the sync engine,
- * restarted alongside this, owns the resulting status.
+ * Flush every entity type whose persisted dirty set is non-empty. This is the
+ * durable recovery path: dirty tokens live in IDB, so they survive the page
+ * reloads and tab kills that destroy an in-flight (or parked) push closure.
+ * Tasks/notes/config push by draining their own dirty sets; journals are
+ * per-day, so we iterate the journal dirty set and push each day's current
+ * local doc. Audio is covered by pushPendingAudio at the call sites (it lives
+ * in audio.js).
+ *
+ * Every bucket is attempted even when an earlier one fails, but a failure is
+ * RETHROWN at the end: callers run this through the engine's executePush,
+ * whose retry loop is what keeps the work alive until it lands. Swallowing
+ * here would report success on a failed flush and strand the dirty set until
+ * the next reconnect/boot.
  */
 export async function flushPendingSync() {
-  await pushTasks().catch(e => console.warn('flushPendingSync: tasks', e?.message || e))
-  await pushNotes().catch(e => console.warn('flushPendingSync: notes', e?.message || e))
-  await pushConfig().catch(e => console.warn('flushPendingSync: config', e?.message || e))
+  const failures = []
+  await pushTasks().catch(e => failures.push(['tasks', e]))
+  await pushNotes().catch(e => failures.push(['notes', e]))
+  await pushConfig().catch(e => failures.push(['config', e]))
 
   try {
     const dirty = await getDirty('journal')
     const dates = Object.keys(dirty || {})
     for (const date of dates) {
       const doc = await getJournal(date)
-      if (doc) await pushJournal(doc).catch(e => console.warn('flushPendingSync: journal', date, e?.message || e))
+      if (doc) await pushJournal(doc).catch(e => failures.push([`journal ${date}`, e]))
     }
   } catch (e) {
-    console.warn('flushPendingSync: journal drain', e?.message || e)
+    failures.push(['journal drain', e])
   }
+
+  if (failures.length) {
+    for (const [bucket, e] of failures) console.warn('flushPendingSync:', bucket, e?.message || e)
+    throw failures[0][1]
+  }
+}
+
+/**
+ * True when any persisted dirty token exists — i.e. flushPendingSync has work.
+ * Lets reconnect/focus handlers skip the push machinery (and its status
+ * flicker) when nothing is pending.
+ */
+export async function hasPendingSync() {
+  for (const type of ['task', 'note', 'config', 'journal']) {
+    const dirty = await getDirty(type)
+    if (Object.keys(dirty || {}).length > 0) return true
+  }
+  return false
 }
 
 /**
