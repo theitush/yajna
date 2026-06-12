@@ -407,8 +407,11 @@ export async function readEntityFilesBatched(folderId, entries, batchSize = 20, 
         if (!fid) return { id, doc: null }
         const doc = await readJsonFile(fid)
         return { id, doc }
-      } catch {
-        return { id, doc: null }
+      } catch (e) {
+        // Carry the error out instead of folding "fetch failed" into "file
+        // missing" — callers log it and must not advance their seq floor past
+        // a change they couldn't read.
+        return { id, doc: null, err: String(e?.message || e).slice(0, 140) }
       }
     }))
     out.push(...results)
@@ -502,8 +505,10 @@ export async function readEntityBinFilesBatched(folderId, entries, batchSize = 2
         if (!fid) return { id, bytes: null }
         const bytes = await readBinaryFile(fid)
         return { id, bytes }
-      } catch {
-        return { id, bytes: null }
+      } catch (e) {
+        // Same as readEntityFilesBatched: distinguish read failure from a
+        // genuinely missing file for callers' floor-hold and probes.
+        return { id, bytes: null, err: String(e?.message || e).slice(0, 140) }
       }
     }))
     out.push(...results)

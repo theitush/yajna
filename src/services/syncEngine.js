@@ -22,6 +22,7 @@ import {
   resolveJournalDocs, mergeJournalDocs,
   resolveConfigDoc, mergeConfigDoc,
   flushPendingSync, hasPendingSync,
+  findUnresolvedUpserts,
 } from './sync'
 import { readManifest, diffManifest, getLocalLastSeq, setLocalLastSeq } from './manifest'
 import { blocksToHtml } from '../lib/blocks'
@@ -614,38 +615,25 @@ async function pollRemote(storeSetter) {
     // covered by the per-id merges above.
     //
     // BUT: a per-id fetch can come back null when the manifest flagged that id
-    // as an UPSERT (Drive read miss / eventual consistency). The merge helpers
-    // skip such ids (only deletes write a tombstone), so the entity never lands
-    // in IDB. If we still advanced the floor to headSeq, that change would be
-    // marked "seen" and never retried — a permanent silent drop (the "missing
-    // dismissed/done task" bug; confirmed via binOnDrive=true on a missing id).
-    //
-    // So cap the advance to just below the lowest unresolved upsert seq. The
-    // next poll re-diffs from there and refetches the id (the transient miss is
-    // gone by then). Deletes with null bytes are intentional (tombstone written
-    // above), so they don't hold the floor back. Cold start enumerates the full
+    // as an UPSERT (Drive read miss or swallowed fetch failure). The merge
+    // helpers skip such ids, so the entity never lands in IDB. If we still
+    // advanced the floor to headSeq, that change would be marked "seen" and
+    // never retried — a permanent silent drop. So cap the advance to just
+    // below the lowest unresolved upsert seq (findUnresolvedUpserts, shared
+    // with the boot merge) and retry next poll. Cold start enumerates the full
     // folder, so there are no manifest-diff "unresolved" ids to guard.
     let advanceTo = headSeq
+    let heldBack = false
     if (!coldStart) {
-      const resolvedBytes = new Map() // `${type}:${id}` -> hasBytes
-      for (const { id, bytes } of taskDocs) resolvedBytes.set(`task:${id}`, !!bytes)
-      for (const { id, bytes } of noteDocs) resolvedBytes.set(`note:${id}`, !!bytes)
-      for (const { id, bytes } of journalDocs) resolvedBytes.set(`journal:${id}`, !!bytes)
-      if (configDoc) resolvedBytes.set(`config:${configDoc.id}`, !!configDoc.bytes)
-      let minUnresolvedSeq = Infinity
-      const unresolved = []
-      for (const type of ['task', 'note', 'journal', 'config']) {
-        for (const [id, change] of changedByType[type]) {
-          if (change.op === 'delete') continue
-          if (resolvedBytes.get(`${type}:${id}`) === false) {
-            const seq = change.seq || 0
-            if (seq > 0 && seq < minUnresolvedSeq) minUnresolvedSeq = seq
-            unresolved.push(`${type}:${id.slice(0, 8)}@${seq}`)
-          }
-        }
-      }
-      if (minUnresolvedSeq !== Infinity) {
-        advanceTo = Math.min(headSeq, minUnresolvedSeq - 1)
+      const { minSeq, unresolved, errSample } = findUnresolvedUpserts(changedByType, {
+        task: taskDocs,
+        note: noteDocs,
+        journal: journalDocs,
+        config: configDoc ? [configDoc] : [],
+      })
+      if (minSeq !== Infinity) {
+        advanceTo = Math.min(headSeq, minSeq - 1)
+        heldBack = true
         // Force the NEXT poll to re-diff (bypass the modifiedTime hash gate):
         // nothing on Drive will change to bump the hash, so without this the
         // held-back id would only retry when some unrelated change moves the
@@ -653,7 +641,7 @@ async function pollRemote(storeSetter) {
         // refetch succeeds and the floor finally advances past it.
         forceNextPoll = true
         logSync('poll seq advance HELD BACK (unresolved upsert)', {
-          headSeq, advanceTo, unresolved,
+          headSeq, advanceTo, unresolved, errSample,
         })
       }
     }
@@ -675,7 +663,11 @@ async function pollRemote(storeSetter) {
     }
     // Forced polls showed 'syncing' above; settle them back. Silent background
     // polls never changed the status, so leave it untouched (no status churn).
-    if (forced) setStatus({ state: 'synced' })
+    // A held-back poll is NOT synced — changes we know about failed to fetch
+    // and are pending retry — so keep showing 'syncing' instead of a lying
+    // green dot (the next poll is already forced).
+    if (heldBack) setStatus({ state: 'syncing' })
+    else if (forced) setStatus({ state: 'synced' })
   } catch (e) {
     console.warn('Poll failed:', e.message || e)
     if (isAuthError(e)) {

@@ -201,12 +201,47 @@ export async function mergeConfigDoc(configDoc) {
   return mergedRow
 }
 
+/**
+ * Find manifest-flagged upserts whose entity fetch came back empty this pass —
+ * a Drive read miss or a swallowed fetch failure (the batched readers return
+ * `bytes: null` for both; `err` is set on the failure case). The merge helpers
+ * skip those ids, so if the caller still advances its seq floor past them the
+ * change is marked "seen" and never retried: a permanent silent drop. Both the
+ * poll path and the boot merge cap their setLocalLastSeq advance to
+ * `minSeq - 1` (the 2026-06-12 22-task staleness came from the boot path
+ * missing this guard).
+ *
+ * `resolved[type]` is the [{ id, bytes }] list that was fetched; pass null for
+ * a type whose resolve stage failed outright (treats every upsert in that
+ * bucket as unresolved). Deletes never hold the floor — their null bytes are
+ * intentional (tombstone written from the manifest entry alone).
+ */
+export function findUnresolvedUpserts(changedByType, resolved) {
+  let minSeq = Infinity
+  const unresolved = []
+  let errSample = null
+  for (const type of Object.keys(resolved)) {
+    const docs = resolved[type]
+    const byId = docs === null ? null : new Map(docs.map(d => [d.id, d]))
+    for (const [id, change] of changedByType[type] || []) {
+      if (change.op === 'delete') continue
+      const doc = byId === null ? null : byId.get(id)
+      if (byId !== null && (doc === undefined || doc.bytes)) continue
+      const seq = change.seq || 0
+      if (seq > 0 && seq < minSeq) minSeq = seq
+      unresolved.push(`${type}:${String(id).slice(0, 8)}@${seq}`)
+      if (!errSample && doc?.err) errSample = doc.err
+    }
+  }
+  return { minSeq, unresolved, errSample }
+}
+
 export async function mergeTaskDocs(taskDocs, changedMap) {
   const local = await getAllTasksRaw()
   const localById = new Map(local.map(t => [t.id, t]))
   const writeRows = []
   const writeDocBytes = new Map() // id → bytes
-  for (const { id, bytes } of taskDocs) {
+  for (const { id, bytes, err } of taskDocs) {
     const l = localById.get(id)
     const change = changedMap.get(id)
     if (!bytes) {
@@ -216,17 +251,17 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
         writeRows.push({ id, deleted: true, deletedAt: change.at, updatedAt: change.at })
         localById.delete(id)
       } else {
-        // BUG SITE: manifest flagged this id as an upsert, but its .bin came
-        // back null (Drive read miss / eventual consistency). We skip it here —
-        // yet the caller still advances localLastSeq past this change, so this
-        // id is NEVER retried. That permanently drops the task on this device
-        // (matches "missing dismissed/done tasks"). Probe records every such
-        // silent skip so we can confirm the count + ids.
+        // Manifest flagged this id as an upsert, but its .bin fetch came back
+        // empty (read miss or swallowed fetch failure — `err` says which). We
+        // skip it here; the caller's findUnresolvedUpserts floor-hold keeps
+        // the change retryable on the next poll. Probe records every skip so
+        // a stale device's flush log shows exactly what failed and why.
         logSync('mergeTaskDocs SKIP upsert with null bytes (silent loss)', {
           id: id.slice(0, 8),
           op: change?.op || null,
           seq: change?.seq ?? null,
           hadLocalRow: !!l,
+          err: err || null,
         })
       }
       continue
@@ -671,6 +706,12 @@ async function mergeWithDriveImpl(resolvers, onProgress = null) {
     onProgress({ phase: 'cold-start-begin' })
   }
 
+  // What each stage actually fetched, for the unresolved-upsert floor-hold at
+  // the end. null = stage never resolved its docs (treat the whole bucket as
+  // unresolved). Audio is intentionally absent — its merge is row-based JSON,
+  // not .bin docs, and the poll path's floor-hold ignores it the same way.
+  const resolved = { task: null, note: null, journal: null, config: null }
+
   // -- Stage 1: config + today's journal (cheap, unblocks Today UI) --
   const stage1 = (async () => {
     const tCfg = performance.now()
@@ -679,6 +720,7 @@ async function mergeWithDriveImpl(resolvers, onProgress = null) {
     // recency heal, else adopt remote. Falls back to the local row if the .bin
     // isn't there yet (pre-migration peer, or write in flight).
     const configDoc = await resolveConfigDoc(configFolderId, inspection.coldStart, inspection.changedByType.config)
+    resolved.config = configDoc ? [configDoc] : []
     const mergedConfig = (await mergeConfigDoc(configDoc)) || (await getConfig()) || {}
     mark('config', tCfg)
     resolvers.config(mergedConfig)
@@ -702,6 +744,7 @@ async function mergeWithDriveImpl(resolvers, onProgress = null) {
       resolveEntityDocs(audioMetaFolderId, inspection.coldStart, inspection.changedByType.audio, progress, 'audio'),
     ])
     if (progress && inspection.coldStart) progress('tasks', taskDocs.length, taskDocs.length)
+    resolved.task = taskDocs
     const mergedTasks = await mergeTaskDocs(taskDocs, inspection.changedByType.task)
     await mergeAudioDocs(audioDocs, inspection.changedByType.audio)
     mark(`stage2 tasks+audio (cold=${inspection.coldStart}, ${taskDocs.length}t/${audioDocs.length}a)`, tStage)
@@ -721,6 +764,7 @@ async function mergeWithDriveImpl(resolvers, onProgress = null) {
       : null
     const noteDocs = await resolveNoteDocs(notesFolderId, inspection.coldStart, inspection.changedByType.note)
     if (noteProgress && inspection.coldStart) noteProgress(noteDocs.length, noteDocs.length)
+    resolved.note = noteDocs
     const mergedNotes = await mergeNoteDocs(noteDocs, inspection.changedByType.note)
     mark(`stage3 notes (cold=${inspection.coldStart}, ${noteDocs.length}n)`, tStage)
     resolvers.notes(mergedNotes.filter(n => !n.deleted))
@@ -743,6 +787,7 @@ async function mergeWithDriveImpl(resolvers, onProgress = null) {
       : null
     const journalDocs = await resolveJournalDocs(journalsFolderId, inspection.coldStart, inspection.changedByType.journal)
     if (journalProgress && inspection.coldStart) journalProgress(journalDocs.length, journalDocs.length)
+    resolved.journal = journalDocs
     await mergeJournalDocs(journalDocs, inspection.changedByType.journal)
     mark(`stage4 journals (cold=${inspection.coldStart}, ${journalDocs.length}j)`, tStage)
     resolvers.journals(journalDocs.length)
@@ -758,9 +803,24 @@ async function mergeWithDriveImpl(resolvers, onProgress = null) {
   }
 
   // Advance localLastSeq once everything has been applied. On cold start the
-  // head seq is the new floor.
-  if (inspection.headSeq > inspection.localLastSeq) {
-    await setLocalLastSeq(inspection.headSeq).catch(() => {})
+  // head seq is the new floor. Same unresolved-upsert guard as pollOnce: an
+  // upsert whose fetch failed above was skipped by the merge helpers, and
+  // advancing past it would mark it "seen" forever — the boot-path silent
+  // drop that left a device 22 tasks stale on 2026-06-12 after one fetch
+  // batch failed. Hold the floor just below it; the engine's first poll is
+  // always forced, re-diffs from there, and refetches.
+  let advanceTo = inspection.headSeq
+  if (!inspection.coldStart) {
+    const { minSeq, unresolved, errSample } = findUnresolvedUpserts(inspection.changedByType, resolved)
+    if (minSeq !== Infinity) {
+      advanceTo = Math.min(advanceTo, minSeq - 1)
+      logSync('boot seq advance HELD BACK (unresolved upsert)', {
+        headSeq: inspection.headSeq, advanceTo, unresolved, errSample,
+      })
+    }
+  }
+  if (advanceTo > inspection.localLastSeq) {
+    await setLocalLastSeq(advanceTo).catch(() => {})
   }
 
   putMeta(LAST_SYNC_KEY, Date.now()).catch(() => {})
