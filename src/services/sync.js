@@ -930,6 +930,10 @@ export async function pushTasks() {
   if (!ids?.tasksFolderId) return null
   const dirty = await getDirty('task')
   const dirtyIds = Object.keys(dirty)
+  // PROBE: surface that pushTasks actually ran and how many dirty ids it saw.
+  // The "tasks stranded" phone log had ZERO task-push lines — this proves
+  // whether pushTasks is even reached (vs coalesced/throwing before this).
+  logSync('pushTasks enter', { dirty: dirtyIds.length, ids: dirtyIds.map(i => i.slice(0, 8)) })
   if (dirtyIds.length === 0) return null
 
   const localTasks = await getAllTasksRaw()
@@ -1010,6 +1014,7 @@ export async function pushTasks() {
   // left dirty for the coalesced follow-up push — so its fields aren't dropped.
   await clearDirty('task', pushedTokens)
   if (changes.length) await appendChanges(ids.rootId, changes)
+  logSync('pushTasks done', { shipped: changes.length, cleared: Object.keys(pushedTokens).length })
   return Object.keys(pushedTokens).length
 }
 
@@ -1276,9 +1281,14 @@ export async function flushPendingSync() {
 
   if (failures.length) {
     for (const [bucket, e] of failures) console.warn('flushPendingSync:', bucket, e?.message || e)
+    // PROBE: per-bucket flush failures aren't visible on phone (console only).
+    // Surface them so a stranded task whose push THREW is distinguishable from
+    // one that was never pushed (coalescer-dropped).
+    logSync('flushPendingSync FAILED', { buckets: failures.map(([b, e]) => `${b}:${e?.message || e}`).join(' | ') })
     throw failures[0][1]
   }
 }
+flushPendingSync.label = 'flushPendingSync'
 
 /**
  * True when any persisted dirty token exists — i.e. flushPendingSync has work.

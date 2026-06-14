@@ -19,6 +19,15 @@ import { withAuthRetry } from '../services/auth'
 import { stampBlocks, stampBlocksFromDoc, blocksToHtml } from '../lib/blocks'
 import { logSync } from '../services/syncLog'
 
+// Labeled journal-push closure so the engine's coalescing probe (executePush
+// PARK/DRAIN) can tell a journal push apart from pushTasks/pushNotes — the bare
+// `() => pushJournal(doc)` arrow logs as "anon" otherwise. Probe-only helper.
+const journalPush = (doc) => {
+  const fn = () => pushJournal(doc)
+  fn.label = 'pushJournal'
+  return fn
+}
+
 // Per-task serialization for read-modify-write. updateTask reads the row from
 // IDB, merges the caller's partial `updates`, and writes it back. Two rapid
 // updates to the same id (e.g. setting a title then immediately marking done)
@@ -628,7 +637,7 @@ const useAppStore = create((set, get) => ({
 
     get().bumpReviewVersion()
     if (get().driveEnabled) {
-      withRetry(() => pushJournal(updated))()
+      withRetry(journalPush(updated))()
     }
   },
   setJournalEntryReviewed: async (date, reviewed) => {
@@ -662,7 +671,7 @@ const useAppStore = create((set, get) => ({
 
     get().bumpReviewVersion()
     if (get().driveEnabled) {
-      withRetry(() => pushJournal(updated))()
+      withRetry(journalPush(updated))()
     }
   },
   addJournalBlockComment: async (date, blockId, text) => {
@@ -694,7 +703,7 @@ const useAppStore = create((set, get) => ({
     await putJournal(updated)
     if (currentDoc) set({ currentDay: updated })
     get().bumpReviewVersion()
-    if (get().driveEnabled) withRetry(() => pushJournal(updated))()
+    if (get().driveEnabled) withRetry(journalPush(updated))()
   },
 
   // Audio (local-first, lazy Drive sync). Metadata (driveFileId, transcript,
@@ -825,7 +834,7 @@ const useAppStore = create((set, get) => ({
       await putJournal(updatedDoc)
       await restoreAudio(id)
       set(s => (s.currentDay?.date === date ? { currentDay: updatedDoc, currentDayRev: s.currentDayRev + 1 } : {}))
-      if (get().driveEnabled) withRetry(() => pushJournal(updatedDoc))()
+      if (get().driveEnabled) withRetry(journalPush(updatedDoc))()
     } else {
       return { ok: false, reason: 'Unknown audio source type.' }
     }

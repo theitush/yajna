@@ -144,6 +144,7 @@ export function startSyncEngine(storeSetter, intervalMs, storeGetter) {
  */
 async function flushStranded() {
   const pending = await hasPendingSync().catch(() => false)
+  logSync('flushStranded', { pending, inFlight: pushesInFlight })
   if (pending) executePush(flushPendingSync)
 }
 
@@ -831,6 +832,15 @@ async function executePush(pushFn) {
   // Single-flight: if a push is already running, don't start a second on the
   // main thread. Park the latest fn; the running push drains it when it ends.
   if (pushesInFlight > 0) {
+    // PROBE: last-writer-wins park is type-blind across buckets. If a pushTasks
+    // is parked and then overwritten by a pushJournal before it runs, the task
+    // push is silently dropped. Surface every park + every overwrite so a phone
+    // log can prove/disprove the "journal beautiful, tasks stranded" theory.
+    logSync('executePush PARK', {
+      incoming: pushFn.label || pushFn.name || 'anon',
+      overwriting: coalescedPush ? (coalescedPush.label || coalescedPush.name || 'anon') : null,
+      dropped: !!coalescedPush,
+    })
     coalescedPush = pushFn
     return
   }
@@ -879,6 +889,7 @@ async function executePush(pushFn) {
     if (coalescedPush && pushesInFlight === 0) {
       const next = coalescedPush
       coalescedPush = null
+      logSync('executePush DRAIN parked', { fn: next.label || next.name || 'anon' })
       executePush(next)
     }
   }
