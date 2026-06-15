@@ -203,11 +203,19 @@ export function retryNow() {
   })
 }
 
+// Returns:
+//   'ok'      — a usable access token is in hand.
+//   'expired' — the refresh worker said no (401 / no blob). Truly signed out.
+//   'network' — couldn't reach the worker (transport error). Transient: the
+//               token isn't dead, we just can't refresh it right now. Retry.
+// Conflating the last two is what made wake-from-sleep show a false "Session
+// expired" — the worker fetch fails at the network layer (Status code: null,
+// CORS did not succeed), not with a 401.
 async function ensureValidToken() {
   const token = await getStoredToken()
   if (token) {
     setAccessToken(token)
-    return true
+    return 'ok'
   }
 
   try {
@@ -215,12 +223,15 @@ async function ensureValidToken() {
     if (refreshed) {
       await storeToken(refreshed.token, refreshed.expiresIn)
       setAccessToken(refreshed.token)
-      return true
+      return 'ok'
     }
+    // null = worker reachable but rejected the blob (401) or none stored.
+    return 'expired'
   } catch (e) {
-    console.warn('Sync engine token refresh failed:', e)
+    // Threw = the worker was unreachable (offline / wake-from-sleep / CORS).
+    console.warn('Sync engine token refresh network error (will retry):', e)
+    return 'network'
   }
-  return false
 }
 
 function handleOnline() {
@@ -292,9 +303,16 @@ async function pollRemote(storeSetter) {
     // hasn't run yet (initial connect flow handles it), defer until it has.
     if (!ids.notesFolderId || !ids.tasksFolderId || !ids.audioMetaFolderId) return
 
-    const hasToken = await ensureValidToken()
-    if (!hasToken) {
+    const tokenState = await ensureValidToken()
+    if (tokenState === 'expired') {
       setStatus({ state: 'error', message: 'Session expired', isAuth: true })
+      return
+    }
+    if (tokenState === 'network') {
+      // Worker unreachable (typically wake-from-sleep before Wi-Fi is back).
+      // The token isn't dead — bail this tick and let the next poll / online
+      // event refresh once the network returns. No banner change; the prior
+      // status stands and the engine self-heals without a manual reload.
       return
     }
 
@@ -849,11 +867,17 @@ async function executePush(pushFn) {
     return
   }
 
-  const hasToken = await ensureValidToken()
-  if (!hasToken) {
+  const tokenState = await ensureValidToken()
+  if (tokenState === 'expired') {
     // No parking needed: the dirty set holds the work; after re-login the
     // boot/retryNow flushStranded ships it.
     setStatus({ state: 'error', message: 'Session expired', isAuth: true })
+    return
+  }
+  if (tokenState === 'network') {
+    // Worker unreachable, not signed out. The work is safe in the dirty set;
+    // back off and let reconnect/focus flushStranded retry once we're online.
+    scheduleRetry()
     return
   }
 
