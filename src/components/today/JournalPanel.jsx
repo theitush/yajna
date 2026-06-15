@@ -9,7 +9,8 @@ import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { DOMSerializer } from '@tiptap/pm/model'
 import { useEffect, useRef } from 'react'
 import useAppStore from '../../store/useAppStore'
-import { formatDate, currentJournalDay } from '../../lib/dates'
+import { formatDate } from '../../lib/dates'
+import useCurrentDay from '../../lib/useCurrentDay'
 import EditorToolbar from '../editor/EditorToolbar'
 import { RTLExtension } from '../editor/RTLExtension'
 import { AudioNode } from '../editor/AudioNode'
@@ -78,7 +79,8 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
   // day-change to guarantee the tail of writing isn't lost if you navigate away
   // before the debounce fires.
   const pendingSave = useRef(null)
-  const targetDate = date || currentJournalDay(config)
+  const liveDay = useCurrentDay(config)
+  const targetDate = date || liveDay
 
   useEffect(() => {
     loadJournal(targetDate)

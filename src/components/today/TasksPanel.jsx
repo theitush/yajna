@@ -1,8 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import useAppStore from '../../store/useAppStore'
 import TaskCard from './TaskCard'
-import { today as todayFn } from '../../lib/dates'
 import { getTaskSnapshotForDate } from '../../lib/review'
+import useCurrentDay from '../../lib/useCurrentDay'
 
 // On touch devices we drag only from the grip handle (so the card scrolls
 // freely); on desktop the whole card stays grabbable as before.
@@ -15,8 +15,9 @@ export default function TasksPanel({ date }) {
   const addTask = useAppStore(s => s.addTask)
   const addTaskForDate = useAppStore(s => s.addTaskForDate)
   const reorderTasks = useAppStore(s => s.reorderTasks)
+  const config = useAppStore(s => s.config)
   const [justAddedId, setJustAddedId] = useState(null)
-  const todayStr = todayFn()
+  const todayStr = useCurrentDay(config)
   const targetDate = date || todayStr
   const isToday = targetDate === todayStr
 
@@ -32,11 +33,14 @@ export default function TasksPanel({ date }) {
   const didDragRef = useRef(false) // true if a real drag (not a click) just ended
   const DRAG_THRESHOLD = 5 // px movement before drag starts
 
-  const { today, yesterday } = (() => {
-    const t = new Date().toISOString().slice(0, 10)
-    const d = new Date(); d.setDate(d.getDate() - 1)
-    const y = d.toISOString().slice(0, 10)
-    return { today: t, yesterday: y }
+  // Derive yesterday from the live (rollover-aware) day key so the done-task
+  // window agrees with the journal's notion of "today" and rolls over on the
+  // same signal.
+  const today = todayStr
+  const yesterday = (() => {
+    const d = new Date(today + 'T12:00:00')
+    d.setDate(d.getDate() - 1)
+    return d.toISOString().slice(0, 10)
   })()
 
   const todayTasks = isToday

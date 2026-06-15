@@ -5,7 +5,7 @@ import { putMeta } from '../../services/db'
 import { MODE_KEY, MODE_OFFLINE, MODE_DRIVE } from '../../lib/constants'
 import { getAllJournals } from '../../services/db'
 import { buildReviewDays } from '../../lib/review'
-import { currentJournalDay } from '../../lib/dates'
+import useCurrentDay from '../../lib/useCurrentDay'
 
 const baseItems = [
   { to: '/', label: 'Today', icon: BookIcon },
@@ -54,7 +54,7 @@ function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
 
   // Same rollover-aware bound as ReviewPage so the badge count matches the list
   // exactly (only PAST days, today excluded).
-  const currentDay = currentJournalDay(config)
+  const currentDay = useCurrentDay(config)
   const reviewCount = useMemo(
     () => buildReviewDays({ tasks, journalDocs, reviews, currentDay }).filter(day => day.needsReview).length,
     [tasks, journalDocs, reviews, currentDay]
