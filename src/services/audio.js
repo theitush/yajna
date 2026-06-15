@@ -10,8 +10,9 @@
 import { putAudio, getAudio, getAllAudio, deleteAudio as dbDeleteAudio } from './db'
 import {
   getDriveFileIds, uploadAudioFile, downloadFileBlob, deleteDriveFile,
-  readJsonFile, writeEntityFile, readEntityFile, listFolder,
+  readJsonFile, writeEntityFile, readEntityFile, listFolder, writeBinaryFile,
 } from './drive'
+import { repairAudioBlob } from './webmRepair'
 import { appendChanges, getDeviceId } from './manifest'
 import { withAuthRetry } from './auth'
 import { logSync } from './syncLog'
@@ -436,4 +437,44 @@ if (typeof window !== 'undefined') {
   // Recovery aid: window.repairOrphanAudioMeta()        -> dry run
   //               window.repairOrphanAudioMeta(true)    -> apply
   window.repairOrphanAudioMeta = (apply = false) => repairOrphanAudioMeta({ apply })
+}
+
+// ── TEMPORARY ONE-SHOT — remove after the user runs it once ──────────────────
+// Fixes the two known clips whose WebM Duration jumped (Brave Android suspend).
+// Run window.fixBrokenAudio() once on ANY device: it repairs the local blob,
+// writes it back to IDB, and PATCHes the same Drive file in place (driveFileId
+// unchanged) so every device gets the corrected bytes on next play. Tap the
+// clip afterwards (or refresh) and the duration + transcription will be sane.
+export async function fixBrokenAudio() {
+  const IDS = [
+    '05626135-9f9b-4dd1-8213-51ed57bae1c7',
+    'de9115e4-34c7-4d90-bd60-9b608b348c3c',
+  ]
+  const out = []
+  const driveIds = await getDriveFileIds()
+  for (const id of IDS) {
+    try {
+      // Pull the blob (lazy-downloads from Drive if this device never had it).
+      const rec = await ensureAudioLocal(id)
+      if (!rec?.blob) { out.push({ id, status: 'no blob' }); continue }
+      const { blob: fixed, changed, durationSec } = await repairAudioBlob(rec.blob)
+      if (!changed) { out.push({ id, status: 'already healthy' }); continue }
+      // Heal locally.
+      await putAudio({ ...rec, blob: fixed, duration: durationSec || rec.duration })
+      // Overwrite the Drive file IN PLACE so driveFileId stays valid everywhere.
+      const driveFileId = rec.driveFileId
+      if (driveFileId && driveIds?.audioFolderId) {
+        const ext = (rec.mimeType || 'audio/webm').split('/')[1]?.split(';')[0] || 'webm'
+        const bytes = new Uint8Array(await fixed.arrayBuffer())
+        await writeBinaryFile(driveIds.audioFolderId, `${id}.${ext}`, bytes, driveFileId)
+        out.push({ id, status: 'fixed + pushed', durationSec })
+      } else {
+        out.push({ id, status: 'fixed locally (no driveFileId to push)', durationSec })
+      }
+    } catch (e) {
+      out.push({ id, status: 'ERROR: ' + (e.message || e) })
+    }
+  }
+  console.table(out)
+  return out
 }

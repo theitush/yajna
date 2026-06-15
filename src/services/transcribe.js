@@ -1,3 +1,5 @@
+import { repairAudioBlob } from './webmRepair'
+
 const GROQ_URL = 'https://api.groq.com/openai/v1/audio/transcriptions'
 
 export const GROQ_MODELS = [
@@ -11,6 +13,11 @@ export const DEFAULT_GROQ_MODEL = 'whisper-large-v3-turbo'
 export async function transcribeWithGroq({ blob, apiKey, model = DEFAULT_GROQ_MODEL, language }) {
   if (!apiKey) throw new Error('Missing Groq API key')
   if (!blob) throw new Error('Missing audio')
+
+  // A MediaRecorder clip with a jumped cluster timestamp carries an inflated
+  // Duration; Groq reads that against the short packet stream and 500s. Repair
+  // the container before upload so transcription gets a sane file.
+  ;({ blob } = await repairAudioBlob(blob))
 
   const ext = (blob.type || 'audio/webm').split('/')[1]?.split(';')[0] || 'webm'
   const file = new File([blob], `audio.${ext}`, { type: blob.type || 'audio/webm' })

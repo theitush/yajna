@@ -4,6 +4,7 @@ import { signOut } from '../services/auth'
 import { getStorageEstimate, getStoragePersistence, requestStoragePersistence, exportData } from '../services/storage'
 import { putMeta } from '../services/db'
 import { flushSyncLogToDrive } from '../services/syncLog'
+import { fixBrokenAudio } from '../services/audio' // TEMP: remove with the button below
 import { MODE_OFFLINE, MODE_DRIVE, MODE_KEY } from '../lib/constants'
 import { GROQ_MODELS, DEFAULT_GROQ_MODEL } from '../services/transcribe'
 import { detectBrowserTimezone, timezoneLabel } from '../lib/timezones'
@@ -173,6 +174,18 @@ export default function SettingsPage() {
     }
   }
 
+  // TEMP one-shot: fix the two clips with jumped WebM durations. Remove after use.
+  const [fixAudioStatus, setFixAudioStatus] = useState(null)
+  const handleFixBrokenAudio = async () => {
+    setFixAudioStatus('Fixing…')
+    try {
+      const res = await fixBrokenAudio()
+      setFixAudioStatus(res.map(r => `${r.id.slice(0, 8)}: ${r.status}`).join(' · '))
+    } catch (e) {
+      setFixAudioStatus(`Failed: ${e.message || e}`)
+    }
+  }
+
   const handleConnectDrive = async () => {
     await putMeta(MODE_KEY, null)
     setAuthenticated(false)
@@ -269,6 +282,24 @@ export default function SettingsPage() {
                 color: syncLogStatus.startsWith('Failed') ? '#FCA5A5' : 'var(--green-400)',
               }}>
                 {syncLogStatus === 'saving' ? 'Saving…' : syncLogStatus}
+              </p>
+            )}
+
+            {/* TEMP one-shot — remove after running once. Fixes the 2 clips with
+                jumped WebM durations; re-pushes to Drive so all devices heal. */}
+            <button onClick={handleFixBrokenAudio} style={{ ...btnSecondaryStyle, marginTop: '12px' }}>
+              Fix broken audio (one-time)
+              <span style={{ display: 'block', fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                Repairs the two voice clips whose duration shows wrong, and uploads
+                the fix so every device gets it.
+              </span>
+            </button>
+            {fixAudioStatus && (
+              <p style={{
+                fontSize: '12px', marginTop: '8px',
+                color: fixAudioStatus.startsWith('Failed') ? '#FCA5A5' : 'var(--green-400)',
+              }}>
+                {fixAudioStatus}
               </p>
             )}
           </section>

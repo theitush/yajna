@@ -4,6 +4,7 @@ import { ReactNodeViewRenderer, NodeViewWrapper } from '@tiptap/react'
 import { useEffect, useRef, useState } from 'react'
 import useAppStore from '../../store/useAppStore'
 import { transcribeWithGroq, DEFAULT_GROQ_MODEL } from '../../services/transcribe'
+import { repairAudioBlob } from '../../services/webmRepair'
 
 // Manually place the caret at the mousedown point. Needed because the
 // surrounding PM atom node-view has contentEditable=false on its wrapper,
@@ -392,8 +393,11 @@ function AudioNodeView({ node, editor, getPos, extension }) {
         setError('Audio not found')
         return null
       }
-      blobRef.current = rec.blob
-      const url = URL.createObjectURL(rec.blob)
+      // Heal a jumped-timestamp clip so the <audio> element reports the real
+      // duration (and seeking works). No-op for healthy/non-webm blobs.
+      const { blob: healed } = await repairAudioBlob(rec.blob)
+      blobRef.current = healed
+      const url = URL.createObjectURL(healed)
       setObjectUrl(url)
       setStatus('ready')
       if (rec.duration && !duration) setDuration(rec.duration)
@@ -1079,7 +1083,13 @@ function AudioNodeView({ node, editor, getPos, extension }) {
           onEnded={() => { setPlaying(false); setCurrentTime(0) }}
           onLoadedMetadata={e => {
             const d = e.currentTarget.duration
-            if (isFinite(d) && d > 0) setDuration(d)
+            // Backstop: never let the element's reported duration overwrite a
+            // trustworthy recorded one. We repair the blob on load so this is
+            // usually correct, but if a corrupt value slips through (Infinity or
+            // a huge jumped-timestamp value), keep the wall-clock attr instead.
+            if (!isFinite(d) || d <= 0) return
+            if (node.attrs.duration > 0 && d > node.attrs.duration * 2) return
+            setDuration(d)
           }}
           onCanPlay={tryAutoplay}
           onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}

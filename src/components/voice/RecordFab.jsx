@@ -44,9 +44,21 @@ export default function RecordFab({ editor }) {
 
   useEffect(() => {
     const onVisibility = () => {
-      // Re-acquire if we lost the lock while hidden but are still recording.
-      if (document.visibilityState === 'visible' && recording && !wakeLockRef.current) {
-        acquireWakeLock()
+      const rec = mediaRecorder.current
+      if (document.visibilityState === 'hidden') {
+        // A suspended tab stops feeding audio to MediaRecorder anyway, but its
+        // clock keeps advancing — on resume the next cluster gets stamped with
+        // the wall-clock gap, inflating the file's Duration (Brave Android).
+        // Pausing freezes the timeline so the recording stays well-formed.
+        if (rec && rec.state === 'recording') {
+          try { rec.pause() } catch (e) { void e }
+        }
+      } else if (document.visibilityState === 'visible' && recording) {
+        if (rec && rec.state === 'paused') {
+          try { rec.resume() } catch (e) { void e }
+        }
+        // Re-acquire if we lost the lock while hidden but are still recording.
+        if (!wakeLockRef.current) acquireWakeLock()
       }
     }
     document.addEventListener('visibilitychange', onVisibility)
