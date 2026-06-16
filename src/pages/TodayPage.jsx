@@ -134,11 +134,11 @@ function MobileLayout({ insertTextRef, panel, setPanel }) {
 
         <div style={{ flex: 1, overflow: 'hidden' }}>
           {panel === 'journal' ? (
-            <JournalPanel onInsertText={insertTextRef} />
+            <JournalPanel onInsertText={insertTextRef} hideHeader />
           ) : (
             <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
               <SurfaceLoadingGate bucket="tasks" label="Loading tasks...">
-                <TasksPanel />
+                <TasksPanel showHeader={false} />
               </SurfaceLoadingGate>
             </div>
           )}

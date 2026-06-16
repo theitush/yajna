@@ -12,7 +12,6 @@ import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { DOMSerializer } from '@tiptap/pm/model'
 import { docToBlocks, blocksToHtml } from '../lib/blocks'
 import useAppStore from '../store/useAppStore'
-import EditorToolbar from '../components/editor/EditorToolbar'
 import { RTLExtension } from '../components/editor/RTLExtension'
 import { AudioNode } from '../components/editor/AudioNode'
 import { BlockIdExtension } from '../components/editor/BlockIdExtension'
@@ -267,7 +266,6 @@ function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags, autoFocu
           </button>
         )}
       </div>
-      <EditorToolbar editor={editor} />
       <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', fontSize: '14px', color: 'var(--text-primary)' }}>
         <EditorContent editor={editor} />
       </div>

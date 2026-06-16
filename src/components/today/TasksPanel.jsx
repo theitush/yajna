@@ -10,7 +10,7 @@ const isTouchDevice = typeof window !== 'undefined'
   && typeof window.matchMedia === 'function'
   && window.matchMedia('(hover: none) and (pointer: coarse)').matches
 
-export default function TasksPanel({ date }) {
+export default function TasksPanel({ date, showHeader = true }) {
   const tasks = useAppStore(s => s.tasks)
   const addTask = useAppStore(s => s.addTask)
   const addTaskForDate = useAppStore(s => s.addTaskForDate)
@@ -240,13 +240,14 @@ export default function TasksPanel({ date }) {
         </div>
       )}
 
-      {/* Header */}
-      <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '12px 16px',
-        borderBottom: '1px solid var(--border-light)',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
+      {/* Header — desktop only. On mobile it's dropped entirely; the add
+          control lives in a card under the list on both layouts. */}
+      {showHeader && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '6px',
+          padding: '12px 16px',
+          borderBottom: '1px solid var(--border-light)',
+        }}>
           <span style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)' }}>{isToday ? "Today's todos" : 'Tasks'}</span>
           {todayTasks.length > 0 && (
             <span style={{
@@ -258,21 +259,7 @@ export default function TasksPanel({ date }) {
             </span>
           )}
         </div>
-        <button
-          onClick={handleAdd}
-          style={{
-            fontSize: '12px', fontWeight: 500,
-            color: 'var(--accent)',
-            background: 'var(--accent-light)',
-            border: 'none', padding: '5px 14px',
-            borderRadius: '8px', cursor: 'pointer',
-            fontFamily: 'var(--font-body)',
-            transition: 'background 0.15s',
-          }}
-        >
-          + Add
-        </button>
-      </div>
+      )}
 
       <div
         onClickCapture={(e) => {
@@ -316,6 +303,30 @@ export default function TasksPanel({ date }) {
             />
           </div>
         ))}
+
+        {/* Add a new todo — a card under the list (replaces the old header
+            "+ Add" button), on both mobile and desktop. Keeps the original
+            accent colors. */}
+        <button
+          onClick={handleAdd}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+            width: '100%', textAlign: 'center',
+            padding: '12px 14px',
+            background: 'var(--accent-light)',
+            border: 'none',
+            borderRadius: '12px',
+            color: 'var(--accent)',
+            cursor: 'pointer',
+            fontFamily: 'var(--font-body)',
+            fontSize: '13px', fontWeight: 500,
+            flexShrink: 0,
+            transition: 'background 0.15s',
+          }}
+        >
+          <span style={{ fontSize: '16px', lineHeight: 1 }}>+</span>
+          Add Todo
+        </button>
       </div>
     </div>
   )

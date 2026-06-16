@@ -362,6 +362,7 @@ export default function ReviewPage() {
   const setJournalEntryReviewed = useAppStore(s => s.setJournalEntryReviewed)
   const addJournalBlockComment = useAppStore(s => s.addJournalBlockComment)
   const config = useAppStore(s => s.config)
+  const setTopbarDate = useAppStore(s => s.setTopbarDate)
   const [searchParams] = useSearchParams()
   const urlDate = searchParams.get('date')
   const highlightBlock = useHighlightTarget('block')
@@ -431,6 +432,14 @@ export default function ReviewPage() {
     setOpenCommentKey(null)
     setMobileView('detail')
   }
+
+  // Publish the open day to the mobile top bar (shown next to "Yajna", same
+  // place/style as Today). Only while the detail view is open; cleared when
+  // returning to the list or leaving Review.
+  useEffect(() => {
+    setTopbarDate(mobileView === 'detail' ? (selectedDay?.date || null) : null)
+    return () => setTopbarDate(null)
+  }, [mobileView, selectedDay?.date, setTopbarDate])
 
   return (
     <div style={{ display: 'flex', height: '100%', background: 'var(--bg-primary)' }}>
@@ -556,15 +565,12 @@ export default function ReviewPage() {
         {selectedDay ? (
           <>
             <div className="flex md:hidden" style={{ ...mobileDetailHeaderStyle, justifyContent: 'space-between' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <button
-                  onClick={() => setMobileView('list')}
-                  style={mobileBackButtonStyle}
-                >
-                  &larr; Back
-                </button>
-                <span style={mobileDetailTitleStyle}>{formatDate(selectedDay.date)}</span>
-              </div>
+              <button
+                onClick={() => setMobileView('list')}
+                style={mobileBackButtonStyle}
+              >
+                &larr; Back
+              </button>
               <ModeToggle mode={mode} onChange={setMode} />
             </div>
 
@@ -840,15 +846,6 @@ const mobileBackButtonStyle = {
   flexShrink: 0,
 }
 
-const mobileDetailTitleStyle = {
-  fontSize: '12px',
-  fontWeight: 500,
-  color: 'var(--text-primary)',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-  minWidth: 0,
-}
 
 function iconButtonStyle(active) {
   return {

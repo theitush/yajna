@@ -11,7 +11,6 @@ import { useEffect, useRef } from 'react'
 import useAppStore from '../../store/useAppStore'
 import { formatDate } from '../../lib/dates'
 import useCurrentDay from '../../lib/useCurrentDay'
-import EditorToolbar from '../editor/EditorToolbar'
 import { RTLExtension } from '../editor/RTLExtension'
 import { AudioNode } from '../editor/AudioNode'
 import { BlockIdExtension } from '../editor/BlockIdExtension'
@@ -62,7 +61,7 @@ const HashtagExtension = Extension.create({
   },
 })
 
-export default function JournalPanel({ onInsertText, date, headerLabel }) {
+export default function JournalPanel({ onInsertText, date, headerLabel, hideHeader }) {
   const currentDay = useAppStore(s => s.currentDay)
   // External-origin counter: bumps on navigation/load, sync-poll merge, or
   // audio restore — never on the editor's own debounced save. We key the
@@ -238,18 +237,19 @@ export default function JournalPanel({ onInsertText, date, headerLabel }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* Header */}
-      <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '12px 20px',
-        borderBottom: '1px solid var(--border-light)',
-      }}>
-        <span style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-primary)' }}>
-          {headerLabel ?? formatDate(targetDate)}
-        </span>
-      </div>
-
-      <EditorToolbar editor={editor} />
+      {/* Header. Hidden on mobile Today — the date moves up next to "Yajna"
+          in the app top bar (App.jsx MobileTopBar) to save vertical space. */}
+      {!hideHeader && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '12px 20px',
+          borderBottom: '1px solid var(--border-light)',
+        }}>
+          <span style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-primary)' }}>
+            {headerLabel ?? formatDate(targetDate)}
+          </span>
+        </div>
+      )}
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px 22rem' }}>
         <EditorContent editor={editor} />

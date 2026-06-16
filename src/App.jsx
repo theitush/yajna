@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
-import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { HashRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import useAppStore from './store/useAppStore'
+import useCurrentDay from './lib/useCurrentDay'
+import { formatDate } from './lib/dates'
 import { loadGAPI, initGAPI, getStoredToken, getTokenRemainingSeconds, startAuthRedirect, consumeAuthRedirect, storeToken, storeRefreshBlob, setAccessToken, trySilentRefresh, scheduleTokenRefresh, isAuthError } from './services/auth'
 import { initDriveStructure } from './services/drive'
 import { migrateDriveJournalsIfNeeded } from './services/journalMigration'
@@ -366,10 +368,11 @@ export default function App() {
                 background: syncDotColor,
                 display: 'inline-block',
                 flexShrink: 0,
-                marginTop: '12px', 
+                marginTop: '12px',
                 ...(effectiveSyncStatus.state === 'syncing' ? { animation: 'pulse 1.5s ease-in-out infinite' } : {}),
               }} />
             </span>
+            <MobileTopbarDate />
           </div>
           <main className="flex-1 overflow-hidden flex flex-col">
             <Routes>
@@ -440,6 +443,32 @@ export default function App() {
         )}
       </div>
     </HashRouter>
+  )
+}
+
+// The date shown next to "Yajna" in the mobile top bar. On Today it's the
+// current day (from the rollover clock); on Review it's the selected day the
+// page publishes to the store. Stands in for the per-screen date header we
+// drop on mobile. Lives inside HashRouter so useLocation works.
+function MobileTopbarDate() {
+  const location = useLocation()
+  const config = useAppStore(s => s.config)
+  const today = useCurrentDay(config)
+  const reviewDate = useAppStore(s => s.topbarDate)
+  const date = location.pathname === '/' ? today
+    : location.pathname === '/review' ? reviewDate
+    : null
+  if (!date) return null
+  return (
+    <span style={{
+      marginLeft: 'auto',
+      fontSize: '13px',
+      color: 'var(--text-tertiary)',
+      fontFamily: 'var(--font-body)',
+      whiteSpace: 'nowrap',
+    }}>
+      {formatDate(date)}
+    </span>
   )
 }
 

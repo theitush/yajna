@@ -932,6 +932,11 @@ const useAppStore = create((set, get) => ({
   // batch tick of that bucket.
   coldPull: { active: false, progress: {} },
   setColdPull: (next) => set({ coldPull: next }),
+  // Date string (YYYY-MM-DD) the mobile top bar shows next to "Yajna". Today
+  // computes its own from the rollover clock; Review publishes its selected
+  // day here so the top bar can show it the same way. null = show nothing.
+  topbarDate: null,
+  setTopbarDate: (date) => set({ topbarDate: date }),
   // Per-surface gates. False during initial connect; flipped true as each
   // staged-pull bucket resolves. Once true they stay true — incremental polls
   // are cheap and merge-safe via writeGeneration, no need to re-gate.
