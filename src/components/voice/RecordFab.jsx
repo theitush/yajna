@@ -169,13 +169,10 @@ export default function RecordFab({ editor }) {
         blob, duration, (driveFileId) => stampDriveFileId(id, driveFileId)
       )
       if (editor) {
-        // If a node (e.g. another audio) is selected, collapse to its end so
-        // we insert AFTER it instead of replacing it.
-        const sel = editor.state.selection
-        if (sel && typeof sel.to === 'number' && sel.from !== sel.to) {
-          editor.commands.setTextSelection(sel.to)
-        }
-        editor.chain().focus().insertAudio({ audioId: id, duration, mimeType, createdAt, autoTranscribe: true }).run()
+        // Recordings always append to the END of the document — never at the
+        // caret. focus('end') puts the cursor past all existing content
+        // (including any prior recording), so the clip lands after it.
+        editor.chain().focus('end').insertAudio({ audioId: id, duration, mimeType, createdAt, autoTranscribe: true }).run()
       }
     } catch (e) {
       console.error(e)
