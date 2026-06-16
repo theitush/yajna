@@ -33,23 +33,13 @@ export default function TasksPanel({ date }) {
   const didDragRef = useRef(false) // true if a real drag (not a click) just ended
   const DRAG_THRESHOLD = 5 // px movement before drag starts
 
-  // Derive yesterday from the live (rollover-aware) day key so the done-task
-  // window agrees with the journal's notion of "today" and rolls over on the
-  // same signal.
-  const today = todayStr
-  const yesterday = (() => {
-    const d = new Date(today + 'T12:00:00')
-    d.setDate(d.getDate() - 1)
-    return d.toISOString().slice(0, 10)
-  })()
-
+  // Today shows everything still in play: active tasks plus done tasks that
+  // haven't been X'd yet (reviewed/dismissed). No date window — a done task
+  // stays put until you review it, so completing something never makes it
+  // vanish out from under you.
   const todayTasks = isToday
     ? tasks
-        .filter(task => {
-          if (task.status === 'active') return true
-          if (task.status === 'done' && (task.doneDate === today || task.doneDate === yesterday)) return true
-          return false
-        })
+        .filter(task => task.status === 'active' || task.status === 'done')
         .sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity))
     : tasks
         .map(t => getTaskSnapshotForDate(t, targetDate) ? t : null)

@@ -205,8 +205,14 @@ export default function TaskCard({ task, defaultExpanded = false, defaultEditing
   }, [expanded, commitEdits])
 
   const handleCheckmark = () => {
-    if (isDone) markTaskActive(task.id)
-    else markTaskDone(task.id)
+    if (isDone) { markTaskActive(task.id); return }
+    // The checkmark sits right next to the open edit fields. Flush any pending
+    // explanation/feedback/tags first so marking done can't silently drop text
+    // the user just typed (updateTask is per-id locked, so this serializes
+    // ahead of the status write). Without this, tapping done from an expanded
+    // card threw away the edit.
+    if (expanded) commitEdits()
+    markTaskDone(task.id)
   }
 
   const handleTitleBlur = () => {

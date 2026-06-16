@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
-import { today, dayKey, currentJournalDay } from '../lib/dates'
+import { dayKey, currentJournalDay } from '../lib/dates'
 import { detectBrowserTimezone } from '../lib/timezones'
 import { MODE_OFFLINE, SYNC_PAUSED_KEY } from '../lib/constants'
 import {
@@ -139,7 +139,7 @@ const useAppStore = create((set, get) => ({
       explanation,
       feedback: '',
       status: 'active',
-      createdDate: today(),
+      createdDate: currentJournalDay(get().config),
       doneDate: null,
       dismissedDate: null,
       order: maxOrder + 1,
@@ -217,16 +217,16 @@ const useAppStore = create((set, get) => ({
     if (get().driveEnabled) withRetry(pushTasks)()
   }),
   markTaskDone: async (id) => {
-    await get().updateTask(id, { status: 'done', doneDate: today() })
+    await get().updateTask(id, { status: 'done', doneDate: currentJournalDay(get().config) })
   },
   markTaskActive: async (id) => {
     await get().updateTask(id, { status: 'active', doneDate: null })
   },
   markTaskReviewed: async (id) => {
-    await get().updateTask(id, { status: 'reviewed', reviewedDate: today() })
+    await get().updateTask(id, { status: 'reviewed', reviewedDate: currentJournalDay(get().config) })
   },
   dismissTask: async (id) => {
-    await get().updateTask(id, { status: 'dismissed', dismissedDate: today() })
+    await get().updateTask(id, { status: 'dismissed', dismissedDate: currentJournalDay(get().config) })
   },
   moveToBacklog: async (id) => {
     await get().updateTask(id, { status: 'backlog' })

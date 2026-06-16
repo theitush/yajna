@@ -83,20 +83,3 @@ export function formatDate(dateStr) {
   return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
 }
 
-/**
- * Returns true if taskDate <= today
- */
-export function isOnOrBeforeToday(dateStr) {
-  return dateStr <= today()
-}
-
-/**
- * Determines if a task should appear in the daily view
- */
-export function isVisibleToday(task) {
-  const t = today()
-  const y = yesterday()
-  if (task.status === 'active') return true
-  if (task.status === 'done' && (task.doneDate === t || task.doneDate === y)) return true
-  return false
-}
