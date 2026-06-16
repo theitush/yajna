@@ -203,7 +203,10 @@ export default function RecordFab({ editor }) {
   return (
     <div
       style={{
-        position: 'fixed',
+        // Anchored to the nearest positioned ancestor (the journal/note panel)
+        // rather than the viewport, so on the desktop Today split it sits at the
+        // bottom-right of the journal instead of bleeding into the tasks column.
+        position: 'absolute',
         right: '20px',
         bottom: 'calc(20px + env(safe-area-inset-bottom, 0px))',
         zIndex: 40,
@@ -242,8 +245,8 @@ export default function RecordFab({ editor }) {
           borderRadius: '50%',
           border: 'none',
           cursor: saving ? 'wait' : 'pointer',
-          background: recording ? '#ef4444' : 'var(--accent)',
-          color: '#fff',
+          background: recording ? '#ef4444' : 'var(--accent-light)',
+          color: recording ? '#fff' : 'var(--accent)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           boxShadow: '0 6px 20px rgba(0,0,0,0.3)',
           transition: 'transform 0.12s, background 0.15s',

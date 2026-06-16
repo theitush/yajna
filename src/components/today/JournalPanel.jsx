@@ -236,7 +236,7 @@ export default function JournalPanel({ onInsertText, date, headerLabel, hideHead
   }, [editor, onInsertText])
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', position: 'relative' }}>
       {/* Header. Hidden on mobile Today — the date moves up next to "Yajna"
           in the app top bar (App.jsx MobileTopBar) to save vertical space. */}
       {!hideHeader && (

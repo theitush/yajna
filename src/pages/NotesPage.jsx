@@ -405,7 +405,7 @@ export default function NotesPage() {
   })
 
   return (
-    <div style={{ display: 'flex', height: '100%', overflow: 'hidden', background: 'var(--bg-primary)' }}>
+    <div style={{ display: 'flex', height: '100%', overflow: 'hidden', background: 'var(--bg-primary)', position: 'relative' }}>
       {/* Notes list + tag strip */}
       <div
         style={{
