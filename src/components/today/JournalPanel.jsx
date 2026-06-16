@@ -195,17 +195,36 @@ export default function JournalPanel({ onInsertText, date, headerLabel, hideHead
   // rebuild on our own save echo) regardless of what triggered the effect.
   useEffect(() => {
     if (!editor) return
-    const remoteContent = dayDoc ? blocksToHtml(dayDoc.blocks) : ''
-    // Probe: this effect is the LAST mile — a poll-merged remote journal only
-    // reaches the screen if it runs setContent here. Log every exit reason
-    // (lengths only, no entry text) so the "didn't appear on phone" reports can
-    // finally be traced end to end: merge (Probe 1) → render decision (Probe 2)
-    // → this paint.
+    // dayDoc is null ONLY while this targetDate hasn't loaded yet — the brief gap
+    // after a day-rollover flips targetDate but before loadJournal resolves, when
+    // currentDay still holds the PREVIOUS day. There's nothing authoritative to
+    // render in that window, so bail and wait; don't clobber the editor with a
+    // transient empty. Once loadJournal sets currentDay to this day — even a fresh
+    // EMPTY day — dayDoc is present and we reconcile below.
+    if (!dayDoc) {
+      logSync('journal render effect', {
+        date: targetDate, rev: currentDayRev, reason: 'no-doc',
+        remoteLen: 0, editorLen: editor.getHTML().length,
+      })
+      return
+    }
+    // The loaded day's content is authoritative INCLUDING when it's empty. A
+    // fresh day (woke up, nothing written yet) has blocks:[] → remoteContent ''.
+    // The old `if (!remoteContent) return` treated empty as "nothing to do" and
+    // left the editor showing the PREVIOUS day's text after a rollover — the
+    // "woke up, still yesterday's journal until I switched page" bug (the page
+    // switch only healed it by remounting the mobile editor empty). Clear to match.
+    const remoteContent = blocksToHtml(dayDoc.blocks)
+    // Probe: this effect is the LAST mile — a poll-merged or rolled-over remote
+    // journal only reaches the screen if it runs setContent here. Log every exit
+    // reason (lengths only, no entry text) so the "didn't appear / stale on phone"
+    // reports can be traced end to end: merge (Probe 1) → render decision (Probe
+    // 2) → this paint.
     const reason =
-      !remoteContent ? 'empty-remote'
-      : saveTimeout.current ? 'mid-type'
+      saveTimeout.current ? 'mid-type'
       : editor.getHTML() === remoteContent ? 'identical'
-      : 'applied'
+      : remoteContent ? 'applied'
+      : 'cleared'
     logSync('journal render effect', {
       date: targetDate,
       rev: currentDayRev,
@@ -213,7 +232,6 @@ export default function JournalPanel({ onInsertText, date, headerLabel, hideHead
       remoteLen: remoteContent.length,
       editorLen: editor.getHTML().length,
     })
-    if (!remoteContent) return
     // Don't rebuild the doc while the user is mid-type: a setContent resets the
     // cursor. A pending debounced save IS the "actively typing" signal — once it
     // fires and clears, the user has paused and the next poll (or this effect's
