@@ -11,6 +11,7 @@ import { useEffect, useRef } from 'react'
 import useAppStore from '../../store/useAppStore'
 import { formatDate } from '../../lib/dates'
 import useCurrentDay from '../../lib/useCurrentDay'
+import useScrollRestore from '../../lib/useScrollRestore'
 import { RTLExtension } from '../editor/RTLExtension'
 import { AudioNode } from '../editor/AudioNode'
 import { BlockIdExtension } from '../editor/BlockIdExtension'
@@ -61,7 +62,7 @@ const HashtagExtension = Extension.create({
   },
 })
 
-export default function JournalPanel({ onInsertText, date, headerLabel, hideHeader }) {
+export default function JournalPanel({ onInsertText, date, headerLabel, hideHeader, scrollKey }) {
   const currentDay = useAppStore(s => s.currentDay)
   // External-origin counter: bumps on navigation/load, sync-poll merge, or
   // audio restore — never on the editor's own debounced save. We key the
@@ -80,6 +81,7 @@ export default function JournalPanel({ onInsertText, date, headerLabel, hideHead
   const pendingSave = useRef(null)
   const liveDay = useCurrentDay(config)
   const targetDate = date || liveDay
+  const scrollRef = useScrollRestore(scrollKey)
 
   useEffect(() => {
     loadJournal(targetDate)
@@ -269,7 +271,7 @@ export default function JournalPanel({ onInsertText, date, headerLabel, hideHead
         </div>
       )}
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px 22rem' }}>
+      <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: '20px 24px 22rem' }}>
         <EditorContent editor={editor} />
       </div>
       {editor && <RecordFab editor={editor} />}

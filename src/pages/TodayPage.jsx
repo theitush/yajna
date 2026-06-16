@@ -47,7 +47,7 @@ function DesktopLayout({ insertTextRef, showTasks, toggleTasks }) {
           overflow: 'hidden',
           transition: 'border-right 0.3s ease'
         }}>
-          <JournalPanel onInsertText={insertTextRef} />
+          <JournalPanel onInsertText={insertTextRef} scrollKey="today-journal" />
         </div>
 
         {/* Toggle Button */}
@@ -92,7 +92,7 @@ function DesktopLayout({ insertTextRef, showTasks, toggleTasks }) {
               to block task edits on a stale list without freezing the editor. */}
           <div style={{ width: '340px', height: '100%', display: 'flex', flexDirection: 'column' }}>
             <SurfaceLoadingGate bucket="tasks" label="Loading tasks...">
-              <TasksPanel />
+              <TasksPanel scrollKey="today-tasks" />
             </SurfaceLoadingGate>
           </div>
         </div>
@@ -134,11 +134,11 @@ function MobileLayout({ insertTextRef, panel, setPanel }) {
 
         <div style={{ flex: 1, overflow: 'hidden' }}>
           {panel === 'journal' ? (
-            <JournalPanel onInsertText={insertTextRef} hideHeader />
+            <JournalPanel onInsertText={insertTextRef} hideHeader scrollKey="today-journal" />
           ) : (
             <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
               <SurfaceLoadingGate bucket="tasks" label="Loading tasks...">
-                <TasksPanel showHeader={false} />
+                <TasksPanel showHeader={false} scrollKey="today-tasks" />
               </SurfaceLoadingGate>
             </div>
           )}

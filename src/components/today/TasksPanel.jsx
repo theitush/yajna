@@ -3,6 +3,7 @@ import useAppStore from '../../store/useAppStore'
 import TaskCard from './TaskCard'
 import { getTaskSnapshotForDate } from '../../lib/review'
 import useCurrentDay from '../../lib/useCurrentDay'
+import useScrollRestore from '../../lib/useScrollRestore'
 
 // On touch devices we drag only from the grip handle (so the card scrolls
 // freely); on desktop the whole card stays grabbable as before.
@@ -10,7 +11,7 @@ const isTouchDevice = typeof window !== 'undefined'
   && typeof window.matchMedia === 'function'
   && window.matchMedia('(hover: none) and (pointer: coarse)').matches
 
-export default function TasksPanel({ date, showHeader = true }) {
+export default function TasksPanel({ date, showHeader = true, scrollKey }) {
   const tasks = useAppStore(s => s.tasks)
   const addTask = useAppStore(s => s.addTask)
   const addTaskForDate = useAppStore(s => s.addTaskForDate)
@@ -24,6 +25,7 @@ export default function TasksPanel({ date, showHeader = true }) {
   const [draggingId, setDraggingId] = useState(null)
   const [cloneStyle, setCloneStyle] = useState(null)
   const [shifts, setShifts] = useState({}) // id -> px shift for transform
+  const scrollRef = useScrollRestore(scrollKey)
 
   const draggingIdRef = useRef(null)
   const overIdRef = useRef(null)
@@ -262,6 +264,7 @@ export default function TasksPanel({ date, showHeader = true }) {
       )}
 
       <div
+        ref={scrollRef}
         onClickCapture={(e) => {
           // Suppress the click that follows a drag (mousedown→move→mouseup on
           // the same element still fires a native click, which would otherwise
