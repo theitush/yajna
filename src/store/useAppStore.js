@@ -15,6 +15,7 @@ import { pushTasks, pushNotes, pushJournal, pushConfig, initialSyncStreaming, me
 import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, retryNow, setPollInterval, pullNow } from '../services/syncEngine'
 import { pushAudio, pushPendingAudio, ensureAudioLocal, softDeleteAudio, restoreAudio, hardDeleteAudio, collectAudioIdsFromBlocks, audioBlockHtml } from '../services/audio'
 import { putAudio, getAudio } from '../services/db'
+import { transcribeWithGroq, DEFAULT_GROQ_MODEL } from '../services/transcribe'
 import { withAuthRetry } from '../services/auth'
 import { stampBlocks, stampBlocksFromDoc, blocksToHtml } from '../lib/blocks'
 import { logSync } from '../services/syncLog'
@@ -734,6 +735,42 @@ const useAppStore = create((set, get) => ({
   getAudioRecord: async (id, hints = null, opts = null) => {
     if (get().mode === MODE_OFFLINE) return getAudio(id)
     return ensureAudioLocal(id, hints, opts)
+  },
+
+  // Transcription runs HERE, not in the AudioNode view, so it survives the
+  // node-view unmounting mid-request — e.g. tapping Transcribe then navigating
+  // to another page. The Groq call lives outside any component lifecycle and
+  // lands the result durably on the IDB audio record; a mounted node hydrates
+  // it onto the doc node from there (see AudioNode's metaOnly hydrate effect).
+  // transcribingAudio is store-level so the spinner survives navigation too.
+  transcribingAudio: {},
+  transcribeAudio: async (audioId, hints = null) => {
+    if (!audioId) throw new Error('Audio not available')
+    const { config } = get()
+    const apiKey = config?.groqApiKey
+    if (!apiKey) throw new Error('Add your Groq API key in Settings first')
+    if (get().transcribingAudio[audioId]) return null // already in flight
+    const rec = await get().getAudioRecord(audioId, hints)
+    if (!rec?.blob) throw new Error('Audio not available')
+    const model = config?.groqModel || DEFAULT_GROQ_MODEL
+    set(s => ({ transcribingAudio: { ...s.transcribingAudio, [audioId]: true } }))
+    try {
+      const result = await transcribeWithGroq({ blob: rec.blob, apiKey, model })
+      const text = result?.text || ''
+      const segments = Array.isArray(result?.segments) ? result.segments : null
+      const transcribedAt = new Date().toISOString()
+      // Durable, editor-independent landing. The node attrs (synced cross-device
+      // via the journal/note doc) are still written by the mounted node-view;
+      // this IDB copy is what survives an unmount and rehydrates on return.
+      await putAudio({ ...rec, transcript: text, transcriptSegments: segments, transcriptModel: model, transcribedAt })
+      return { text, segments, model, transcribedAt }
+    } finally {
+      set(s => {
+        const next = { ...s.transcribingAudio }
+        delete next[audioId]
+        return { transcribingAudio: next }
+      })
+    }
   },
 
   // Trash: soft-deleted tasks, notes, and audio (raw reads; UI filters further).

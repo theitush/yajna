@@ -3,7 +3,6 @@ import { NodeSelection, Plugin, TextSelection } from '@tiptap/pm/state'
 import { ReactNodeViewRenderer, NodeViewWrapper } from '@tiptap/react'
 import { useEffect, useRef, useState } from 'react'
 import useAppStore from '../../store/useAppStore'
-import { transcribeWithGroq, DEFAULT_GROQ_MODEL } from '../../services/transcribe'
 import { repairAudioBlob } from '../../services/webmRepair'
 
 // Manually place the caret at the mousedown point. Needed because the
@@ -294,6 +293,10 @@ function formatTime(s) {
 function AudioNodeView({ node, editor, getPos, extension }) {
   const audioId = node.attrs.audioId
   const getAudioRecord = useAppStore(s => s.getAudioRecord)
+  const transcribeAudio = useAppStore(s => s.transcribeAudio)
+  // Spinner state lives in the store so it survives this node-view unmounting
+  // mid-request (navigating pages) and is shared across remounts of the clip.
+  const transcribing = useAppStore(s => !!s.transcribingAudio[audioId])
   const trashAudio = useAppStore(s => s.trashAudio)
   const readOnly = !!extension?.options?.readOnly
   const config = useAppStore(s => s.config)
@@ -313,7 +316,6 @@ function AudioNodeView({ node, editor, getPos, extension }) {
     Array.isArray(node.attrs.transcriptSegments) ? node.attrs.transcriptSegments : null
   )
   const [transcriptModel, setTranscriptModel] = useState(node.attrs.transcriptModel || null)
-  const [transcribing, setTranscribing] = useState(false)
   const [transcriptError, setTranscriptError] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmRetranscribe, setConfirmRetranscribe] = useState(false)
@@ -437,27 +439,23 @@ function AudioNodeView({ node, editor, getPos, extension }) {
       setTranscriptError('Offline — will transcribe when back online')
       return
     }
-    const apiKey = config?.groqApiKey
-    if (!apiKey) {
+    if (!config?.groqApiKey) {
       setTranscriptError('Add your Groq API key in Settings first')
       return
     }
-    let blob = blobRef.current
-    if (!blob) {
-      const rec = await getAudioRecord(audioId)
-      blob = rec?.blob || null
-      if (blob) blobRef.current = blob
-    }
-    if (!blob) {
-      setTranscriptError('Audio not available')
-      return
-    }
-    const model = config?.groqModel || DEFAULT_GROQ_MODEL
-    setTranscribing(true)
     try {
-      const result = await transcribeWithGroq({ blob, apiKey, model })
-      const text = typeof result === 'string' ? result : (result?.text || '')
-      const segs = typeof result === 'object' && Array.isArray(result?.segments) ? result.segments : null
+      // The Groq call + durable IDB write run in the store, independent of this
+      // node-view. If we navigate away mid-request the result still lands (and
+      // rehydrates on return); if we're still mounted we also write it onto the
+      // live doc node here so it syncs cross-device immediately.
+      const result = await transcribeAudio(audioId, {
+        driveFileId: node.attrs.driveFileId || null,
+        mimeType: node.attrs.mimeType || null,
+        duration: node.attrs.duration || 0,
+        createdAt: node.attrs.createdAt || null,
+      })
+      if (!result) return // already in flight
+      const { text, segments: segs, model } = result
       saveTranscriptToNode(text, segs, model)
       setTranscript(text)
       setDraftTranscript(text)
@@ -466,8 +464,6 @@ function AudioNodeView({ node, editor, getPos, extension }) {
       setTranscriptVersion(v => v + 1)
     } catch (e) {
       setTranscriptError(e.message || 'Transcription failed')
-    } finally {
-      setTranscribing(false)
     }
   }
 
@@ -512,10 +508,11 @@ function AudioNodeView({ node, editor, getPos, extension }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [node.attrs.autoTranscribe, syncPaused])
 
-  // Legacy hydrate: pre-migration clips kept createdAt/transcript only in IDB.
-  // Backfill them onto the node so chronological tinting + transcript display
-  // work and the data converges to the node-attr model. New clips already carry
-  // everything on the node, so this is a no-op for them.
+  // Hydrate transcript/createdAt from the IDB audio record onto the node. Two
+  // cases: (1) legacy pre-migration clips that kept these only in IDB; (2) a
+  // transcription that completed in the store while this node-view was unmounted
+  // (navigated away) — re-running when `transcribing` flips false picks up that
+  // freshly-landed result. No-op once the node already carries the transcript.
   useEffect(() => {
     let cancelled = false
     if (node.attrs.createdAt && node.attrs.transcript) return
@@ -539,7 +536,8 @@ function AudioNodeView({ node, editor, getPos, extension }) {
       } catch { /* ignore */ }
     })()
     return () => { cancelled = true }
-  }, [audioId])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioId, transcribing])
 
   // Pick up transcripts/segments that arrive via doc sync (remote device
   // transcribed it). The node re-renders with new attrs; sync our local edit
