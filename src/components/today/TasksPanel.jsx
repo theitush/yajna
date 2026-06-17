@@ -306,10 +306,15 @@ export default function TasksPanel({ date, showHeader = true, scrollKey }) {
             />
           </div>
         ))}
+      </div>
 
-        {/* Add a new todo — a card under the list (replaces the old header
-            "+ Add" button), on both mobile and desktop. Keeps the original
-            accent colors. */}
+      {/* Add a new todo — pinned to the bottom of the panel so it's always
+          reachable without scrolling. Lives outside the scroll area as a
+          footer; keeps the original card look and accent colors. */}
+      <div style={{
+        flexShrink: 0,
+        padding: '4px 12px',
+      }}>
         <button
           onClick={handleAdd}
           style={{
@@ -323,7 +328,6 @@ export default function TasksPanel({ date, showHeader = true, scrollKey }) {
             cursor: 'pointer',
             fontFamily: 'var(--font-body)',
             fontSize: '13px', fontWeight: 500,
-            flexShrink: 0,
             transition: 'background 0.15s',
           }}
         >
