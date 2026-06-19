@@ -1005,15 +1005,19 @@ export async function pushTasks() {
     pushedTokens[id] = token
   }
 
-  // Clear dirty BEFORE the manifest append. If the manifest write fails the
-  // entity files are already authoritative and the next poll on another device
-  // will pick them up via cold-start fallback. We don't want to re-push the
-  // entities on retry just because the manifest hint failed.
+  // Append to the manifest FIRST, then clear dirty. The manifest entry is what
+  // makes the .bin discoverable to other devices' (seq-driven) incremental
+  // polls; clearing before it is durably published strands an orphaned .bin if
+  // the append fails (the 700-פזו bug). If appendChanges throws — persistent
+  // If-Match contention or a network drop — the dirty set stays intact and the
+  // retry loop (flushPendingSync → executePush) re-ships + re-appends until it
+  // lands. A redundant .bin re-upload / duplicate manifest entry on retry is
+  // harmless (idempotent bytes; poll dedups by id, compaction keeps newest).
+  if (changes.length) await appendChanges(ids.rootId, changes)
   // Compare-and-clear by token: an edit that re-dirtied an id AFTER we captured
   // its token (the mark-done-then-feedback race) keeps a newer token and is
   // left dirty for the coalesced follow-up push — so its fields aren't dropped.
   await clearDirty('task', pushedTokens)
-  if (changes.length) await appendChanges(ids.rootId, changes)
   logSync('pushTasks done', { shipped: changes.length, cleared: Object.keys(pushedTokens).length })
   return Object.keys(pushedTokens).length
 }
@@ -1088,10 +1092,13 @@ export async function pushNotes() {
     pushedTokens[id] = token
   }
 
+  // Append first, then clear — see pushTasks: clearing before the manifest is
+  // durably published strands an orphaned .bin when the append fails. A throw
+  // leaves dirty intact for the retry loop.
+  if (changes.length) await appendChanges(ids.rootId, changes)
   // Compare-and-clear by token (see pushTasks): a note re-edited mid-push keeps
   // its newer token and is re-shipped by the coalesced follow-up push.
   await clearDirty('note', pushedTokens)
-  if (changes.length) await appendChanges(ids.rootId, changes)
   return Object.keys(pushedTokens).length
 }
 
@@ -1136,13 +1143,15 @@ export async function pushConfig() {
 
   await writeEntityBinFile(ids.configFolderId, 'config', bytes)
 
-  // Clear dirty before the manifest append (same rationale as pushTasks).
-  // Token-gated: a setting changed mid-push keeps a newer token and re-ships.
-  await clearDirty('config', { config: token })
+  // Append first, then clear — see pushTasks: clearing before the manifest is
+  // durably published strands the orphaned .bin if the append fails. A throw
+  // leaves dirty set for the retry loop.
   await appendChanges(ids.rootId, [{
     type: 'config', id: 'config', op: 'upsert',
     at: new Date().toISOString(), deviceId: await getDeviceId(),
   }])
+  // Token-gated: a setting changed mid-push keeps a newer token and re-ships.
+  await clearDirty('config', { config: token })
   return 1
 }
 
@@ -1223,13 +1232,17 @@ export async function pushJournal(dayDoc) {
   await writeEntityBinFile(ids.journalsFolderId, date, bytes)
 
   const deviceId = await getDeviceId()
+  // No .catch here: a swallowed append failure clears the dirty flag below
+  // while the manifest still doesn't point at the freshly uploaded .bin, which
+  // strands it (the 700-פזו bug, same class). Let it throw so the dirty flag
+  // survives and the retry loop re-ships + re-appends.
   await appendChanges(ids.rootId, [{
     type: 'journal',
     id: date,
     op: 'upsert',
     at: new Date().toISOString(),
     deviceId,
-  }]).catch(() => {})
+  }])
 
   // Resolved successfully — drop from the per-day dirty set (the markDirty
   // call inside putJournal on the user-edit path adds an entry here).

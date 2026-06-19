@@ -191,9 +191,17 @@ export async function appendChanges(rootId, entries) {
     logSync('manifest append 412 conflict, retrying', { attempt })
     // 412 — another device appended between read and write. Re-read and retry.
   }
-  // Out of retries. Don't throw — manifest is a hint; the entity file is
-  // already written. Next push or compaction sweep will heal the log.
-  logSync('manifest append GAVE UP after retries — manifest.modifiedTime NOT bumped, other devices will not see this change until next push', { entries: entries.map(e => `${e.type}:${e.id}`) })
+  // Out of retries (persistent If-Match contention). THROW — the change is NOT
+  // durably published: the entity .bin is on Drive but no manifest entry points
+  // at it, and every other device's incremental poll is manifest-seq-driven, so
+  // it never re-fetches the orphaned .bin (only a cold start would). Throwing
+  // keeps the caller's dirty flag set (it clears only AFTER a non-throwing
+  // append) so the retry loop re-ships + re-appends until it lands. Swallowing
+  // here is what stranded the 700-פזו task. (Audio + migration callers catch.)
+  logSync('manifest append GAVE UP after retries — throwing so dirty stays set for retry', { entries: entries.map(e => `${e.type}:${e.id}`) })
+  const err = new Error(`Manifest append gave up after ${MAX_APPEND_RETRIES} If-Match retries`)
+  err.code = 'MANIFEST_APPEND_GIVEUP'
+  throw err
 }
 
 /**
