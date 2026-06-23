@@ -26,6 +26,7 @@ import {
 } from './sync'
 import { readManifest, diffManifest, getLocalLastSeq, setLocalLastSeq } from './manifest'
 import { blocksToHtml } from '../lib/blocks'
+import { buildReviewsIndex } from '../lib/review'
 import { logSync } from './syncLog'
 
 const DEFAULT_POLL_INTERVAL = 1000  // 1 second default
@@ -646,6 +647,24 @@ async function pollRemote(storeSetter) {
           // leave the in-memory doc (and any unsaved edit) untouched.
           delete update.currentDay
         }
+      }
+      // A journal merged this poll (reviewedAt flip, edited content, or a new
+      // past day) must refresh the Review surfaces — the badge in the Sidebar and
+      // the ReviewPage/SearchPage lists. They read the `reviews` map plus the
+      // journalDocs they reload whenever `reviewVersion` changes; the poll touched
+      // NEITHER, so a day reviewed (or unreviewed) on another device stayed stale
+      // here until a manual refresh (which rebuilds both at boot). Rebuild the map
+      // from the freshly merged rows — a full rebuild so an UNreview elsewhere
+      // clears the stale timestamp too — and bump the version to reload.
+      if (changedByType.journal.size > 0) {
+        update.reviews = buildReviewsIndex(mergedJournals)
+        update.reviewVersion = (_storeGetter?.()?.reviewVersion ?? 0) + 1
+        // Probe: confirms a cross-device review/unreview refreshed the badge
+        // WITHOUT a manual refresh. Counts only — no entry text — PII-free.
+        logSync('poll reviews refresh', {
+          changedDates: Array.from(changedByType.journal.keys()),
+          reviewedDays: Object.keys(update.reviews).length,
+        })
       }
       storeSetter(update)
     }

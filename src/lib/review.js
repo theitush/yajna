@@ -61,6 +61,18 @@ export function collectJournalEntries(journalDocs) {
   return entries
 }
 
+// The global `date -> reviewedAt` index, derived from per-day journal docs.
+// Single source of truth for both the boot rebuild (rebuildReviewsFromJournals)
+// and the sync poll (which must refresh it when another device reviews/unreviews
+// a day, or the Review badge stays stale until a manual refresh).
+export function buildReviewsIndex(journalDocs) {
+  const index = {}
+  for (const doc of journalDocs || []) {
+    if (doc?.date && doc.reviewedAt) index[doc.date] = doc.reviewedAt
+  }
+  return index
+}
+
 // Review shows only PAST days. `currentDay` is the rollover-aware current
 // journal day (zone + 4am boundary) and is the EXCLUSIVE upper bound — today's
 // day and anything after it (the empty "tomorrow" placeholder) are filtered

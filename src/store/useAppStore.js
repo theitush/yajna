@@ -18,6 +18,7 @@ import { putAudio, getAudio } from '../services/db'
 import { transcribeWithGroq, DEFAULT_GROQ_MODEL } from '../services/transcribe'
 import { withAuthRetry } from '../services/auth'
 import { stampBlocks, stampBlocksFromDoc, blocksToHtml } from '../lib/blocks'
+import { buildReviewsIndex } from '../lib/review'
 import { logSync } from '../services/syncLog'
 
 // Labeled journal-push closure so the engine's coalescing probe (executePush
@@ -124,10 +125,7 @@ const useAppStore = create((set, get) => ({
   bumpReviewVersion: () => set(s => ({ reviewVersion: s.reviewVersion + 1 })),
   rebuildReviewsFromJournals: async () => {
     const docs = await getAllJournals()
-    const index = {}
-    for (const doc of docs || []) {
-      if (doc?.date && doc.reviewedAt) index[doc.date] = doc.reviewedAt
-    }
+    const index = buildReviewsIndex(docs)
     set({ reviews: index })
     return index
   },
