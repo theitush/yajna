@@ -748,11 +748,16 @@ const useAppStore = create((set, get) => ({
     const apiKey = config?.groqApiKey
     if (!apiKey) throw new Error('Add your Groq API key in Settings first')
     if (get().transcribingAudio[audioId]) return null // already in flight
-    const rec = await get().getAudioRecord(audioId, hints)
-    if (!rec?.blob) throw new Error('Audio not available')
-    const model = config?.groqModel || DEFAULT_GROQ_MODEL
+    // Arm the spinner BEFORE the blob fetch. getAudioRecord reads the (possibly
+    // large) blob from IDB and can even download it from Drive — seconds of work.
+    // Flipping the flag only afterwards left the "Transcribe" button unchanged
+    // for that whole window, so a tap looked like it did nothing until the Groq
+    // call finally started. Set it up front; the finally clears it on any exit.
     set(s => ({ transcribingAudio: { ...s.transcribingAudio, [audioId]: true } }))
     try {
+      const rec = await get().getAudioRecord(audioId, hints)
+      if (!rec?.blob) throw new Error('Audio not available')
+      const model = config?.groqModel || DEFAULT_GROQ_MODEL
       const result = await transcribeWithGroq({ blob: rec.blob, apiKey, model })
       const text = result?.text || ''
       const segments = Array.isArray(result?.segments) ? result.segments : null
