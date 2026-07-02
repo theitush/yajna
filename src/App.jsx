@@ -5,8 +5,8 @@ import useCurrentDay from './lib/useCurrentDay'
 import { formatDate } from './lib/dates'
 import { loadGAPI, initGAPI, getStoredToken, getTokenRemainingSeconds, startAuthRedirect, consumeAuthRedirect, storeToken, storeRefreshBlob, setAccessToken, trySilentRefresh, scheduleTokenRefresh, isAuthError, signOut } from './services/auth'
 import { initDriveStructure } from './services/drive'
-import { initEncryption } from './services/encryption'
-import { onEncStatusChange } from './services/cryptoBox'
+import { initEncryption, maybeAutoEnableOnFreshDrive } from './services/encryption'
+import { onEncStatusChange, getEncStatus } from './services/cryptoBox'
 import { stopSyncEngine } from './services/syncEngine'
 import { migrateDriveJournalsIfNeeded } from './services/journalMigration'
 import { getMeta, putMeta } from './services/db'
@@ -15,6 +15,7 @@ import { GOOGLE_CLIENT_ID, MODE_DRIVE, MODE_OFFLINE, MODE_KEY, SYNC_PAUSED_KEY }
 
 import LoginScreen from './components/auth/LoginScreen'
 import UnlockScreen from './components/auth/UnlockScreen'
+import RecoveryKeyModal from './components/auth/RecoveryKeyModal'
 import Sidebar from './components/layout/Sidebar'
 
 import TodayPage from './pages/TodayPage'
@@ -37,6 +38,7 @@ export default function App() {
   const mode = useAppStore(s => s.mode)
   const coldPull = useAppStore(s => s.coldPull)
   const encState = useAppStore(s => s.encState)
+  const pendingRecoveryKey = useAppStore(s => s.pendingRecoveryKey)
   const [loginLoading, setLoginLoading] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
@@ -104,6 +106,16 @@ export default function App() {
               const encStatus = await initEncryption()
               useAppStore.getState().setEncState(encStatus)
               if (encStatus === 'locked') return
+              // Brand-new Drive (no manifest yet → nothing to migrate): turn on
+              // encryption from the start and show the recovery key once. An
+              // existing account is left plaintext here — it enables via Settings
+              // paired with the Stage-4 migration. Redirect path only: a fresh
+              // Drive can only appear on a first sign-in.
+              const recoveryKey = await maybeAutoEnableOnFreshDrive()
+              if (recoveryKey) {
+                useAppStore.getState().setEncState(getEncStatus())
+                useAppStore.getState().setPendingRecoveryKey(recoveryKey)
+              }
               await migrateDriveJournalsIfNeeded().catch(e => console.warn('journal migration failed (will retry next boot):', e))
               const work = priorityWorkForRoute(window.location.hash)
               const priorityTasks = [runInitialSync({ priorityBuckets: work.buckets })]
@@ -454,6 +466,12 @@ export default function App() {
             </Routes>
           </main>
         </div>
+        {pendingRecoveryKey && (
+          <RecoveryKeyModal
+            recoveryKey={pendingRecoveryKey}
+            onDone={() => useAppStore.getState().setPendingRecoveryKey(null)}
+          />
+        )}
         {coldPull?.active && (
           <div
             // Cold-start ONLY: eat clicks until the full pull (every stage,

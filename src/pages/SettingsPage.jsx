@@ -9,6 +9,7 @@ import { GROQ_MODELS, DEFAULT_GROQ_MODEL } from '../services/transcribe'
 import { detectBrowserTimezone, timezoneLabel } from '../lib/timezones'
 import { currentJournalDay } from '../lib/dates'
 import TimezonePicker from '../components/TimezonePicker'
+import EncryptionSection from '../components/settings/EncryptionSection'
 
 const sectionHeadStyle = {
   fontSize: '11px', fontWeight: 500, color: 'var(--text-tertiary)',
@@ -86,6 +87,7 @@ export default function SettingsPage() {
   const tasks = useAppStore(s => s.tasks)
   const notes = useAppStore(s => s.notes)
   const currentDay = useAppStore(s => s.currentDay)
+  const encState = useAppStore(s => s.encState)
 
   const [groqKey, setGroqKey] = useState('')
   const [groqModel, setGroqModel] = useState(DEFAULT_GROQ_MODEL)
@@ -444,7 +446,9 @@ export default function SettingsPage() {
             <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '6px' }}>
               {isOffline
                 ? 'Stored locally in this browser only.'
-                : 'Stored in your Google Drive (config.json). Never leaves your account.'}
+                : encState === 'unlocked'
+                  ? 'Stored encrypted in your Google Drive. Never leaves your account.'
+                  : 'Stored in your Google Drive. Never leaves your account.'}
             </p>
           </label>
 
@@ -463,6 +467,8 @@ export default function SettingsPage() {
             </select>
           </label>
         </section>
+
+        {!isOffline && <EncryptionSection />}
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <button onClick={handleSave} style={btnPrimaryStyle}>

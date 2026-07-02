@@ -20,10 +20,12 @@
  * keyless device can find it — the CONTENT is what's sealed, not the marker.
  */
 import { getMeta, putMeta } from './db'
-import { getDriveFileIds, findFile, readJsonFile, readBinaryFile } from './drive'
+import { getDriveFileIds, findFile, readJsonFile, readBinaryFile, writeJsonFile } from './drive'
+import { appendChanges, getDeviceId, readManifest } from './manifest'
 import {
-  setKeyBytes, hasKey, clearKey, setEncStatus, getEncStatus,
-  parseRecoveryKey, open, isSealed, KEY_BYTES, EncCorruptError,
+  setKeyBytes, getKeyBytes, hasKey, clearKey, setEncStatus, getEncStatus,
+  generateKeyBytes, parseRecoveryKey, formatRecoveryKey, seal, open, isSealed,
+  KEY_BYTES, EncCorruptError, EncLockedError,
 } from './cryptoBox'
 
 const ENC_KEY_IDB = 'enc_key_v1'                 // raw Uint8Array(16), the account key
@@ -41,6 +43,12 @@ function base64ToBytes(b64) {
   const out = new Uint8Array(s.length)
   for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i)
   return out
+}
+
+function bytesToBase64(bytes) {
+  let s = ''
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i])
+  return btoa(s)
 }
 
 // ---- key persistence --------------------------------------------------------
@@ -210,4 +218,134 @@ export async function unlockWithRecoveryKey(input) {
   setEncStatus('unlocked')
   await putMeta(ENC_STATUS_CACHE_IDB, 'unlocked')
   return true
+}
+
+// ---- enable / publish / re-show (Stage 3) -----------------------------------
+
+/**
+ * Write enc_meta.json to the Drive root from the currently-loaded key, then
+ * verify what actually landed. enc_meta is the durable "encryption is on" marker
+ * a fresh device reads before any content I/O; it stays plaintext so a keyless
+ * device can still find it (the CONTENT is sealed, not the marker).
+ *
+ * Post-write race check: two devices can enable at the same time. writeJsonFile
+ * is last-writer-wins with no If-Match, so after writing we re-read and confirm
+ * the marker on Drive verifies against OUR key. Returns `{ won }` — false means
+ * another device's key won the race and the caller must discard ours.
+ */
+export async function publishEncMeta(rootId = null) {
+  const root = rootId || (await getDriveFileIds())?.rootId
+  if (!root) throw new Error('publishEncMeta: no Drive root')
+  if (!hasKey()) throw new EncLockedError('publishEncMeta: no key loaded')
+
+  const sealedCheck = await seal(new TextEncoder().encode(KEY_CHECK_PLAINTEXT))
+  const meta = {
+    version: ENC_VERSION,
+    algo: ENC_ALGO,
+    keyCheck: bytesToBase64(sealedCheck),
+    createdAt: new Date().toISOString(),
+    createdByDevice: await getDeviceId(),
+  }
+  const existing = await findFile(root, ENC_META_NAME)
+  await writeJsonFile(root, ENC_META_NAME, meta, existing)
+
+  const onDrive = await readEncMeta(root)
+  const won = !!(onDrive && (await verifyKeyCheck(onDrive)))
+  return { won, meta: onDrive }
+}
+
+/**
+ * Turn encryption ON for this Drive. Only valid from 'plaintext' (encryption not
+ * yet enabled). Generates a fresh random key, publishes enc_meta, persists the
+ * key, and flips status to 'unlocked' so every subsequent write seals. Returns
+ * the formatted recovery key to show ONCE (there is no other copy).
+ *
+ * NOTE: this seals content going FORWARD. Pre-existing plaintext files on Drive
+ * are migrated by the Stage-4 one-shot migration — enabling on an account that
+ * already holds data must be paired with that migration (existing-account
+ * enablement is Stage 4). On a brand-new Drive there is nothing to migrate, so
+ * maybeAutoEnableOnFreshDrive() calls this directly at first connect.
+ *
+ * Throws EncCorruptError if another device won the enable race (our key is
+ * discarded and status is left 'locked' → the caller surfaces the UnlockScreen).
+ */
+export async function enableEncryption() {
+  if (getEncStatus() !== 'plaintext') {
+    throw new Error(`enableEncryption: refusing to enable from status "${getEncStatus()}"`)
+  }
+  const keyBytes = generateKeyBytes()
+  setKeyBytes(keyBytes)
+
+  let result
+  try {
+    result = await publishEncMeta()
+  } catch (e) {
+    clearKey()
+    throw e
+  }
+  if (!result.won) {
+    // Another device enabled first with a different key. Drop ours; the marker
+    // on Drive now belongs to them, so this device must unlock with their key.
+    clearKey()
+    setEncStatus('locked')
+    await putMeta(ENC_STATUS_CACHE_IDB, 'locked')
+    throw new EncCorruptError('another device enabled encryption first')
+  }
+
+  await persistKey(keyBytes)
+  setEncStatus('unlocked')
+  await putMeta(ENC_STATUS_CACHE_IDB, 'unlocked')
+
+  // Live nudge so any other running device re-resolves status and locks within
+  // one poll. Best-effort: on a brand-new Drive the manifest doesn't exist yet
+  // (the first sync creates it) and there's no other device to notify — enc_meta
+  // is the durable signal, this just makes cross-device detection near-instant.
+  try {
+    const root = (await getDriveFileIds())?.rootId
+    if (root) {
+      await appendChanges(root, [{
+        type: 'enc', id: 'enabled', op: 'upsert',
+        at: new Date().toISOString(), deviceId: await getDeviceId(),
+      }])
+    }
+  } catch (e) {
+    console.warn('enableEncryption: enc nudge append skipped:', e?.message || e)
+  }
+
+  return formatRecoveryKey(keyBytes)
+}
+
+/**
+ * Re-format the loaded key as its recovery-key string, for the "Show recovery
+ * key" affordance on an unlocked device. Requires a key in memory (an unlocked
+ * device always has one). The key never leaves the device; this only re-renders
+ * the same bytes the user was shown when they enabled.
+ */
+export async function getRecoveryKeyForDisplay() {
+  const bytes = getKeyBytes()
+  if (!bytes) throw new EncLockedError('no key loaded to display')
+  return formatRecoveryKey(bytes)
+}
+
+/**
+ * Auto-enable encryption on a brand-new Drive, called on the first-connect
+ * (redirect) path only. "Fresh" = no manifest.json yet: the entity changelog is
+ * created by the first sync, so its absence means there is no pre-existing
+ * plaintext content to migrate and enabling now seals everything from the first
+ * write. Returns the recovery key to show once, or null when the Drive isn't
+ * fresh / isn't plaintext (an existing account waits for the Stage-4 enable +
+ * migration flow instead). Never throws into the connect path.
+ */
+export async function maybeAutoEnableOnFreshDrive(rootId = null) {
+  if (getEncStatus() !== 'plaintext') return null
+  const root = rootId || (await getDriveFileIds())?.rootId
+  if (!root) return null
+  try {
+    const manifest = await readManifest(root)
+    if (manifest) return null // existing account — has a changelog, don't auto-enable
+    return await enableEncryption()
+  } catch (e) {
+    console.warn('maybeAutoEnableOnFreshDrive skipped:', e?.message || e)
+    return null
+  }
 }

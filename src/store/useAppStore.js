@@ -122,6 +122,13 @@ const useAppStore = create((set, get) => ({
   encState: null,
   setEncState: (encState) => set({ encState }),
 
+  // Recovery key to show ONCE in a modal right after encryption is enabled
+  // (fresh-connect auto-enable, or the Settings enable flow). There is no other
+  // copy — losing it with all devices means the data is unrecoverable. null when
+  // there's nothing to show; the RecoveryKeyModal clears it once acknowledged.
+  pendingRecoveryKey: null,
+  setPendingRecoveryKey: (pendingRecoveryKey) => set({ pendingRecoveryKey }),
+
   // Helper: should we push to Drive? False in permanent offline mode AND while
   // the user has manually paused sync. Every push call site routes through this.
   get driveEnabled() {
