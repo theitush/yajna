@@ -28,6 +28,8 @@ import { readManifest, diffManifest, getLocalLastSeq, setLocalLastSeq } from './
 import { blocksToHtml } from '../lib/blocks'
 import { buildReviewsIndex } from '../lib/review'
 import { logSync } from './syncLog'
+import { getEncStatus, isEncError } from './cryptoBox'
+import { initEncryption } from './encryption'
 
 const DEFAULT_POLL_INTERVAL = 1000  // 1 second default
 const RETRY_BASE_MS = 2000         // retry backoff starts at 2s
@@ -363,11 +365,21 @@ async function pollRemote(storeSetter) {
       if (diff.gap) {
         coldStart = true
       } else {
+        let sawEnc = false
         for (const c of diff.changes || []) {
+          if (c.type === 'enc') { sawEnc = true; continue }
           const bucket = changedByType[c.type]
           if (!bucket) continue
           // Newest op wins (diffManifest already deduped per id).
           bucket.set(c.id, c)
+        }
+        // Live nudge: another device just enabled encryption (appended an `enc`
+        // manifest entry). Re-resolve status now so this device locks within one
+        // poll — the enc_meta check at the next connect is the durable detection,
+        // this just makes it near-instant. Fire-and-forget; the status listener
+        // (App.jsx) shows the UnlockScreen if it flips to 'locked'.
+        if (sawEnc && getEncStatus() !== 'unlocked') {
+          initEncryption(ids.rootId).catch(() => {})
         }
       }
     }
@@ -764,6 +776,17 @@ async function pollRemote(storeSetter) {
     }
   } catch (e) {
     console.warn('Poll failed:', e.message || e)
+    if (isEncError(e)) {
+      // A read hit sealed content with no key (another device enabled
+      // encryption). openContent's sniff-lock already flipped status to
+      // 'locked' — App shows the UnlockScreen and the seq floor was NOT
+      // advanced. Stop polling so we don't churn re-reading sealed bytes every
+      // second; unlock reloads the app, which restarts the engine with the key.
+      logSync('poll hit encryption gate — stopping poll until unlock', {})
+      clearInterval(pollTimer)
+      pollTimer = null
+      return
+    }
     if (coldStart) {
       // The pull threw mid-flight (e.g. a folder listing died). Same pacing
       // as an incomplete pass — don't re-enumerate everything next 1s tick.
@@ -919,7 +942,14 @@ async function executePush(pushFn) {
     logSync('push done -> force next poll', {})
   } catch (e) {
     console.warn('Push failed:', e.message || e)
-    if (isAuthError(e)) {
+    if (isEncError(e)) {
+      // Fail-closed write, or a push-side remote read that sniff-locked: this
+      // device has no key. The work stays in the dirty set (nothing cleared on a
+      // throw); retrying every 2s would just re-throw. Leave it for the
+      // unlock→reload path, which flushStranded ships once we hold the key. The
+      // sniff-lock (if it was a read) already surfaced the UnlockScreen.
+      logSync('push blocked by encryption gate — left dirty for unlock', {})
+    } else if (isAuthError(e)) {
       setStatus({ state: 'error', message: 'Session expired', isAuth: true })
     } else {
       scheduleRetry()

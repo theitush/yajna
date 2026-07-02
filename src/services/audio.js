@@ -184,7 +184,9 @@ export async function ensureAudioLocal(id, hints = null, opts = null) {
 
   let blob
   try {
-    blob = await downloadFileBlob(driveFileId)
+    // Pass the real container mime so a sealed clip (stored as octet-stream)
+    // plays back correctly after decryption.
+    blob = await downloadFileBlob(driveFileId, mimeType)
   } catch {
     throw new Error('You need to connect to download the audio.')
   }

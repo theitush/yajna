@@ -32,10 +32,24 @@ import {
   applyConfigFields, materializeConfigRow,
 } from './automergeDoc'
 import { journalApply, journalMerge } from './automergeWorkerClient'
+import { isEncError } from './cryptoBox'
 import { dayKey } from '../lib/dates'
 import { logSync } from './syncLog'
 
 const LAST_SYNC_KEY = 'last_sync'
+
+/**
+ * `.catch` handler for the push-side remote-`.bin` reads. A missing remote is a
+ * legitimate first-writer case → null. But an enc error (a keyless device
+ * sniff-locking, or unopenable ciphertext) must NOT be swallowed to null: that
+ * would look like "no remote" and the push would upload over the shared copy,
+ * clobbering it. Rethrow so the push fails, the dirty set survives, and the
+ * unlock/reload path re-ships it.
+ */
+function nullUnlessEnc(e) {
+  if (isEncError(e)) throw e
+  return null
+}
 
 /**
  * Resolve two disjoint-root Automerge docs (no shared ancestry, so they can't
@@ -170,8 +184,11 @@ export async function resolveConfigDoc(folderId, coldStart, changedMap) {
     const bytes = await readEntityBinFile(folderId, 'config')
     return { id: 'config', bytes }
   } catch (e) {
-    // Read failure ≠ missing file: carry the error so the floor-hold and the
-    // cold-pull completeness check see it (same contract as the batched readers).
+    // An enc lock aborts the merge (same as the batched readers) — never fold a
+    // keyless read into a null-bytes hole. Any other read failure ≠ missing
+    // file: carry the error so the floor-hold and the cold-pull completeness
+    // check see it.
+    if (isEncError(e)) throw e
     return { id: 'config', bytes: null, err: String(e?.message || e).slice(0, 140) }
   }
 }
@@ -967,7 +984,7 @@ export async function pushTasks() {
     // when a remote already exists breaks Automerge.merge across devices (the
     // staleness bug).
     const existingBytes = await getTaskDocBytes(id)
-    const remoteBytes = await readEntityBinFile(ids.tasksFolderId, id).catch(() => null)
+    const remoteBytes = await readEntityBinFile(ids.tasksFolderId, id).catch(nullUnlessEnc)
     let doc
     if (existingBytes) {
       doc = await loadDoc(existingBytes)
@@ -1060,7 +1077,7 @@ export async function pushNotes() {
     // Base doc: own bytes merged with the remote .bin, else adopt the remote
     // root, else createDoc. (Same merge + disjoint-root rules as pushTasks.)
     const existingBytes = await getNoteDocBytes(id)
-    const remoteBytes = await readEntityBinFile(ids.notesFolderId, id).catch(() => null)
+    const remoteBytes = await readEntityBinFile(ids.notesFolderId, id).catch(nullUnlessEnc)
     let doc
     if (existingBytes) {
       doc = await loadDoc(existingBytes)
@@ -1121,7 +1138,7 @@ export async function pushConfig() {
 
   const local = await getConfig()
   const existingBytes = await getConfigDocBytes()
-  const remoteBytes = await readEntityBinFile(ids.configFolderId, 'config').catch(() => null)
+  const remoteBytes = await readEntityBinFile(ids.configFolderId, 'config').catch(nullUnlessEnc)
   let doc
   if (existingBytes) {
     doc = await loadDoc(existingBytes)
@@ -1197,7 +1214,7 @@ export async function pushJournal(dayDoc) {
   const liveBlocks = Array.isArray(source.blocks) ? source.blocks.filter(b => !b?.deleted).length : 0
   const isEmptyDay = liveBlocks === 0 && !source.reviewedAt
   if (!hasLocalBytes && isEmptyDay) {
-    const remoteBytes = await readEntityBinFile(ids.journalsFolderId, date).catch(() => null)
+    const remoteBytes = await readEntityBinFile(ids.journalsFolderId, date).catch(nullUnlessEnc)
     if (!remoteBytes) return null
     const remoteDoc = await loadDoc(remoteBytes)
     const remoteRow = materializeJournalRow(remoteDoc)
@@ -1221,7 +1238,7 @@ export async function pushJournal(dayDoc) {
   // worker so it never freezes the editor. The merge + disjoint-root reconcile
   // both live inside journalApply, shared by worker and inline fallback.
   const existingBytes = await getJournalDocBytes(date)
-  const remoteBytes = await readEntityBinFile(ids.journalsFolderId, date).catch(() => null)
+  const remoteBytes = await readEntityBinFile(ids.journalsFolderId, date).catch(nullUnlessEnc)
   const { bytes, row: merged } = await journalApply({ existingBytes, remoteBytes, source })
   if (!merged.date) merged.date = date
 

@@ -3,14 +3,18 @@ import { HashRouter, Routes, Route, Navigate, useLocation } from 'react-router-d
 import useAppStore from './store/useAppStore'
 import useCurrentDay from './lib/useCurrentDay'
 import { formatDate } from './lib/dates'
-import { loadGAPI, initGAPI, getStoredToken, getTokenRemainingSeconds, startAuthRedirect, consumeAuthRedirect, storeToken, storeRefreshBlob, setAccessToken, trySilentRefresh, scheduleTokenRefresh, isAuthError } from './services/auth'
+import { loadGAPI, initGAPI, getStoredToken, getTokenRemainingSeconds, startAuthRedirect, consumeAuthRedirect, storeToken, storeRefreshBlob, setAccessToken, trySilentRefresh, scheduleTokenRefresh, isAuthError, signOut } from './services/auth'
 import { initDriveStructure } from './services/drive'
+import { initEncryption } from './services/encryption'
+import { onEncStatusChange } from './services/cryptoBox'
+import { stopSyncEngine } from './services/syncEngine'
 import { migrateDriveJournalsIfNeeded } from './services/journalMigration'
 import { getMeta, putMeta } from './services/db'
 import { requestStoragePersistence } from './services/storage'
 import { GOOGLE_CLIENT_ID, MODE_DRIVE, MODE_OFFLINE, MODE_KEY, SYNC_PAUSED_KEY } from './lib/constants'
 
 import LoginScreen from './components/auth/LoginScreen'
+import UnlockScreen from './components/auth/UnlockScreen'
 import Sidebar from './components/layout/Sidebar'
 
 import TodayPage from './pages/TodayPage'
@@ -32,6 +36,7 @@ export default function App() {
   const syncStatus = useAppStore(s => s.syncStatus)
   const mode = useAppStore(s => s.mode)
   const coldPull = useAppStore(s => s.coldPull)
+  const encState = useAppStore(s => s.encState)
   const [loginLoading, setLoginLoading] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
@@ -92,6 +97,13 @@ export default function App() {
               scheduleTokenRefresh(redirectResult.expiresIn, handleTokenExpired)
               fetchUserEmail()
               await initDriveStructure()
+              // Resolve at-rest encryption status before any migration/sync. A
+              // locked device (encrypted Drive, no key here) stops now and shows
+              // the UnlockScreen — pulling while locked would be reads-over-
+              // unmerged-state. No enc_meta on Drive → 'plaintext' → passthrough.
+              const encStatus = await initEncryption()
+              useAppStore.getState().setEncState(encStatus)
+              if (encStatus === 'locked') return
               await migrateDriveJournalsIfNeeded().catch(e => console.warn('journal migration failed (will retry next boot):', e))
               const work = priorityWorkForRoute(window.location.hash)
               const priorityTasks = [runInitialSync({ priorityBuckets: work.buckets })]
@@ -146,6 +158,12 @@ export default function App() {
             useAppStore.setState({ syncPaused: true })
             setSyncStatus({ state: 'offline' })
             markAllSyncReady()
+            // Resolve encryption status from the cached verdict even though we
+            // skip the Drive connect: initEncryption fast-fails to the cache when
+            // Drive is unreachable. Without this, cryptoBox stays 'undetermined'
+            // and a later resume→push would hit the fail-closed write gate and
+            // strand every push — even on a plaintext account.
+            useAppStore.getState().setEncState(await initEncryption())
             return
           }
 
@@ -173,6 +191,9 @@ export default function App() {
                 scheduleTokenRefresh(await getTokenRemainingSeconds(), handleTokenExpired)
                 fetchUserEmail(); t = lap('fetchUserEmail (kicked off)', t)
                 await initDriveStructure(); t = lap('initDriveStructure', t)
+                const encStatus = await initEncryption(); t = lap('initEncryption', t)
+                useAppStore.getState().setEncState(encStatus)
+                if (encStatus === 'locked') return // UnlockScreen takes over
                 await migrateDriveJournalsIfNeeded().catch(e => console.warn('journal migration failed (will retry next boot):', e)); t = lap('journal migration', t)
                 const work = priorityWorkForRoute(window.location.hash)
                 const priorityTasks = [runInitialSync({ priorityBuckets: work.buckets })]
@@ -190,6 +211,9 @@ export default function App() {
                   scheduleTokenRefresh(refreshed.expiresIn, handleTokenExpired)
                   fetchUserEmail()
                   await initDriveStructure()
+                  const encStatus = await initEncryption()
+                  useAppStore.getState().setEncState(encStatus)
+                  if (encStatus === 'locked') return // UnlockScreen takes over
                   const work = priorityWorkForRoute(window.location.hash)
                   const priorityTasks = [runInitialSync({ priorityBuckets: work.buckets })]
                   if (work.journal) priorityTasks.push(loadJournal())
@@ -271,7 +295,19 @@ export default function App() {
       })()
     }
     document.addEventListener('visibilitychange', handleVisibilityChange)
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+
+    // Mirror mid-session encryption status changes into the store. The live
+    // trigger is openContent's sniff-lock: a poll that reads sealed content with
+    // no key flips status to 'locked', which surfaces the UnlockScreen without a
+    // reload when another device enables encryption while this one is running.
+    const unsubEnc = onEncStatusChange((next) => {
+      useAppStore.getState().setEncState(next)
+    })
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      unsubEnc()
+    }
   }, [])
 
   useEffect(() => {
@@ -293,6 +329,18 @@ export default function App() {
       setInitError('Sign-in failed. Please try again.')
       setLoginLoading(false)
     }
+  }
+
+  // Escape hatch from the UnlockScreen: drop back to the login chooser (e.g. to
+  // sign into the account that actually holds this Drive's key). Mirrors
+  // SettingsPage's sign-out; the persisted key is left in IDB so re-login on this
+  // same account still unlocks automatically.
+  const handleSignOut = async () => {
+    try { stopSyncEngine() } catch { /* not running */ }
+    await signOut().catch(() => {})
+    await putMeta(MODE_KEY, null)
+    useAppStore.getState().setEncState(null)
+    setAuthenticated(false)
   }
 
   const handleOffline = async () => {
@@ -327,6 +375,13 @@ export default function App() {
         <LoginScreen onLogin={handleLogin} onOffline={handleOffline} loading={loginLoading} />
       </div>
     )
+  }
+
+  // Encrypted Drive, no key on this device: gate the whole app behind the
+  // UnlockScreen. The connect paths returned before starting migration/sync, so
+  // there's nothing running underneath — unlock persists the key and reloads.
+  if (encState === 'locked') {
+    return <UnlockScreen onSignOut={handleSignOut} />
   }
 
   return (

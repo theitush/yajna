@@ -51,6 +51,17 @@ export class RecoveryKeyError extends Error {
   }
 }
 
+/**
+ * True for the two envelope errors that must ABORT a read/write rather than be
+ * swallowed as "file missing" — a locked/undetermined device (EncLockedError)
+ * or unopenable ciphertext (EncCorruptError). drive.js choke points and the
+ * push-side remote reads use this to rethrow instead of folding an enc failure
+ * into a `{bytes:null}` hole (which would strand or clobber content).
+ */
+export function isEncError(e) {
+  return e instanceof EncLockedError || e instanceof EncCorruptError
+}
+
 // ---- Envelope constants -----------------------------------------------------
 
 const MAGIC = new Uint8Array([0x59, 0x4a, 0x45, 0x31]) // "YJE1"

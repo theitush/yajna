@@ -1,6 +1,7 @@
 import { DRIVE_FOLDER_NAME, DRIVE_MIME_FOLDER } from '../lib/constants'
 import { getMeta, putMeta } from './db'
 import { withAuthRetry } from './auth'
+import { sealContent, openContent, getEncStatus, isEncError } from './cryptoBox'
 
 const FOLDER_ID_KEY = 'drive_folder_id'
 const FILES_KEY = 'drive_files'
@@ -188,15 +189,29 @@ export async function writeJsonFile(parentId, name, data, existingFileId = null)
  * Upload an audio blob to Drive
  */
 export async function uploadAudioFile(parentId, name, blob) {
+  // Content choke point: seal the raw audio bytes when encryption is on. On a
+  // plaintext Drive it's the original blob untouched; on a locked/undetermined
+  // device sealContent THROWS (fail closed — never write a plaintext clip onto
+  // an encrypted Drive). The stored mimeType flips to octet-stream so Drive
+  // can't sniff the container; the real mime rides in the audio meta doc and is
+  // re-applied on download.
+  let body = blob
+  let uploadMime = blob.type || 'audio/webm'
+  if (getEncStatus() !== 'plaintext') {
+    const raw = new Uint8Array(await blob.arrayBuffer())
+    const sealed = await sealContent(raw)
+    body = new Blob([sealed], { type: 'application/octet-stream' })
+    uploadMime = 'application/octet-stream'
+  }
   const metadata = {
     name,
-    mimeType: blob.type || 'audio/webm',
+    mimeType: uploadMime,
     parents: [parentId],
   }
   return withAuthRetry(async () => {
     const form = new FormData()
     form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }))
-    form.append('media', blob)
+    form.append('media', body)
     const token = window.gapi.client.getToken()?.access_token
     const res = await fetchWithTimeout(
       'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
@@ -227,9 +242,13 @@ export async function deleteDriveFile(fileId) {
 }
 
 /**
- * Download a file from Drive as a Blob (used for lazy audio fetch).
+ * Download a file from Drive as a Blob (used for lazy audio fetch). Sniffs for
+ * our envelope and decrypts when sealed; a plaintext straggler passes through.
+ * `mimeType` sets the returned Blob's type so audio playback stays correct even
+ * though sealed clips are stored as octet-stream (the container mime is hidden
+ * on Drive and lives in the audio meta doc instead).
  */
-export async function downloadFileBlob(fileId) {
+export async function downloadFileBlob(fileId, mimeType = null) {
   return withAuthRetry(async () => {
     const token = window.gapi.client.getToken()?.access_token
     const res = await fetchWithTimeout(
@@ -238,7 +257,11 @@ export async function downloadFileBlob(fileId) {
       60_000
     )
     await ensureFetchOk(res, 'Drive download failed')
-    return res.blob()
+    const raw = new Uint8Array(await res.arrayBuffer())
+    // openContent decrypts a sealed clip (throws EncLockedError if we have no
+    // key), and returns a plaintext straggler unchanged.
+    const bytes = await openContent(raw)
+    return new Blob([bytes], { type: mimeType || res.headers.get('content-type') || 'application/octet-stream' })
   })
 }
 
@@ -370,14 +393,26 @@ export async function listFolder(folderId) {
  * Per-entity helpers. Filenames are `<id>.json` inside the entity folder.
  * Each helper returns null on missing-file rather than throwing so cold-start
  * enumeration can be tolerant.
+ *
+ * Transport is the BINARY path (readBinaryFile/writeBinaryFile), not the JSON
+ * helpers, so this content (audio metadata — full transcripts) flows through
+ * the seal/open envelope like the `.bin` docs. The bytes are still JSON: the
+ * filename stays `<id>.json` and old plaintext files (written as
+ * application/json) read back fine — readBinaryFile fetches raw bytes either
+ * way and openContent passes an unsealed straggler through unchanged.
  */
 export async function readEntityFile(folderId, id) {
   const fileId = await findFile(folderId, `${id}.json`)
   if (!fileId) return null
   try {
-    const body = await readJsonFile(fileId)
-    return body
-  } catch {
+    const raw = await readBinaryFile(fileId)
+    const bytes = await openContent(raw)
+    return JSON.parse(new TextDecoder().decode(bytes))
+  } catch (e) {
+    // Rethrow enc errors (a locked device / unopenable ciphertext) so the read
+    // aborts instead of masquerading as a missing file; anything else keeps the
+    // tolerant null-on-failure contract for cold-start enumeration.
+    if (isEncError(e)) throw e
     return null
   }
 }
@@ -385,7 +420,9 @@ export async function readEntityFile(folderId, id) {
 export async function writeEntityFile(folderId, id, data) {
   const filename = `${id}.json`
   const existing = await findFile(folderId, filename)
-  return writeJsonFile(folderId, filename, data, existing)
+  const plain = new TextEncoder().encode(JSON.stringify(data, null, 2))
+  const payload = await sealContent(plain) // seal when unlocked; throw when keyless
+  return writeBinaryFile(folderId, filename, payload, existing)
 }
 
 /**
@@ -395,7 +432,8 @@ export async function writeEntityFile(folderId, id, data) {
  * { id, doc } in input order; doc is null on failure.
  *
  * `entries` is [{ id, fileId? }]. If fileId is provided we skip the lookup;
- * otherwise we resolve by name inside `folderId`.
+ * otherwise we resolve by name inside `folderId`. Same binary+envelope transport
+ * as readEntityFile.
  */
 export async function readEntityFilesBatched(folderId, entries, batchSize = 20, onBatch = null) {
   const out = []
@@ -405,12 +443,16 @@ export async function readEntityFilesBatched(folderId, entries, batchSize = 20, 
       try {
         const fid = fileId || await findFile(folderId, `${id}.json`)
         if (!fid) return { id, doc: null }
-        const doc = await readJsonFile(fid)
+        const raw = await readBinaryFile(fid)
+        const bytes = await openContent(raw)
+        const doc = JSON.parse(new TextDecoder().decode(bytes))
         return { id, doc }
       } catch (e) {
-        // Carry the error out instead of folding "fetch failed" into "file
-        // missing" — callers log it and must not advance their seq floor past
-        // a change they couldn't read.
+        // An enc lock must abort the whole merge, not become a floor-held hole —
+        // rethrow so Promise.all rejects. Everything else carries the error out
+        // instead of folding "fetch failed" into "file missing" so callers don't
+        // advance their seq floor past a change they couldn't read.
+        if (isEncError(e)) throw e
         return { id, doc: null, err: String(e?.message || e).slice(0, 140) }
       }
     }))
@@ -480,13 +522,19 @@ export async function writeBinaryFile(parentId, name, bytes, existingFileId = nu
 export async function readEntityBinFile(folderId, id) {
   const fileId = await findFile(folderId, `${id}.bin`)
   if (!fileId) return null
-  return readBinaryFile(fileId)
+  const raw = await readBinaryFile(fileId)
+  // Decrypt sealed content (throws EncLockedError with no key, EncCorruptError
+  // on the wrong key); a plaintext straggler passes through. Push-side callers
+  // wrap this in `.catch` — those catches rethrow enc errors (see sync.js) so a
+  // keyless read can't be mistaken for "no remote" and clobbered.
+  return openContent(raw)
 }
 
 export async function writeEntityBinFile(folderId, id, bytes) {
   const filename = `${id}.bin`
   const existing = await findFile(folderId, filename)
-  return writeBinaryFile(folderId, filename, bytes, existing)
+  const payload = await sealContent(bytes) // seal when unlocked; throw when keyless
+  return writeBinaryFile(folderId, filename, payload, existing)
 }
 
 /**
@@ -501,11 +549,15 @@ export async function readEntityBinFilesBatched(folderId, entries, batchSize = 2
       try {
         const fid = fileId || await findFile(folderId, `${id}.bin`)
         if (!fid) return { id, bytes: null }
-        const bytes = await readBinaryFile(fid)
+        const raw = await readBinaryFile(fid)
+        const bytes = await openContent(raw)
         return { id, bytes }
       } catch (e) {
-        // Same as readEntityFilesBatched: distinguish read failure from a
-        // genuinely missing file for callers' floor-hold and probes.
+        // An enc lock aborts the merge — rethrow so Promise.all rejects rather
+        // than turning unreadable sealed content into a floor-held null hole.
+        // Everything else: distinguish read failure from a genuinely missing
+        // file for callers' floor-hold and probes.
+        if (isEncError(e)) throw e
         return { id, bytes: null, err: String(e?.message || e).slice(0, 140) }
       }
     }))

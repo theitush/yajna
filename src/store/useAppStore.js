@@ -112,6 +112,16 @@ const useAppStore = create((set, get) => ({
   // the background Drive connect when set.
   syncPaused: false,
 
+  // At-rest Drive encryption status, mirrored from cryptoBox's registry
+  // (encryption.js:initEncryption resolves it; onEncStatusChange keeps it live).
+  // null until the first connect resolves it. Only 'locked' changes the UI — it
+  // makes App render the UnlockScreen instead of the app. 'plaintext' (the
+  // default until encryption is enabled), 'unlocked', and 'undetermined' all
+  // render the app normally; the fail-closed write gate lives below the store in
+  // the drive.js helpers, so driveEnabled is intentionally unchanged.
+  encState: null,
+  setEncState: (encState) => set({ encState }),
+
   // Helper: should we push to Drive? False in permanent offline mode AND while
   // the user has manually paused sync. Every push call site routes through this.
   get driveEnabled() {
