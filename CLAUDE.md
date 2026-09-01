@@ -1,6 +1,8 @@
 # yajna
 
-This file is thin on purpose: it grows a line at a time, when something proves worth writing down. Otherwise orient by reading the repo. One standing rule: **a dirty working tree here is Ita's live work** (encryption Stage 4, as of 2026-08-30) — never revert, stash, reformat or commit over it, and don't build on top of it unless the task says so.## Tasks
+This file is thin on purpose: it grows a line at a time, when something proves worth writing down. Otherwise orient by reading the repo. One standing rule: **a dirty working tree here is Ita's live work** (encryption Stage 4, as of 2026-08-30) — never revert, stash, reformat or commit over it, and don't build on top of it unless the task says so.
+
+## Tasks
 
 This repo's tasks are its **GitHub issues**. When Ita says **"task 5"** he means **issue #5 of this repo** — `gh issue view 5`. Every issue here is also an item on his cross-project board, GitHub Project #2 `COO` (https://github.com/users/theitush/projects/2 — the same data https://coo-board.pages.dev shows), and the project is where a task's status, priority, worker and queue position live. Don't read the queue at startup; look a task up when one is named. `gh issue list` shows what is open here.
 
