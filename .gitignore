@@ -25,6 +25,9 @@ dist-ssr
 *.sln
 *.sw?
 
-# AI agents configuration dirs
-.claude
+# AI agents configuration dirs — except .claude/settings.json, which carries the
+# shared tree-watch hooks and belongs in a diff (coo#55). The directory itself
+# must stay un-excluded: git cannot re-include a file under an excluded one.
+.claude/*
+!.claude/settings.json
 .codex
