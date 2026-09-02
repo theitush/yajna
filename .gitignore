@@ -30,4 +30,5 @@ dist-ssr
 # must stay un-excluded: git cannot re-include a file under an excluded one.
 .claude/*
 !.claude/settings.json
+!.claude/skills/
 .codex
