@@ -1,8 +1,8 @@
 import { NavLink } from 'react-router-dom'
 import { useEffect, useMemo, useState } from 'react'
 import useAppStore, { retryNow } from '../../store/useAppStore'
-import { putMeta } from '../../services/db'
-import { MODE_KEY, MODE_OFFLINE, MODE_DRIVE } from '../../lib/constants'
+import { startAuthRedirect } from '../../services/auth'
+import { MODE_OFFLINE, MODE_DRIVE } from '../../lib/constants'
 import { getAllJournals } from '../../services/db'
 import { buildReviewDays } from '../../lib/review'
 import useCurrentDay from '../../lib/useCurrentDay'
@@ -39,7 +39,7 @@ function statusLabel(syncStatus, syncPaused) {
   }
 }
 
-function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
+function SidebarContent({ onNav, syncStatus }) {
   const tasks = useAppStore(s => s.tasks)
   const reviews = useAppStore(s => s.reviews)
   const reviewVersion = useAppStore(s => s.reviewVersion)
@@ -48,9 +48,10 @@ function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
   const isDriveMode = useAppStore(s => s.mode === MODE_DRIVE)
   const syncPaused = useAppStore(s => s.syncPaused)
   const toggleSyncPause = useAppStore(s => s.toggleSyncPause)
-  // A Drive-mode user can always click the status to pause/resume manual sync.
-  // The legacy clickable states (retry/reconnect/re-auth) still apply too.
-  const isClickable = isDriveMode || syncStatus.state === 'waiting' || syncStatus.state === 'offline' || syncStatus.isAuth
+  // A Drive-mode user can always click the status to pause/resume manual sync,
+  // and a dead session's "sign in" goes straight to Google. A local-only user's
+  // "offline" is just a label — Drive connects from Settings.
+  const isClickable = isDriveMode || syncStatus.isAuth
 
   // Same rollover-aware bound as ReviewPage so the badge count matches the list
   // exactly (only PAST days, today excluded).
@@ -81,22 +82,16 @@ function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
   const handleClick = () => {
     if (!isClickable) return
     if (syncStatus.isAuth) {
-      handleConnectDrive()
+      startAuthRedirect()
       return
     }
-    // Manual pause/resume takes precedence for Drive-mode users. Resume when
-    // paused; otherwise (synced/syncing/waiting) pause. Both go through the
-    // same toggle, which flushes + restarts polling on resume.
-    if (isDriveMode && syncPaused) {
+    // Drive mode from here on. Manual pause/resume takes precedence: resume
+    // when paused; otherwise (synced/syncing/waiting) pause. Both go through
+    // the same toggle, which flushes + restarts polling on resume.
+    if (syncPaused || syncStatus.state !== 'offline') {
       toggleSyncPause()
-    } else if (isDriveMode && syncStatus.state !== 'offline') {
-      toggleSyncPause()
-    } else if (isDriveMode && syncStatus.state === 'offline') {
-      // Not paused but offline = dropped connection; retry as before.
-      retryNow()
-    } else if (syncStatus.state === 'offline') {
-      handleConnectDrive()
     } else {
+      // Not paused but offline = dropped connection; retry as before.
       retryNow()
     }
   }
@@ -191,17 +186,11 @@ function SidebarContent({ onNav, syncStatus, handleConnectDrive }) {
 export default function Sidebar({ open, onClose }) {
   const syncStatus = useAppStore(s => s.syncStatus)
   const mode = useAppStore(s => s.mode)
-  const setAuthenticated = useAppStore(s => s.setAuthenticated)
 
-  const handleConnectDrive = async () => {
-    await putMeta(MODE_KEY, null)
-    setAuthenticated(false)
-  }
-
-  // If in offline mode (user chose offline), always show offline
+  // Local-only mode has no engine: always show offline
   const effectiveStatus = mode === MODE_OFFLINE ? { state: 'offline' } : syncStatus
 
-  const props = { syncStatus: effectiveStatus, handleConnectDrive }
+  const props = { syncStatus: effectiveStatus }
 
   return (
     <>

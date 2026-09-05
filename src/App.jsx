@@ -3,17 +3,15 @@ import { HashRouter, Routes, Route, Navigate, useLocation } from 'react-router-d
 import useAppStore from './store/useAppStore'
 import useCurrentDay from './lib/useCurrentDay'
 import { formatDate } from './lib/dates'
-import { loadGAPI, initGAPI, getStoredToken, getTokenRemainingSeconds, startAuthRedirect, consumeAuthRedirect, storeToken, storeRefreshBlob, setAccessToken, trySilentRefresh, scheduleTokenRefresh, isAuthError, signOut } from './services/auth'
+import { loadGAPI, initGAPI, getStoredToken, getTokenRemainingSeconds, consumeAuthRedirect, storeToken, storeRefreshBlob, setAccessToken, trySilentRefresh, scheduleTokenRefresh, isAuthError } from './services/auth'
 import { initDriveStructure } from './services/drive'
 import { initEncryption, maybeAutoEnableOnFreshDrive } from './services/encryption'
 import { onEncStatusChange, getEncStatus } from './services/cryptoBox'
-import { stopSyncEngine } from './services/syncEngine'
 import { migrateDriveJournalsIfNeeded } from './services/journalMigration'
 import { getMeta, putMeta } from './services/db'
 import { requestStoragePersistence } from './services/storage'
 import { GOOGLE_CLIENT_ID, MODE_DRIVE, MODE_OFFLINE, MODE_KEY, SYNC_PAUSED_KEY } from './lib/constants'
 
-import LoginScreen from './components/auth/LoginScreen'
 import UnlockScreen from './components/auth/UnlockScreen'
 import RecoveryKeyModal from './components/auth/RecoveryKeyModal'
 import Sidebar from './components/layout/Sidebar'
@@ -29,17 +27,16 @@ import SurfaceLoadingGate from './components/layout/SurfaceLoadingGate'
 
 export default function App() {
   const {
-    isAuthenticated, isInitializing, initError,
-    setAuthenticated, setInitializing, setInitError,
+    isInitializing, initError,
+    setInitializing, setInitError,
     setMode, runInitialSync, bootOffline, loadJournal, fetchUserEmail, setSyncStatus,
-    markAllSyncReady,
+    markAllSyncReady, disconnectDrive,
   } = useAppStore()
   const syncStatus = useAppStore(s => s.syncStatus)
   const mode = useAppStore(s => s.mode)
   const coldPull = useAppStore(s => s.coldPull)
   const encState = useAppStore(s => s.encState)
   const pendingRecoveryKey = useAppStore(s => s.pendingRecoveryKey)
-  const [loginLoading, setLoginLoading] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   // Map the active route to the buckets/journal it needs to render. Used
@@ -65,9 +62,10 @@ export default function App() {
     waiting: 'var(--yellow-500, #eab308)',
   }[effectiveSyncStatus.state] || 'var(--border-mid)'
 
+  // A dead token no longer throws the user out to a sign-in screen: the app
+  // stays usable on local data and the sidebar status reads "sign in".
   function handleTokenExpired() {
-    setAuthenticated(false)
-    setInitError('Session expired. Please sign in again.')
+    setSyncStatus({ state: 'error', message: 'Session expired', isAuth: true })
   }
 
   useEffect(() => {
@@ -87,7 +85,6 @@ export default function App() {
           requestStoragePersistence().catch(() => {})
           await bootOffline()
           await loadJournal()
-          setAuthenticated(true)
 
           // Finish Drive setup in background
           setSyncStatus({ state: 'syncing' })
@@ -144,14 +141,6 @@ export default function App() {
         // Check if a mode was already chosen in a previous session
         const savedMode = await getMeta(MODE_KEY)
 
-        if (savedMode === MODE_OFFLINE) {
-          setMode(MODE_OFFLINE)
-          await bootOffline()
-          await loadJournal()
-          setAuthenticated(true)
-          return
-        }
-
         if (savedMode === MODE_DRIVE && GOOGLE_CLIENT_ID) {
           // Show the app immediately from local data
           setMode(MODE_DRIVE)
@@ -160,7 +149,6 @@ export default function App() {
           requestStoragePersistence().catch(() => {})
           await bootOffline()
           await loadJournal()
-          setAuthenticated(true)
 
           // Honor a manual "go offline" pause across reopens: if the user paused
           // sync last session, stay fully local and DON'T connect to Drive in the
@@ -258,11 +246,12 @@ export default function App() {
           return
         }
 
-        // No saved mode or no client id configured: show login
-        if (GOOGLE_CLIENT_ID) {
-          // Pre-load GAPI in the background so post-redirect init is faster
-          loadGAPI().then(() => initGAPI()).catch(() => {})
-        }
+        // Anything else — first open, signed out, a persisted 'offline' choice,
+        // or no client id configured — is local-only: open straight into the
+        // journal. Drive is one click away in Settings → Connect Google Drive.
+        setMode(MODE_OFFLINE)
+        await bootOffline()
+        await loadJournal()
       } catch (e) {
         console.error('Bootstrap error', e)
         const detail = e?.message || String(e)
@@ -330,43 +319,6 @@ export default function App() {
     if (el && typeof el.blur === 'function') el.blur()
   }, [coldPull?.active])
 
-  const handleLogin = async () => {
-    setLoginLoading(true)
-    setInitError(null)
-    try {
-      // Redirects the whole tab to Google; execution stops here on success.
-      await startAuthRedirect()
-    } catch (e) {
-      console.error('Login failed', e)
-      setInitError('Sign-in failed. Please try again.')
-      setLoginLoading(false)
-    }
-  }
-
-  // Escape hatch from the UnlockScreen: drop back to the login chooser (e.g. to
-  // sign into the account that actually holds this Drive's key). Mirrors
-  // SettingsPage's sign-out; the persisted key is left in IDB so re-login on this
-  // same account still unlocks automatically.
-  const handleSignOut = async () => {
-    try { stopSyncEngine() } catch { /* not running */ }
-    await signOut().catch(() => {})
-    await putMeta(MODE_KEY, null)
-    useAppStore.getState().setEncState(null)
-    setAuthenticated(false)
-  }
-
-  const handleOffline = async () => {
-    setMode(MODE_OFFLINE)
-    await putMeta(MODE_KEY, MODE_OFFLINE)
-
-    // Request persistent storage — best effort
-    await requestStoragePersistence()
-
-    await bootOffline()
-    await loadJournal()
-    setAuthenticated(true)
-  }
-
   if (isInitializing) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', background: 'var(--bg-primary)' }}>
@@ -376,15 +328,14 @@ export default function App() {
     )
   }
 
-  if (!isAuthenticated) {
+  // Boot itself failed (IDB unreadable, etc.): nothing below can be trusted, so
+  // say so instead of rendering an empty shell someone might type into.
+  if (initError) {
     return (
-      <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)' }}>
-        {initError && (
-          <div style={{ background: 'rgba(239,68,68,0.1)', color: '#FCA5A5', fontSize: '12px', padding: '8px 16px', textAlign: 'center' }}>
-            {initError}
-          </div>
-        )}
-        <LoginScreen onLogin={handleLogin} onOffline={handleOffline} loading={loginLoading} />
+      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '32px', background: 'var(--bg-primary)' }}>
+        <div style={{ background: 'rgba(239,68,68,0.1)', color: '#FCA5A5', fontSize: '12px', padding: '8px 16px', borderRadius: '8px', textAlign: 'center' }}>
+          {initError}
+        </div>
       </div>
     )
   }
@@ -392,8 +343,11 @@ export default function App() {
   // Encrypted Drive, no key on this device: gate the whole app behind the
   // UnlockScreen. The connect paths returned before starting migration/sync, so
   // there's nothing running underneath — unlock persists the key and reloads.
+  // Its sign-out link disconnects Drive and reloads into local-only mode (e.g.
+  // to then connect the account that actually holds this Drive's key); the
+  // persisted key is left in IDB so re-login on the same account still unlocks.
   if (encState === 'locked') {
-    return <UnlockScreen onSignOut={handleSignOut} />
+    return <UnlockScreen onSignOut={disconnectDrive} />
   }
 
   return (

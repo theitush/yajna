@@ -1,6 +1,6 @@
 # yajna
 
-This file is thin on purpose: it grows a line at a time, when something proves worth writing down. Otherwise orient by reading the repo. One standing rule: **a dirty working tree here is Ita's live work** (encryption Stage 4, as of 2026-08-30) — never revert, stash, reformat or commit over it, and don't build on top of it unless the task says so.
+This file is thin on purpose: it grows a line at a time, when something proves worth writing down. Otherwise orient by reading the repo. One standing rule: **a dirty working tree here is Ita's live work** (encryption Stage 4 lived here until 2026-09-05; it is now branch `encryption-stage-4`) — never revert, stash, reformat or commit over it, and don't build on top of it unless the task says so.
 
 ## Tasks
 

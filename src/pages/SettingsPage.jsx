@@ -1,10 +1,9 @@
 import { useState, useEffect } from 'react'
-import useAppStore, { stopSyncEngine, setPollInterval } from '../store/useAppStore'
-import { signOut } from '../services/auth'
+import useAppStore, { setPollInterval } from '../store/useAppStore'
+import { startAuthRedirect } from '../services/auth'
 import { getStorageEstimate, getStoragePersistence, requestStoragePersistence, exportData } from '../services/storage'
-import { putMeta } from '../services/db'
 import { flushSyncLogToDrive } from '../services/syncLog'
-import { MODE_OFFLINE, MODE_DRIVE, MODE_KEY } from '../lib/constants'
+import { MODE_OFFLINE, MODE_DRIVE } from '../lib/constants'
 import { GROQ_MODELS, DEFAULT_GROQ_MODEL } from '../services/transcribe'
 import { detectBrowserTimezone, timezoneLabel } from '../lib/timezones'
 import { currentJournalDay } from '../lib/dates'
@@ -81,7 +80,7 @@ function SyncIntervalHelp() {
 export default function SettingsPage() {
   const config = useAppStore(s => s.config)
   const updateConfig = useAppStore(s => s.updateConfig)
-  const setAuthenticated = useAppStore(s => s.setAuthenticated)
+  const disconnectDrive = useAppStore(s => s.disconnectDrive)
   const mode = useAppStore(s => s.mode)
   const userEmail = useAppStore(s => s.userEmail)
   const tasks = useAppStore(s => s.tasks)
@@ -144,13 +143,6 @@ export default function SettingsPage() {
     setTimeout(() => setSaved(false), 2000)
   }
 
-  const handleSignOut = async () => {
-    stopSyncEngine()
-    signOut()
-    await putMeta(MODE_KEY, null)
-    setAuthenticated(false)
-  }
-
   const handleRequestPersistence = async () => {
     setPersistRequesting(true)
     const result = await requestStoragePersistence()
@@ -173,11 +165,6 @@ export default function SettingsPage() {
       setSyncLogStatus(`Failed: ${e.message || e}`)
       setTimeout(() => setSyncLogStatus(null), 6000)
     }
-  }
-
-  const handleConnectDrive = async () => {
-    await putMeta(MODE_KEY, null)
-    setAuthenticated(false)
   }
 
   const isOffline = mode === MODE_OFFLINE
@@ -347,7 +334,7 @@ export default function SettingsPage() {
                   Download a backup of all your tasks, notes, and journal
                 </span>
               </button>
-              <button onClick={handleConnectDrive} style={{ ...btnSecondaryStyle, color: 'var(--accent)', borderColor: 'rgba(107,163,214,0.25)' }}>
+              <button onClick={startAuthRedirect} style={{ ...btnSecondaryStyle, color: 'var(--accent)', borderColor: 'rgba(107,163,214,0.25)' }}>
                 Connect Google Drive
                 <span style={{ display: 'block', fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
                   Sign in to sync your local data to Drive
@@ -487,7 +474,7 @@ export default function SettingsPage() {
               <h2 style={sectionHeadStyle}>Account</h2>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
                 <button
-                  onClick={handleSignOut}
+                  onClick={disconnectDrive}
                   style={{
                     fontSize: '13px',
                     color: '#FCA5A5',

@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { v4 as uuid } from 'uuid'
 import { dayKey, currentJournalDay } from '../lib/dates'
 import { detectBrowserTimezone } from '../lib/timezones'
-import { MODE_OFFLINE, SYNC_PAUSED_KEY } from '../lib/constants'
+import { MODE_OFFLINE, MODE_KEY, SYNC_PAUSED_KEY } from '../lib/constants'
 import {
   getTasks, putTask, putTasks, getTask,
   getNotes, putNote,
@@ -16,7 +16,7 @@ import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, retryNow, set
 import { pushAudio, pushPendingAudio, ensureAudioLocal, softDeleteAudio, restoreAudio, hardDeleteAudio, collectAudioIdsFromBlocks, audioBlockHtml } from '../services/audio'
 import { putAudio, getAudio } from '../services/db'
 import { transcribeWithGroq, DEFAULT_GROQ_MODEL } from '../services/transcribe'
-import { withAuthRetry } from '../services/auth'
+import { withAuthRetry, signOut } from '../services/auth'
 import { stampBlocks, stampBlocksFromDoc, blocksToHtml } from '../lib/blocks'
 import { buildReviewsIndex } from '../lib/review'
 import { logSync } from '../services/syncLog'
@@ -84,12 +84,10 @@ function collectAudioIdsFromHtml(html) {
 
 const useAppStore = create((set, get) => ({
   // Auth / mode
-  isAuthenticated: false,
   isInitializing: true,
   initError: null,
   mode: null, // 'drive' | 'offline'
   userEmail: null,
-  setAuthenticated: (v) => set({ isAuthenticated: v }),
   setInitializing: (v) => set({ isInitializing: v }),
   setInitError: (v) => set({ initError: v }),
   setMode: (mode) => set({ mode }),
@@ -1008,16 +1006,10 @@ const useAppStore = create((set, get) => ({
   setSyncStatus: (s) => {
     if (s.isAuth) {
       // Tear the engine down before mutating state so the next poll tick
-      // can't race the status update and reset us back to 'syncing'.
+      // can't race the status update and reset us back to 'syncing'. The user
+      // stays in the app on local data; the sidebar status reads "sign in".
       try { stopSyncEngine() } catch {}
-      set({
-        syncStatus: s,
-        syncing: false,
-        initError: s.message || 'Session expired. Please sign in again.',
-        // Drop back to the login screen so the user can actually re-auth.
-        // Otherwise we'd sit on the app shell forever with a dead token.
-        isAuthenticated: false,
-      })
+      set({ syncStatus: s, syncing: false })
       return
     }
     // While manually paused, ignore engine-emitted status. A poll that was
@@ -1254,7 +1246,20 @@ const useAppStore = create((set, get) => ({
     await Promise.all(priorityBuckets.map(b => handle.buckets[b]).filter(Boolean))
   },
 
-  // Offline mode boot: just load from IDB
+  /**
+   * Sign out of Drive and reload into local-only mode. The reload is deliberate:
+   * it reuses the proven boot path instead of hand-resetting every piece of
+   * Drive state (engine, token, enc status, gates, email) in place. Local data
+   * stays; Settings → Connect Google Drive brings Drive back.
+   */
+  disconnectDrive: async () => {
+    try { stopSyncEngine() } catch { /* not running */ }
+    await signOut().catch(() => {})
+    await putMeta(MODE_KEY, null)
+    window.location.reload()
+  },
+
+  // Local-only boot: just load from IDB
   bootOffline: async () => {
     const [tasks, notes, config] = await Promise.all([
       getTasks(), getNotes(), getConfig(),
