@@ -10,14 +10,14 @@ export default {
     const url = new URL(request.url);
     const origin = request.headers.get('Origin');
     const allowedOrigin = env.ALLOWED_ORIGIN;
-
-    // Normalize origins for comparison (strip trailing slashes)
-    const normalizedOrigin = origin ? origin.replace(/\/+$/, '') : '';
-    const normalizedAllowed = allowedOrigin ? allowedOrigin.replace(/\/+$/, '') : '';
+    // Parsed once. The deployed secret carries a trailing slash and an Origin
+    // header never does, so comparing parsed origins is what lets CORS and the
+    // /login allowlist below agree on what "allowed" means.
+    const allowed = parseOrigin(allowedOrigin);
 
     // CORS headers
     const corsHeaders = {
-      'Access-Control-Allow-Origin': (allowedOrigin === '*' || normalizedOrigin === normalizedAllowed) ? origin : allowedOrigin,
+      'Access-Control-Allow-Origin': (allowedOrigin === '*' || (origin && origin === allowed)) ? origin : allowedOrigin,
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
       'Access-Control-Max-Age': '86400',
@@ -58,6 +58,48 @@ export default {
   }
 };
 
+/** The origin of a configured URL, or null if it is unset or not a URL ('*'). */
+function parseOrigin(value) {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+
+// RFC 8252 native-app redirect hosts. Any port: the client picks one at runtime.
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
+
+/**
+ * Where /callback is allowed to send the tokens, or null for "nowhere".
+ *
+ * The fragment /callback appends carries a live access token and the encrypted
+ * refresh blob, and the blob is a standing capability on the user's Drive
+ * folder that works from any server (POST /refresh, with no CORS in the way).
+ * So this parameter is a token sink, not a navigation hint, and anything off
+ * this list is refused before Google is ever shown a consent screen.
+ *
+ * Comparing parsed origins covers scheme, host and port at once, so an http://
+ * downgrade, a lookalike host and a `https://good@evil/` credentials trick are
+ * all rejected by the same line. Loopback is allowed on top of it so a local
+ * CLI or MCP connector can reuse this flow; it does not reopen the hole,
+ * because an attacker cannot listen on the victim's machine.
+ *
+ * Returns the reparsed URL, so the caller carries the string this validated
+ * rather than the one it was handed.
+ */
+function allowedRedirect(raw, allowed) {
+  let target;
+  try {
+    target = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (target.protocol === 'http:' && LOOPBACK_HOSTS.has(target.hostname)) return target;
+  if (allowed && target.origin === allowed) return target;
+  return null;
+}
+
 /**
  * GET /login?redirect=<spa_url>
  */
@@ -66,12 +108,15 @@ async function handleLogin(request, env) {
   const spaRedirect = url.searchParams.get('redirect');
   if (!spaRedirect) return new Response('Missing redirect param', { status: 400 });
 
+  const target = allowedRedirect(spaRedirect, parseOrigin(env.ALLOWED_ORIGIN));
+  if (!target) return new Response('Redirect not allowed', { status: 400 });
+
   // 1. Generate PKCE verifier and challenge
   const verifier = generateRandomString(64);
   const challenge = await generateChallenge(verifier);
 
   // 2. Encrypt verifier and spaRedirect into the 'state' param to stay stateless
-  const statePayload = JSON.stringify({ v: verifier, r: spaRedirect, t: Date.now() });
+  const statePayload = JSON.stringify({ v: verifier, r: target.href, t: Date.now() });
   const state = await encrypt(statePayload, env.TOKEN_ENCRYPTION_KEY);
 
   // 3. Construct Google Authorize URL
@@ -140,7 +185,9 @@ async function handleCallback(request, env) {
       refresh_blob: refreshBlob
     });
 
-    return Response.redirect(`${spaRedirect}#${fragment.toString()}`, 302);
+    const target = new URL(spaRedirect);
+    target.hash = fragment.toString();
+    return Response.redirect(target.href, 302);
   } catch (err) {
     return new Response(`Callback failed: ${err.message}`, { status: 500 });
   }
