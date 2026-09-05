@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yajna · Privacy policy</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<style>
+  :root { color-scheme: light dark; --fg: #1a1a1a; --muted: #5a5a5a; --link: #1d4ed8; --bg: #fafaf9; --rule: #e5e5e3; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #e8e8e6; --muted: #a3a3a0; --link: #93b4ff; --bg: #161615; --rule: #2e2e2c; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 42rem; margin: 0 auto; padding: 3rem 1.25rem 4rem; }
+  h1 { font-size: 1.75rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1.15rem; margin: 2rem 0 .5rem; }
+  p, li { margin: 0 0 .75rem; }
+  ul { padding-left: 1.25rem; }
+  a { color: var(--link); }
+  .meta { color: var(--muted); font-size: .9rem; margin-bottom: 2rem; }
+  code { font-size: .9em; }
+  nav { border-top: 1px solid var(--rule); margin-top: 3rem; padding-top: 1rem; font-size: .9rem; color: var(--muted); }
+  nav a { margin-right: 1rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Privacy policy</h1>
+  <p class="meta">Yajna · last updated 5 September 2026</p>
+
+  <p>Yajna is a personal journal, notes and tasks app. It has no server that holds your content. Everything you write stays in your browser and, if you connect Google Drive, in your own Google Drive. This page says exactly what goes where.</p>
+
+  <h2>Your content</h2>
+  <p>Journals, notes, tasks, audio recordings and settings are stored in your browser's local database (IndexedDB) on each device you use. When you connect Google Drive, the same content is synced into a single folder named <code>yajna</code> in your Google Drive, as ordinary files you can open, back up or delete yourself. Nothing is copied anywhere else.</p>
+  <p>Offline mode uses no account at all. In that mode your content never leaves the device.</p>
+
+  <h2>What we ask Google for</h2>
+  <p>Signing in with Google grants Yajna two permissions:</p>
+  <ul>
+    <li><strong>Drive files created by Yajna</strong> (<code>drive.file</code>). This lets the app create and read only the files it made itself, which is the <code>yajna</code> folder. It cannot see the rest of your Drive.</li>
+    <li><strong>Your email address</strong> (<code>userinfo.email</code>). It is shown in Settings so you can see which account is connected. It is not stored anywhere else and not sent to anyone.</li>
+  </ul>
+  <p>Yajna's use of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
+
+  <h2>The sign-in helper</h2>
+  <p>A small service on Cloudflare Workers completes the Google sign-in and refreshes your session so you do not have to sign in every hour. It exchanges the sign-in code for tokens, encrypts your refresh token and hands it back to your browser, which is where it is kept. The helper has no database and keeps no record of your tokens or your account.</p>
+  <p>While refreshing a session the helper handles your Drive access token in transit. It never reads your files, and its <a href="https://github.com/theitush/yajna/tree/main/worker">source code is public</a>. If you would rather not rely on it, the README explains how to run your own copy.</p>
+
+  <h2>Voice transcription</h2>
+  <p>Transcription is optional and off until you paste your own Groq API key into Settings. With a key set, audio clips you choose to transcribe go directly from your browser to <a href="https://groq.com/privacy-policy/">Groq</a>, under Groq's privacy policy, and the text comes back to your device. The key is saved with your settings, which live in your browser and in your <code>yajna</code> Drive folder. Without a key, no audio leaves your device.</p>
+
+  <h2>Hosting</h2>
+  <p>The app is served by GitHub Pages and the sign-in helper runs on Cloudflare. Like any web host, they see the usual request data such as your IP address and browser type, under their own privacy policies. Yajna itself adds no analytics, no tracking, no advertising and no cookies.</p>
+
+  <h2>Diagnostics</h2>
+  <p>Settings has a button that writes a sync log to your own <code>yajna</code> Drive folder to help debug sync problems. It goes nowhere else unless you choose to share it.</p>
+
+  <h2>Encryption</h2>
+  <p>Files in your Drive folder are protected the way everything in your Google Drive is, but they are not yet end-to-end encrypted, so Google can read them as it can any file you store there. Client-side encryption, where only you hold the key, is being built.</p>
+
+  <h2>Your control</h2>
+  <ul>
+    <li>Export all your content as JSON from Settings at any time.</li>
+    <li>Delete the <code>yajna</code> folder in your Google Drive to remove everything synced there.</li>
+    <li>Revoke Yajna's access at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>.</li>
+    <li>Clear the site's data in your browser to remove the local copy from a device.</li>
+  </ul>
+
+  <h2>Changes and contact</h2>
+  <p>If this policy changes, the new version is published here with the date above. Questions go to the project's <a href="https://github.com/theitush/yajna/issues">GitHub issues</a>.</p>
+
+  <nav><a href="./">Yajna</a><a href="terms.html">Terms of service</a></nav>
+</main>
+</body>
+</html>
