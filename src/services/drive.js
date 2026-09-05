@@ -369,9 +369,10 @@ export async function setStoredRevisions(revs) {
 }
 
 /**
- * List all files in a Drive folder (id + name + modifiedTime), paginated.
- * Used by Phase B cold-start enumeration when the local manifest seq is too
- * far behind the remote ring.
+ * List all files in a Drive folder (id + name + modifiedTime + mimeType),
+ * paginated. Used by Phase B cold-start enumeration when the local manifest
+ * seq is too far behind the remote ring, and by the encryption migration/audit
+ * (mimeType lets them skip subfolders — e.g. audio/ contains the meta/ folder).
  */
 export async function listFolder(folderId) {
   const out = []
@@ -379,7 +380,7 @@ export async function listFolder(folderId) {
   do {
     const res = await gapiCall(() => window.gapi.client.drive.files.list({
       q: `'${folderId}' in parents and trashed=false`,
-      fields: 'nextPageToken, files(id, name, modifiedTime)',
+      fields: 'nextPageToken, files(id, name, modifiedTime, mimeType)',
       pageToken,
       pageSize: 200,
     }))
@@ -469,12 +470,13 @@ export async function readEntityFilesBatched(folderId, entries, batchSize = 20, 
  * Uint8Array blobs; we upload them as application/octet-stream so Drive
  * preserves them byte-for-byte and doesn't try to re-encode.
  */
-export async function readBinaryFile(fileId) {
+export async function readBinaryFile(fileId, timeoutMs = API_TIMEOUT_MS) {
   return withAuthRetry(async () => {
     const token = window.gapi.client.getToken()?.access_token
     const res = await fetchWithTimeout(
       `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
-      { headers: { Authorization: `Bearer ${token}` } }
+      { headers: { Authorization: `Bearer ${token}` } },
+      timeoutMs
     )
     await ensureFetchOk(res, 'Drive binary download failed')
     const buf = await res.arrayBuffer()
@@ -482,7 +484,27 @@ export async function readBinaryFile(fileId) {
   })
 }
 
-export async function writeBinaryFile(parentId, name, bytes, existingFileId = null) {
+/**
+ * Read just the first `n` bytes of a file via an HTTP Range request. The
+ * encryption audit sniffs hundreds of files for the envelope magic; pulling
+ * 16 bytes each instead of whole documents/audio blobs is the difference
+ * between seconds and minutes. Drive honors Range on alt=media (206); if a
+ * proxy ever ignores it and returns the full body, we slice locally.
+ */
+export async function readFileHead(fileId, n = 16) {
+  return withAuthRetry(async () => {
+    const token = window.gapi.client.getToken()?.access_token
+    const res = await fetchWithTimeout(
+      `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+      { headers: { Authorization: `Bearer ${token}`, Range: `bytes=0-${n - 1}` } }
+    )
+    await ensureFetchOk(res, 'Drive head read failed')
+    const bytes = new Uint8Array(await res.arrayBuffer())
+    return bytes.length > n ? bytes.subarray(0, n) : bytes
+  })
+}
+
+export async function writeBinaryFile(parentId, name, bytes, existingFileId = null, timeoutMs = API_TIMEOUT_MS) {
   const blob = new Blob([bytes], { type: 'application/octet-stream' })
   const metadata = {
     name,
@@ -498,14 +520,16 @@ export async function writeBinaryFile(parentId, name, bytes, existingFileId = nu
     if (existingFileId) {
       const res = await fetchWithTimeout(
         `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart`,
-        { method: 'PATCH', headers: { Authorization: `Bearer ${token}` }, body: form }
+        { method: 'PATCH', headers: { Authorization: `Bearer ${token}` }, body: form },
+        timeoutMs
       )
       await ensureFetchOk(res, 'Drive binary patch failed')
       return existingFileId
     }
     const res = await fetchWithTimeout(
       'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
-      { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form }
+      { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form },
+      timeoutMs
     )
     await ensureFetchOk(res, 'Drive binary create failed')
     const json = await res.json()

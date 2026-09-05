@@ -12,7 +12,8 @@ import {
 } from '../services/db'
 import { extractHashtags } from '../lib/hashtags'
 import { pushTasks, pushNotes, pushJournal, pushConfig, initialSyncStreaming, mergeAndPushJournal, flushPendingSync } from '../services/sync'
-import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, retryNow, setPollInterval, pullNow } from '../services/syncEngine'
+import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, retryNow, setPollInterval, pullNow, waitForPushIdle } from '../services/syncEngine'
+import { migrateDriveToEncrypted, resumeEncMigrationIfNeeded, hasPendingEncMigration } from '../services/encryption'
 import { pushAudio, pushPendingAudio, ensureAudioLocal, softDeleteAudio, restoreAudio, hardDeleteAudio, collectAudioIdsFromBlocks, audioBlockHtml } from '../services/audio'
 import { putAudio, getAudio } from '../services/db'
 import { transcribeWithGroq, DEFAULT_GROQ_MODEL } from '../services/transcribe'
@@ -128,6 +129,17 @@ const useAppStore = create((set, get) => ({
   // there's nothing to show; the RecoveryKeyModal clears it once acknowledged.
   pendingRecoveryKey: null,
   setPendingRecoveryKey: (pendingRecoveryKey) => set({ pendingRecoveryKey }),
+
+  // One-shot encryption migration state, rendered by App.jsx as a blocking
+  // overlay. null when idle; while set: { status: 'running'|'done'|'error',
+  // phase, done, total, summary, error }. 'running' blocks all input (a local
+  // edit mid-migration could be pushed from bytes read before a file was
+  // sealed); 'done'/'error' keep the overlay up non-blocking until dismissed.
+  encMigration: null,
+  dismissEncMigration: () => {
+    if (get().encMigration?.status === 'running') return
+    set({ encMigration: null })
+  },
 
   // Helper: should we push to Drive? False in permanent offline mode AND while
   // the user has manually paused sync. Every push call site routes through this.
@@ -1088,6 +1100,58 @@ const useAppStore = create((set, get) => ({
     // Kick a final poll so the dot settles to 'synced' and any change our push
     // produced is reflected. The engine's interval polling carries on from here.
     retryNow()
+  },
+  /**
+   * Run the one-shot encryption migration (Settings enable flow / audit re-run)
+   * or resume an interrupted one at boot (`resume: true`). Owns the
+   * serialization the migration itself assumes: sync engine stopped and
+   * in-flight pushes drained before any file is resealed, engine restarted
+   * after. On the boot-resume path the engine hasn't started yet (this runs
+   * before runInitialSync, which starts it), so there's nothing to stop or
+   * restart there. Progress/summary/errors land in `encMigration` for the
+   * App.jsx overlay; a failed pass keeps the persisted resume flag set, so the
+   * next boot picks it up again.
+   */
+  runEncMigration: async ({ consentDeleteBackups = null, resume = false } = {}) => {
+    if (get().encMigration?.status === 'running') return
+    // Boot path: don't flash the overlay when there's nothing to resume.
+    if (resume && !(await hasPendingEncMigration())) return
+    if (consentDeleteBackups == null) {
+      // No explicit consent from the caller (the recovery-key modal's onDone):
+      // the enable wizard recorded the user's choice in the armed flag.
+      const flag = await hasPendingEncMigration()
+      consentDeleteBackups = flag ? flag.consentDeleteBackups !== false : true
+    }
+    set({ encMigration: { status: 'running', phase: 'preparing', done: 0, total: 0, summary: null, error: null } })
+    if (!resume) {
+      try { stopSyncEngine() } catch { /* not running */ }
+      await waitForPushIdle()
+    }
+    const onProgress = (p) => set(s => ({ encMigration: { ...s.encMigration, ...p } }))
+    try {
+      const result = resume
+        ? await resumeEncMigrationIfNeeded({ onProgress })
+        : await migrateDriveToEncrypted({ consentDeleteBackups, onProgress })
+      if (!result) {
+        // resume with nothing to do (flag was stale) — no overlay to keep up.
+        set({ encMigration: null })
+      } else if (result.ok) {
+        set(s => ({ encMigration: { ...s.encMigration, status: 'done', summary: result } }))
+      } else {
+        set(s => ({ encMigration: {
+          ...s.encMigration, status: 'error', summary: result,
+          error: `${result.failures.length} file(s) could not be encrypted. They stay readable, and the pass re-runs automatically on next launch.`,
+        } }))
+      }
+    } catch (e) {
+      console.warn('encryption migration failed:', e)
+      set(s => ({ encMigration: { ...s.encMigration, status: 'error', summary: null, error: e?.message || String(e) } }))
+    }
+    if (!resume && get().mode !== MODE_OFFLINE && !get().syncPaused) {
+      const intervalMs = (get().config?.syncInterval || 1) * 1000
+      startSyncEngine((data) => set(data), intervalMs, () => get())
+      retryNow()
+    }
   },
   /**
    * Run the initial Drive merge. Hydrates the store per-bucket as each

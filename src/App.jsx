@@ -5,7 +5,7 @@ import useCurrentDay from './lib/useCurrentDay'
 import { formatDate } from './lib/dates'
 import { loadGAPI, initGAPI, getStoredToken, getTokenRemainingSeconds, startAuthRedirect, consumeAuthRedirect, storeToken, storeRefreshBlob, setAccessToken, trySilentRefresh, scheduleTokenRefresh, isAuthError, signOut } from './services/auth'
 import { initDriveStructure } from './services/drive'
-import { initEncryption, maybeAutoEnableOnFreshDrive } from './services/encryption'
+import { initEncryption, maybeAutoEnableOnFreshDrive, hasPendingEncMigration } from './services/encryption'
 import { onEncStatusChange, getEncStatus } from './services/cryptoBox'
 import { stopSyncEngine } from './services/syncEngine'
 import { migrateDriveJournalsIfNeeded } from './services/journalMigration'
@@ -39,6 +39,7 @@ export default function App() {
   const coldPull = useAppStore(s => s.coldPull)
   const encState = useAppStore(s => s.encState)
   const pendingRecoveryKey = useAppStore(s => s.pendingRecoveryKey)
+  const encMigration = useAppStore(s => s.encMigration)
   const [loginLoading, setLoginLoading] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
@@ -116,6 +117,10 @@ export default function App() {
                 useAppStore.getState().setEncState(getEncStatus())
                 useAppStore.getState().setPendingRecoveryKey(recoveryKey)
               }
+              // Resume an interrupted encryption migration BEFORE the first
+              // merge/push can race its writes. No-op unless the persisted
+              // resume flag is set (e.g. re-login after a crash mid-migration).
+              await useAppStore.getState().runEncMigration({ resume: true })
               await migrateDriveJournalsIfNeeded().catch(e => console.warn('journal migration failed (will retry next boot):', e))
               const work = priorityWorkForRoute(window.location.hash)
               const priorityTasks = [runInitialSync({ priorityBuckets: work.buckets })]
@@ -206,6 +211,8 @@ export default function App() {
                 const encStatus = await initEncryption(); t = lap('initEncryption', t)
                 useAppStore.getState().setEncState(encStatus)
                 if (encStatus === 'locked') return // UnlockScreen takes over
+                // Resume an interrupted encryption migration before any merge/push.
+                await useAppStore.getState().runEncMigration({ resume: true })
                 await migrateDriveJournalsIfNeeded().catch(e => console.warn('journal migration failed (will retry next boot):', e)); t = lap('journal migration', t)
                 const work = priorityWorkForRoute(window.location.hash)
                 const priorityTasks = [runInitialSync({ priorityBuckets: work.buckets })]
@@ -226,6 +233,8 @@ export default function App() {
                   const encStatus = await initEncryption()
                   useAppStore.getState().setEncState(encStatus)
                   if (encStatus === 'locked') return // UnlockScreen takes over
+                  // Resume an interrupted encryption migration before any merge/push.
+                  await useAppStore.getState().runEncMigration({ resume: true })
                   const work = priorityWorkForRoute(window.location.hash)
                   const priorityTasks = [runInitialSync({ priorityBuckets: work.buckets })]
                   if (work.journal) priorityTasks.push(loadJournal())
@@ -469,9 +478,19 @@ export default function App() {
         {pendingRecoveryKey && (
           <RecoveryKeyModal
             recoveryKey={pendingRecoveryKey}
-            onDone={() => useAppStore.getState().setPendingRecoveryKey(null)}
+            onDone={async () => {
+              useAppStore.getState().setPendingRecoveryKey(null)
+              // Settings enable flow on an existing account: the wizard armed
+              // the migration flag before enabling, and the key is now saved —
+              // seal everything already on Drive. Fresh-Drive auto-enable never
+              // arms the flag (nothing to migrate), so this is a no-op there.
+              if (await hasPendingEncMigration()) {
+                useAppStore.getState().runEncMigration({})
+              }
+            }}
           />
         )}
+        {encMigration && <EncMigrationOverlay migration={encMigration} />}
         {coldPull?.active && (
           <div
             // Cold-start ONLY: eat clicks until the full pull (every stage,
@@ -542,6 +561,82 @@ function MobileTopbarDate() {
     }}>
       {formatDate(date)}
     </span>
+  )
+}
+
+/**
+ * Blocking overlay for the one-shot encryption migration (Settings enable flow
+ * or the boot auto-resume). While 'running' it eats all input — an edit made
+ * mid-migration could be clobbered by an in-flight reseal (the migration
+ * serializes the world instead of locking per file). 'done'/'error' keep the
+ * overlay up, input-free, until dismissed.
+ */
+function EncMigrationOverlay({ migration }) {
+  const { status, phase, done, total, summary, error } = migration
+  const running = status === 'running'
+  const summaryLine = summary
+    ? [
+        `${summary.sealed} file${summary.sealed === 1 ? '' : 's'} encrypted`,
+        summary.skipped ? `${summary.skipped} already encrypted` : null,
+        summary.deleted ? `${summary.deleted} old backup${summary.deleted === 1 ? '' : 's'} deleted` : null,
+      ].filter(Boolean).join(', ')
+    : null
+  return (
+    <div
+      onClickCapture={running ? (e => { e.stopPropagation(); e.preventDefault() }) : undefined}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 10500,
+        background: 'rgba(0,0,0,0.45)',
+        backdropFilter: 'blur(2px)',
+        cursor: running ? 'wait' : 'default',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, maxWidth: 340, textAlign: 'center', padding: '0 20px' }}>
+        {running ? (
+          <>
+            <div style={{ width: 22, height: 22, border: '2px solid rgba(255,255,255,0.35)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+            <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.95)', fontWeight: 500 }}>Encrypting your Drive</div>
+            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.75)', lineHeight: 1.5 }}>
+              Every file already on Drive is being encrypted in place. Leave the app open until this finishes — closing it is safe (it resumes next launch), but nothing else should edit while it runs.
+            </div>
+            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.7)', fontVariantNumeric: 'tabular-nums' }}>
+              {total > 0 ? `${phase} — ${done}/${total}` : phase}
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.95)', fontWeight: 500 }}>
+              {status === 'done' ? 'Encryption complete ✓' : 'Encryption pass incomplete'}
+            </div>
+            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.75)', lineHeight: 1.5 }}>
+              {status === 'done'
+                ? (summaryLine || 'Your Drive data is now encrypted.')
+                : error}
+            </div>
+            {status === 'error' && summaryLine && (
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.6)', lineHeight: 1.5 }}>{summaryLine}</div>
+            )}
+            <button
+              onClick={() => useAppStore.getState().dismissEncMigration()}
+              style={{
+                marginTop: 4, padding: '9px 26px',
+                background: 'var(--accent)', border: 'none', borderRadius: '8px',
+                color: '#fff', fontSize: 13, fontWeight: 500,
+                fontFamily: 'var(--font-body)', cursor: 'pointer',
+              }}
+            >
+              Continue
+            </button>
+          </>
+        )}
+      </div>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
   )
 }
 

@@ -28,7 +28,7 @@ import { readManifest, diffManifest, getLocalLastSeq, setLocalLastSeq } from './
 import { blocksToHtml } from '../lib/blocks'
 import { buildReviewsIndex } from '../lib/review'
 import { logSync } from './syncLog'
-import { getEncStatus, isEncError } from './cryptoBox'
+import { getEncStatus, isEncError, EncLockedError } from './cryptoBox'
 import { initEncryption } from './encryption'
 
 const DEFAULT_POLL_INTERVAL = 1000  // 1 second default
@@ -188,6 +188,21 @@ export function stopSyncEngine() {
   document.removeEventListener('visibilitychange', handleVisibility)
   window.removeEventListener('focus', handleVisibility)
   setStatus({ state: 'offline' })
+}
+
+/**
+ * Resolve once no push or poll is in flight (or the timeout passes; returns
+ * whether it actually went idle). stopSyncEngine() stops *scheduling* work but
+ * deliberately lets in-flight requests finish — the encryption migration must
+ * additionally wait them out, or a push that read plaintext bytes before the
+ * migration sealed a file could PATCH stale plaintext back over it.
+ */
+export async function waitForPushIdle(timeoutMs = 15_000) {
+  const t0 = Date.now()
+  while ((pushesInFlight > 0 || coalescedPush || pollInFlight) && Date.now() - t0 < timeoutMs) {
+    await new Promise(r => setTimeout(r, 150))
+  }
+  return pushesInFlight === 0 && !coalescedPush && !pollInFlight
 }
 
 export function retryNow() {
@@ -376,10 +391,19 @@ async function pollRemote(storeSetter) {
         // Live nudge: another device just enabled encryption (appended an `enc`
         // manifest entry). Re-resolve status now so this device locks within one
         // poll — the enc_meta check at the next connect is the durable detection,
-        // this just makes it near-instant. Fire-and-forget; the status listener
-        // (App.jsx) shows the UnlockScreen if it flips to 'locked'.
+        // this just makes it near-instant. AWAITED, and a resulting lock aborts
+        // the poll: if the nudge is the only diff entry (typical right after the
+        // other device's migration, which deliberately appends no content
+        // entries), no sealed read would sniff-lock us, and a paused-resume flow
+        // (pull-then-flush) would go on to push plaintext through a status that
+        // still says 'plaintext'. Throwing here routes into the enc catch below —
+        // poll stops, the flush after it hits the fail-closed write gate, work
+        // stays dirty for the unlock→reload path.
         if (sawEnc && getEncStatus() !== 'unlocked') {
-          initEncryption(ids.rootId).catch(() => {})
+          await initEncryption(ids.rootId).catch(() => {})
+          if (getEncStatus() === 'locked') {
+            throw new EncLockedError('encryption was enabled by another device')
+          }
         }
       }
     }
@@ -889,6 +913,17 @@ function scheduleRetry() {
 
 async function executePush(pushFn) {
   if (!pushFn) return
+  // Engine stopped = nothing pushes. The work is already durable in the dirty
+  // set, and every start path runs flushStranded, so a push that arrives while
+  // stopped (e.g. a journal debounce timer that was armed before the encryption
+  // migration called stopSyncEngine) is not lost — it ships on restart instead
+  // of racing whatever required the engine to be stopped.
+  if (!running) {
+    logSync('executePush skipped — engine stopped (work stays dirty)', {
+      fn: pushFn.label || pushFn.name || 'anon',
+    })
+    return
+  }
   // Single-flight: if a push is already running, don't start a second on the
   // main thread. Park the latest fn; the running push drains it when it ends.
   if (pushesInFlight > 0) {

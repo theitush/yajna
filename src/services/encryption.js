@@ -4,13 +4,16 @@
  * cryptoBox's key holder + status registry. cryptoBox stays WebCrypto-only and
  * unit-testable in bare Node; everything that touches IDB or Drive lives here.
  *
- * Stage 2 scope: DETECTION + UNLOCK.
+ * Scope:
  *   - initEncryption() resolves the status on connect (all three App.jsx connect
  *     paths, right after initDriveStructure): loads the persisted key, reads
  *     enc_meta, and settles cryptoBox's status to one of
- *     unlocked | plaintext | locked | undetermined.
+ *     unlocked | plaintext | locked | undetermined. Self-heals a missing
+ *     enc_meta from a previously-verified key.
  *   - unlockWithRecoveryKey() lets a locked device enter the recovery key.
- * Enable / publish / migrate / re-show land in Stage 3-4.
+ *   - enableEncryption()/publishEncMeta() turn encryption on (Stage 3).
+ *   - migrateDriveToEncrypted()/resumeEncMigrationIfNeeded()/
+ *     auditPlaintextRemnants() seal pre-existing content (Stage 4).
  *
  * enc_meta.json (plaintext, Drive root):
  *   { version, algo, keyCheck: base64(seal("yajna-enc-check-v1")),
@@ -19,8 +22,12 @@
  * entered key offline against keyCheck. It stays readable (readJsonFile) so a
  * keyless device can find it — the CONTENT is what's sealed, not the marker.
  */
+import { DRIVE_MIME_FOLDER } from '../lib/constants'
 import { getMeta, putMeta } from './db'
-import { getDriveFileIds, findFile, readJsonFile, readBinaryFile, writeJsonFile } from './drive'
+import {
+  getDriveFileIds, findFile, readJsonFile, readBinaryFile, writeJsonFile,
+  listFolder, writeBinaryFile, readFileHead, deleteDriveFile,
+} from './drive'
 import { appendChanges, getDeviceId, readManifest } from './manifest'
 import {
   setKeyBytes, getKeyBytes, hasKey, clearKey, setEncStatus, getEncStatus,
@@ -30,6 +37,7 @@ import {
 
 const ENC_KEY_IDB = 'enc_key_v1'                 // raw Uint8Array(16), the account key
 const ENC_STATUS_CACHE_IDB = 'enc_status_cache'  // last resolved verdict, for offline boots
+const ENC_MIGRATE_PENDING_IDB = 'enc_migrate_pending' // { consentDeleteBackups, startedAt } while a migration is owed
 const ENC_META_NAME = 'enc_meta.json'
 const KEY_CHECK_PLAINTEXT = 'yajna-enc-check-v1'
 
@@ -167,6 +175,24 @@ export async function initEncryption(rootId = null) {
   }
 
   if (!meta) {
+    // No marker on Drive. If this device holds a key it has previously verified
+    // against THIS Drive (cached verdict 'unlocked'), the marker was deleted or
+    // lost — self-heal by republishing it rather than misclassifying an
+    // encrypted Drive as plaintext, which would passthrough-write plaintext
+    // content right back onto it. A keyless device can't make this call; it
+    // resolves 'plaintext' and the sniff-lock catches it on the first sealed
+    // read (unlock then falls back to test-opening config.bin).
+    const cached = await getMeta(ENC_STATUS_CACHE_IDB)
+    if (hasKey() && cached === 'unlocked') {
+      try {
+        await publishEncMeta(rootId)
+        console.warn('initEncryption: enc_meta.json was missing — republished (self-heal)')
+      } catch (e) {
+        console.warn('initEncryption: enc_meta self-heal failed (will retry next connect):', e?.message || e)
+      }
+      setEncStatus('unlocked')
+      return getEncStatus()
+    }
     setEncStatus('plaintext')
     await putMeta(ENC_STATUS_CACHE_IDB, 'plaintext')
     return getEncStatus()
@@ -348,4 +374,268 @@ export async function maybeAutoEnableOnFreshDrive(rootId = null) {
     console.warn('maybeAutoEnableOnFreshDrive skipped:', e?.message || e)
     return null
   }
+}
+
+// ---- migration / resume / audit (Stage 4) -----------------------------------
+
+const MIGRATE_TIMEOUT_MS = 60_000 // audio blobs can be MBs; the 15s default flakes on slow uplinks
+const MIGRATE_BATCH = 10
+
+// The content buckets, in sensitivity order: config (Groq API key) → audio meta
+// (full transcripts) → tasks → notes → journals → audio blobs. Root is NOT a
+// bucket — manifest/synclogs/enc_meta stay plaintext by design; the legacy root
+// files are handled one-by-one in the cleanup pass.
+function migrationBuckets(ids) {
+  return [
+    ['config', ids.configFolderId],
+    ['audio meta', ids.audioMetaFolderId],
+    ['tasks', ids.tasksFolderId],
+    ['notes', ids.notesFolderId],
+    ['journals', ids.journalsFolderId],
+    ['audio', ids.audioFolderId],
+  ].filter(([, id]) => !!id)
+}
+
+/**
+ * Read one file ({id, name}), seal it in place if it isn't already. PATCH by
+ * fileId keeps the Drive fileId stable (audio driveFileId refs keep working)
+ * and appends no manifest entry — the content is identical to what the other
+ * devices already hold, so forcing them to re-pull hundreds of files would be
+ * pure churn (they're locked until they get the key anyway, and merge normally
+ * after unlock).
+ */
+async function sealFileInPlace(file) {
+  const raw = await readBinaryFile(file.id, MIGRATE_TIMEOUT_MS)
+  if (isSealed(raw)) return 'skipped'
+  const sealed = await seal(raw)
+  await writeBinaryFile(null, file.name, sealed, file.id, MIGRATE_TIMEOUT_MS)
+  return 'sealed'
+}
+
+/** The persisted "a migration is owed" marker, or null. Set before enabling on
+ *  an existing account so a crash anywhere in the flow auto-resumes next boot. */
+export async function hasPendingEncMigration() {
+  return (await getMeta(ENC_MIGRATE_PENDING_IDB)) || null
+}
+
+/** Arm the crash-safe resume flag. Called by the enable flow BEFORE
+ *  enableEncryption(), and by migrateDriveToEncrypted() itself at start. */
+export async function armEncMigration(consentDeleteBackups) {
+  await putMeta(ENC_MIGRATE_PENDING_IDB, {
+    consentDeleteBackups: !!consentDeleteBackups,
+    startedAt: new Date().toISOString(),
+  })
+}
+
+/** Drop the resume flag (enable failed / migration completed clean). */
+export async function disarmEncMigration() {
+  await putMeta(ENC_MIGRATE_PENDING_IDB, null)
+}
+
+/**
+ * One-shot pass that seals every plaintext content file already on Drive.
+ * Requires 'unlocked'. The caller (store.runEncMigration) is responsible for
+ * serialization: sync engine stopped + in-flight pushes drained + UI blocked —
+ * we deliberately serialize the whole world instead of locking file-by-file.
+ *
+ * Idempotent and resumable: every file is sniffed (isSealed → skip) before
+ * sealing, so re-running after a crash/failure only touches what's left, and a
+ * half-migrated Drive stays fully readable throughout via openContent's sniff.
+ * Per-file failures are collected and retried once; any survivor keeps the
+ * resume flag set (next boot re-runs) and is reported in the returned summary.
+ *
+ * Cleanup pass (first, so the most sensitive bulk plaintext dies early and the
+ * bucket enumeration below never lists a file we've already deleted):
+ *   - root config.json → overwritten with {} once config/config.bin exists
+ *     (the legacy file is dead weight kept only for old-version reads; Stage 5
+ *     deletes it with its machinery). Left alone if config.bin is missing.
+ *   - _backup_pre_entities.json (root) + journals/_backup_pre_daily.json:
+ *     deleted with consent (default), else sealed like any other content.
+ *
+ * Returns { ok, sealed, skipped, deleted, wipedConfig, failures: [{bucket,name,fileId,err}] }.
+ */
+export async function migrateDriveToEncrypted({ consentDeleteBackups = true, onProgress = null } = {}) {
+  if (getEncStatus() !== 'unlocked') {
+    throw new EncLockedError(`migrateDriveToEncrypted: requires 'unlocked', got "${getEncStatus()}"`)
+  }
+  const ids = await getDriveFileIds()
+  if (!ids?.rootId) throw new Error('migrateDriveToEncrypted: no Drive ids')
+
+  await armEncMigration(consentDeleteBackups)
+  const progress = (p) => { if (onProgress) { try { onProgress(p) } catch { /* UI only */ } } }
+  progress({ phase: 'preparing', done: 0, total: 0 })
+
+  let sealed = 0
+  let skipped = 0
+  let deleted = 0
+  let wipedConfig = false
+  const failures = []
+
+  // Cleanup: legacy root config.json + the two pre-migration backup dumps.
+  const configBinId = await findFile(ids.configFolderId, 'config.bin')
+  if (configBinId) {
+    const legacyConfigId = await findFile(ids.rootId, 'config.json')
+    if (legacyConfigId) {
+      const raw = await readBinaryFile(legacyConfigId).catch(() => null)
+      const alreadyEmpty = raw && new TextDecoder().decode(raw).trim() === '{}'
+      if (!alreadyEmpty) {
+        await writeJsonFile(ids.rootId, 'config.json', {}, legacyConfigId)
+        wipedConfig = true
+      }
+    }
+  }
+  const backups = [
+    [ids.rootId, '_backup_pre_entities.json', 'root'],
+    [ids.journalsFolderId, '_backup_pre_daily.json', 'journals'],
+  ]
+  for (const [folderId, name, bucket] of backups) {
+    if (!folderId) continue
+    const fileId = await findFile(folderId, name)
+    if (!fileId) continue
+    try {
+      if (consentDeleteBackups) {
+        await deleteDriveFile(fileId)
+        deleted++
+      } else {
+        const outcome = await sealFileInPlace({ id: fileId, name })
+        if (outcome === 'sealed') sealed++
+        else skipped++
+      }
+    } catch (e) {
+      failures.push({ bucket, name, fileId, op: consentDeleteBackups ? 'delete' : 'seal', err: String(e?.message || e).slice(0, 140) })
+    }
+  }
+
+  // Enumerate all buckets up front so progress has a real denominator.
+  const buckets = []
+  let total = 0
+  for (const [label, folderId] of migrationBuckets(ids)) {
+    const files = (await listFolder(folderId)).filter(f => f.mimeType !== DRIVE_MIME_FOLDER)
+    buckets.push({ label, folderId, files })
+    total += files.length
+  }
+
+  let done = 0
+  for (const { label, files } of buckets) {
+    progress({ phase: label, done, total })
+    for (let i = 0; i < files.length; i += MIGRATE_BATCH) {
+      const slice = files.slice(i, i + MIGRATE_BATCH)
+      await Promise.all(slice.map(async (f) => {
+        try {
+          const outcome = await sealFileInPlace(f)
+          if (outcome === 'sealed') sealed++
+          else skipped++
+        } catch (e) {
+          failures.push({ bucket: label, name: f.name, fileId: f.id, op: 'seal', err: String(e?.message || e).slice(0, 140) })
+        }
+      }))
+      done += slice.length
+      progress({ phase: label, done, total })
+    }
+  }
+
+  // One retry pass over the stragglers (transient 5xx / timeouts), sequential to
+  // go easy on whatever was rate-limiting us. sealFileInPlace re-sniffs, so a
+  // file whose WRITE landed but whose response was lost just skips.
+  if (failures.length) {
+    progress({ phase: 'retrying failures', done, total })
+    const retry = failures.splice(0, failures.length) // drain; survivors re-collect below
+    for (const f of retry) {
+      try {
+        if (f.op === 'delete') {
+          await deleteDriveFile(f.fileId)
+          deleted++
+        } else {
+          const outcome = await sealFileInPlace({ id: f.fileId, name: f.name })
+          if (outcome === 'sealed') sealed++
+          else skipped++
+        }
+      } catch (e) {
+        failures.push({ ...f, err: String(e?.message || e).slice(0, 140) })
+      }
+    }
+  }
+
+  const ok = failures.length === 0
+  if (ok) await disarmEncMigration()
+  else console.warn('migrateDriveToEncrypted: incomplete —', failures.length, 'file(s) failed; flag stays set for auto-resume')
+  return { ok, sealed, skipped, deleted, wipedConfig, failures }
+}
+
+/**
+ * Boot hook: if a migration was armed but never finished (crash, tab close,
+ * network death mid-pass), re-run it. Called on the connect paths after
+ * initEncryption() resolves and BEFORE runInitialSync, so migration writes
+ * never race the initial merge. Returns the migration summary, or null when
+ * there is nothing to resume.
+ */
+export async function resumeEncMigrationIfNeeded({ onProgress = null } = {}) {
+  const flag = await getMeta(ENC_MIGRATE_PENDING_IDB)
+  if (!flag) return null
+  const status = getEncStatus()
+  if (status === 'plaintext') {
+    // Armed, but enabling never actually happened (crash between arm and
+    // publish). Nothing was ever sealed with a key we'd have kept — clear it.
+    await disarmEncMigration()
+    return null
+  }
+  if (status !== 'unlocked') return null // locked/undetermined: keep the flag for a keyed boot
+  return migrateDriveToEncrypted({
+    consentDeleteBackups: flag.consentDeleteBackups !== false,
+    onProgress,
+  })
+}
+
+/**
+ * Settings → "Check for unencrypted files". Sniffs the first 16 bytes of every
+ * content file (Range reads — cheap even over hundreds of files) and reports
+ * anything without the envelope magic. Root files are checked against the
+ * expected-plaintext set instead: manifest.json, enc_meta.json, synclogs, and
+ * an empty legacy config.json stub are fine; anything else unsealed is a
+ * remnant (e.g. the accepted race: a keyless device pushed a brand-new entity
+ * in the seconds before its poll locked it). Re-running the migration mops up.
+ *
+ * Returns { checked, plaintext: [{ bucket, name, fileId }] }.
+ */
+export async function auditPlaintextRemnants({ onProgress = null } = {}) {
+  const ids = await getDriveFileIds()
+  if (!ids?.rootId) throw new Error('auditPlaintextRemnants: no Drive ids')
+  const progress = (p) => { if (onProgress) { try { onProgress(p) } catch { /* UI only */ } } }
+
+  const plaintext = []
+  let checked = 0
+
+  const targets = []
+  for (const [label, folderId] of migrationBuckets(ids)) {
+    const files = (await listFolder(folderId)).filter(f => f.mimeType !== DRIVE_MIME_FOLDER)
+    for (const f of files) targets.push({ bucket: label, ...f })
+  }
+  const rootFiles = (await listFolder(ids.rootId)).filter(f => f.mimeType !== DRIVE_MIME_FOLDER)
+  for (const f of rootFiles) {
+    if (f.name === 'manifest.json' || f.name === ENC_META_NAME) continue
+    if (/^_debug_synclog_/.test(f.name)) continue
+    targets.push({ bucket: 'root', ...f, isRootConfig: f.name === 'config.json' })
+  }
+
+  const total = targets.length
+  for (let i = 0; i < targets.length; i += 20) {
+    const slice = targets.slice(i, i + 20)
+    await Promise.all(slice.map(async (t) => {
+      try {
+        const head = await readFileHead(t.id)
+        checked++
+        if (isSealed(head)) return
+        // The wiped legacy config stub is expected plaintext — but ONLY as {}.
+        // A non-empty config.json is exactly the leak we care about (Groq key).
+        if (t.isRootConfig && new TextDecoder().decode(head).trim() === '{}') return
+        plaintext.push({ bucket: t.bucket, name: t.name, fileId: t.id })
+      } catch (e) {
+        // Unreadable ≠ plaintext; surface it as a finding so the user re-runs.
+        plaintext.push({ bucket: t.bucket, name: t.name, fileId: t.id, err: String(e?.message || e).slice(0, 140) })
+      }
+    }))
+    progress({ done: Math.min(i + 20, total), total })
+  }
+
+  return { checked, plaintext }
 }

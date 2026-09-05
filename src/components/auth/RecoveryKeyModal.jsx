@@ -44,9 +44,9 @@ export default function RecoveryKeyModal({ recoveryKey, onDone }) {
           Save your recovery key
         </h1>
         <p style={{ color: 'var(--text-secondary)', fontSize: '13px', lineHeight: 1.6 }}>
-          Encryption is on — everything on your Drive is now encrypted. This key is
-          the only way to unlock your data on another device or after clearing this
-          one.
+          Encryption is on — everything you save is encrypted before it reaches
+          Drive. This key is the only way to unlock your data on another device or
+          after clearing this one.
         </p>
       </div>
 
