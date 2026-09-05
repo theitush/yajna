@@ -421,7 +421,15 @@ export default function SettingsPage() {
           <h2 style={sectionHeadStyle}>Voice & AI</h2>
           <label style={{ display: 'block' }}>
             <span style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>
-              Groq API key (for Whisper transcription)
+              Groq API key{' '}
+              <a
+                href="https://console.groq.com/keys"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: 'var(--accent)' }}
+              >
+                (for Whisper transcription)
+              </a>
             </span>
             <input
               type="password"
