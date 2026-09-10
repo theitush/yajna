@@ -13,7 +13,7 @@
  *   • Push B was parked; it drains after A and calls getDirty() -> EMPTY,
  *     because A just cleared the flag B's edit had set. B ships nothing.
  * The feedback edit therefore NEVER reaches Drive. The phone's own local doc was
- * healed by the post-push force-poll re-fold (reconcileLiveRow), so the PHONE
+ * healed by the post-push force-poll's row→doc fold (mergeTaskDocs), so the PHONE
  * shows the feedback — but Drive (and the laptop) stay frozen at the done write.
  * Proof in the logs: the laptop merged docs whose mergedUpd is the *done* write
  * (18:11:00.496 / 18:11:14.680), never the *feedback* write (…01.429 / …15.574),

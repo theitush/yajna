@@ -134,6 +134,23 @@ export async function getTaskDocBytes(id) {
   return row?._doc instanceof Uint8Array ? row._doc : null
 }
 
+/**
+ * Row AND doc bytes from ONE read of the record. The pull merge serializes the
+ * row into the doc before merging (mergeTaskDocs), and that is only sound if
+ * the row is never behind the doc it is applied to — a stale row read earlier
+ * than the bytes would re-stamp a newer doc backwards. One `get` of the one
+ * record that holds both views is what makes that a guarantee rather than a
+ * timing assumption.
+ */
+export async function getTaskRecord(id) {
+  const db = await getDB()
+  const rec = await db.get(STORE_TASKS, id)
+  return {
+    row: rec ? stripDoc(rec) : null,
+    bytes: rec?._doc instanceof Uint8Array ? rec._doc : null,
+  }
+}
+
 export async function putTaskDocBytes(id, bytes) {
   if (!id || !(bytes instanceof Uint8Array)) return
   const db = await getDB()
