@@ -979,15 +979,22 @@ export async function pushTasks() {
     // feedback) can land after the snapshot. We must ship the latest fields.
     const fresh = (await getTask(id)) || local
 
-    // Pick the base doc: our own bytes merged with the remote .bin, else adopt
-    // the remote's root, else (first writer) createDoc. Forking a fresh root
-    // when a remote already exists breaks Automerge.merge across devices (the
-    // staleness bug).
+    // Row → doc → merge, in that order. The row is serialized into OUR OWN doc
+    // first: applyTaskFields stamps only the fields the row changed since the
+    // doc was last serialized, at the row's own clock. Only then is the result
+    // LWW-merged with the remote .bin, so a field the other device wrote LATER
+    // keeps winning. Merging first and re-applying the row afterwards (7db2bf3)
+    // re-stamped every field the row disagreed with — at the row's OLDER clock
+    // — and shipped that as the newest state: a phone push after a laptop
+    // review put status=active back on Drive (#24, manifest seq 11806/11807).
+    // Base doc: our own bytes, else adopt the remote's root, else (first
+    // writer) createDoc. Forking a fresh root when a remote already exists
+    // breaks Automerge.merge across devices (the staleness bug).
     const existingBytes = await getTaskDocBytes(id)
     const remoteBytes = await readEntityBinFile(ids.tasksFolderId, id).catch(nullUnlessEnc)
     let doc
     if (existingBytes) {
-      doc = await loadDoc(existingBytes)
+      doc = await applyTaskFields(await loadDoc(existingBytes), fresh)
       if (remoteBytes) {
         const remoteDoc = await loadDoc(remoteBytes)
         // Same per-field wall-clock LWW as the pull side (mergeTaskDocs) — a
@@ -998,9 +1005,8 @@ export async function pushTasks() {
           : newerDoc(doc, remoteDoc, materializeTaskRow)
       }
     } else {
-      doc = remoteBytes ? await loadDoc(remoteBytes) : await createDoc('task', fresh)
+      doc = await applyTaskFields(remoteBytes ? await loadDoc(remoteBytes) : await createDoc('task', fresh), fresh)
     }
-    doc = await applyTaskFields(doc, fresh)
     const bytes = await saveDoc(doc)
 
     // Persist ONLY the Automerge bytes, never the row. The row is owned by
