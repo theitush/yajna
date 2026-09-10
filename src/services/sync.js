@@ -7,7 +7,7 @@ import {
   putTasks, putNotes, putJournal, getConfig, putConfig,
   putMeta, getAllTasksRaw, getAllNotesRaw, purgeTombstones,
   getDirty, clearDirty, putAudio, getAllAudio,
-  getTaskDocBytes, putTaskWithDoc, putTaskDocBytes, getTask,
+  getTaskDocBytes, getTaskRecord, putTaskWithDoc, putTaskDocBytes, getTask,
   getNoteDocBytes, putNoteWithDoc, getNoteRaw,
   getJournalDocBytes, putJournalWithDoc, getAllJournals, getJournal,
   getConfigDocBytes, putConfigWithDoc,
@@ -295,7 +295,6 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
   const writeRows = []
   const writeDocBytes = new Map() // id → bytes
   for (const { id, bytes, err } of taskDocs) {
-    const l = localById.get(id)
     const change = changedMap.get(id)
     if (!bytes) {
       // .bin missing. If the manifest says delete, write a tombstone row so
@@ -313,7 +312,7 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
           id: id.slice(0, 8),
           op: change?.op || null,
           seq: change?.seq ?? null,
-          hadLocalRow: !!l,
+          hadLocalRow: localById.has(id),
           err: err || null,
         })
       }
@@ -322,16 +321,33 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
 
     const remoteDoc = await loadDoc(bytes)
 
-    // Local doc: load if we have bytes and merge (shared Automerge ancestry).
-    // If we have NO local bytes, the remote doc is authoritative — adopt it as
-    // the base and re-apply the local row's fields on top. We must NOT
-    // createDoc() a fresh-root local doc and Automerge.merge it: two docs with
-    // disjoint roots don't union their list content, so the merge silently
-    // drops the remote's blocks/fields (the cross-device staleness bug).
-    const localBytes = await getTaskDocBytes(id)
+    // Row → doc → merge, in that order — the same order pushTasks uses (#24).
+    // The row and the `_doc` bytes are two views of ONE IDB record: updateTask
+    // writes only the row and leaves doc serialization to pushTasks, so the
+    // row is often AHEAD of the bytes (offline/paused edits, and the poll-vs-
+    // push race where a force-poll lands before push re-serializes). The row
+    // is therefore folded into our own doc FIRST: applyTaskFields stamps only
+    // the fields the row changed, at the row's clock, so the merge below sees
+    // the live edit as one more stamped write and resolves it per field
+    // against the remote by time. Re-folding the whole row AFTER the merge
+    // instead (reconcileLiveRow, 5d93d3f) re-stamped every field the row
+    // disagreed with — including fields the row never touched, which the
+    // remote had just changed — at the row's clock, and shipped that clobber
+    // on the next push (#25, the pull-side mirror of #24). Reading row and
+    // bytes from one `get` is what makes the fold safe: they are the same
+    // snapshot, so the row can never be behind the doc it is applied to.
+    // (proven: scripts/repro-row-ahead-merge.mjs)
+    //
+    // With NO local bytes the remote doc is authoritative — adopt it as the
+    // base and apply the local row's fields on top. We must NOT createDoc() a
+    // fresh-root local doc and Automerge.merge it: two docs with disjoint
+    // roots don't union their list content, so the merge silently drops the
+    // remote's blocks/fields (the cross-device staleness bug).
+    const { row: l, bytes: localBytes } = await getTaskRecord(id)
     let mergedDoc
     if (localBytes) {
-      const localDoc = await loadDoc(localBytes)
+      let localDoc = await loadDoc(localBytes)
+      if (l) localDoc = await applyTaskFields(localDoc, l)
       // Heal disjoint-root local docs (see mergeJournalDocs for rationale).
       if (await sharesAncestry(localDoc, remoteDoc)) {
         // Per-field wall-clock LWW, NOT a bare Automerge.merge. A plain merge
@@ -347,28 +363,6 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
       mergedDoc = await applyTaskFields(remoteDoc, l)
     } else {
       mergedDoc = remoteDoc
-    }
-
-    // Re-assert the live ROW's authority over the merge. updateTask owns row
-    // fields and only marks dirty — it does NOT re-serialize the doc until
-    // pushTasks runs, so the ROW can be NEWER than the doc bytes we just merged
-    // (offline/paused edits, AND the single-device poll-vs-push race where a
-    // force-poll merge lands before push re-serializes). materializing the merge
-    // over a newer row would revert the user's edit (status flips back, typed
-    // text vanishes, updatedAt backwards). reconcileLiveRow re-folds the row
-    // ONLY when it's strictly newer than the merged doc, stamping `_fts` at the
-    // row clock so the edit also wins the next cross-device merge and pushTasks
-    // ships it. The dirty flag can't gate this (pushTasks clearDirty()s before
-    // the racing merge reads it) — recency is the timing-independent authority.
-    // (proven: scripts/repro-row-ahead-merge.mjs)
-    if (l) {
-      const before = mergedDoc
-      mergedDoc = await reconcileLiveRow(mergedDoc, l, applyTaskFields, materializeTaskRow)
-      if (mergedDoc !== before) {
-        logSync('mergeTaskDocs row authority re-fold', {
-          id: id.slice(0, 8), status: l.status, rowUpd: l.updatedAt,
-        })
-      }
     }
 
     const mergedBytes = await saveDoc(mergedDoc)
