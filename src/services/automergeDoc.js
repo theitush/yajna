@@ -42,7 +42,9 @@ const CONFIG_NON_FIELDS = new Set(['_doc'])
 // `_fts` is the per-field LWW timestamp map (same as tasks — see TASK_NON_FIELDS).
 const NOTE_NON_FIELDS = new Set(['_doc', 'body', '_fts'])
 // Per-block fields. `id` is the stable identifier (the join key across devices).
-// `html` is the content (field-level LWW per block). `order` is a fractional-
+// `html` is the content (field-level LWW per block, stamped in the block's own
+// `_fts` by applyNoteFields — an internal sync structure, never materialized
+// into the row, same as the note-level `_fts`). `order` is a fractional-
 // index key (see blocks.js fiBetween): ordering is carried by this FIELD, not by
 // the Automerge list's physical position. This is deliberate — reordering by
 // splicing the Automerge list (deleteAt/insertAt) duplicates blocks under
@@ -289,7 +291,9 @@ export async function reconcileLiveRow(mergedDoc, liveRow, applyFields, material
  * `source` supplies the wall clock (updatedAt) and the stable createdAt floor.
  * `skipKeys` lists fields whose conflict resolution is NOT scalar LWW (e.g. a
  * note's `blocks` list, merged by Automerge's own id-keyed reconcile) — they're
- * still assigned, just not stamped/LWW-resolved.
+ * still assigned, just not stamped/LWW-resolved. `d` may be any map in the doc,
+ * not only the root: applyNoteFields runs it on each block element with the
+ * block itself as `source`, so a block's `updatedAt` is its clock.
  */
 function stampLWW(d, fields, source, skipKeys = null) {
   // Use the row's own updatedAt (stable across re-pushes of the same edit),
@@ -500,15 +504,21 @@ export async function applyNoteFields(doc, source) {
     // is the cross-device block-loss bug. Genuine deletes arrive as an explicit
     // { deleted: true } source entry (stampBlocksFromDoc tombstones removed
     // blocks) and flow through this same per-field update.
+    //
+    // Each block is stamped exactly like the note's scalars: stampLWW writes a
+    // per-field `_fts` inside the block, at the BLOCK's own clock (its
+    // `updatedAt`, which stampBlocksFromDoc bumps only when html/order changed
+    // or the block was tombstoned). mergeNoteLWW resolves a concurrent edit to
+    // the same block by those stamps instead of Automerge's actor-id pick. A
+    // block written before stamps existed has no `_fts` and is treated as the
+    // oldest (floor 0), so a real edit on either side beats it.
     for (let i = 0; i < d.blocks.length; i++) {
       const cur = d.blocks[i]
       if (!cur || !cur.id) continue
       docIds.add(cur.id)
       const src = srcById.get(cur.id)
       if (!src) continue
-      for (const k of NOTE_BLOCK_FIELDS) {
-        if (!shallowEqual(cur[k], src[k])) cur[k] = src[k]
-      }
+      stampLWW(cur, src, src)
     }
 
     // Pass 2: append new blocks the doc hasn't seen yet. The list is APPEND-ONLY
@@ -519,9 +529,8 @@ export async function applyNoteFields(doc, source) {
     // changes are just `order` field updates handled in Pass 1.
     for (const src of srcBlocks) {
       if (docIds.has(src.id)) continue
-      const fresh = {}
-      for (const k of NOTE_BLOCK_FIELDS) fresh[k] = src[k]
-      d.blocks.push(fresh)
+      d.blocks.push({})
+      stampLWW(d.blocks[d.blocks.length - 1], src, src)
     }
   })
 }
@@ -529,16 +538,44 @@ export async function applyNoteFields(doc, source) {
 /**
  * Per-field wall-clock LWW merge of two shared-ancestry note docs. Same fix as
  * mergeTaskLWW (bare Automerge.merge resolves scalars by actor-id, not time, so
- * a newer edit reverts). `blocks` is left to Automerge's own merge — the
+ * a newer edit reverts). The `blocks` LIST stays on Automerge's own merge — the
  * append-only + id-keyed-reconcile machinery (see applyNoteFields) is the
- * correct CRDT resolution for the note body; overwriting it wholesale by LWW
- * would reintroduce the block-loss/duplication bug. Only scalar fields (title,
- * tags, deleted, …) get per-field LWW.
+ * correct CRDT resolution for which blocks exist; overwriting the list
+ * wholesale by LWW would reintroduce the block-loss/duplication bug. But the
+ * FIELDS of a block both devices edited concurrently (html, order, deleted)
+ * are scalars with the same actor-id problem, so each list element present in
+ * both parents is resolved by its own `_fts` (written by applyNoteFields),
+ * exactly as the note's top-level scalars are. Elements are matched by
+ * Automerge object id, not by block `id`: the physical element is the thing
+ * Automerge.merge picked a value for, and a duplicate-id surplus copy (see
+ * collapseDuplicateBlockIds) keeps its own tombstone instead of inheriting the
+ * winner's. An element only one parent has cannot carry a conflict and is left
+ * as merged.
  */
 export async function mergeNoteLWW(localDoc, remoteDoc) {
   const Automerge = await getAutomerge()
   const merged = Automerge.merge(Automerge.clone(localDoc), remoteDoc)
-  return Automerge.change(merged, (d) => lwwMergeFields(d, localDoc, remoteDoc, NOTE_LWW_SKIP))
+  const byObjId = (doc) => {
+    const m = new Map()
+    for (const b of Array.isArray(doc.blocks) ? doc.blocks : []) {
+      if (b) m.set(Automerge.getObjectId(b), b)
+    }
+    return m
+  }
+  const localBlocks = byObjId(localDoc)
+  const remoteBlocks = byObjId(remoteDoc)
+  return Automerge.change(merged, (d) => {
+    lwwMergeFields(d, localDoc, remoteDoc, NOTE_LWW_SKIP)
+    if (!Array.isArray(d.blocks)) return
+    for (let i = 0; i < d.blocks.length; i++) {
+      const el = d.blocks[i]
+      if (!el) continue
+      const objId = Automerge.getObjectId(el)
+      const lb = localBlocks.get(objId)
+      const rb = remoteBlocks.get(objId)
+      if (lb && rb) lwwMergeFields(el, lb, rb)
+    }
+  })
 }
 
 /**

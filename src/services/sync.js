@@ -1080,13 +1080,21 @@ export async function pushNotes() {
     // fire-and-forget race as pushTasks). Ship the latest fields.
     const fresh = (await getNoteRaw(id)) || local
 
-    // Base doc: own bytes merged with the remote .bin, else adopt the remote
-    // root, else createDoc. (Same merge + disjoint-root rules as pushTasks.)
+    // Row → doc → merge, same order as pushTasks (#24) and for the same
+    // reason: applyNoteFields on OUR OWN doc first stamps only what the row
+    // changed (scalars at the row's clock, each block at its own), and only
+    // then is the result LWW-merged with the remote .bin, so a title the other
+    // device set later — or a block it edited later — keeps winning. Merging
+    // first and re-applying the whole row afterwards shipped a stale row as the
+    // newest state (#26; blocks were worse: the local row's html always won,
+    // stale or not, because blocks carried no stamps until now).
+    // Base doc: own bytes, else adopt the remote root, else createDoc. (Same
+    // disjoint-root rules as pushTasks.)
     const existingBytes = await getNoteDocBytes(id)
     const remoteBytes = await readEntityBinFile(ids.notesFolderId, id).catch(nullUnlessEnc)
     let doc
     if (existingBytes) {
-      doc = await loadDoc(existingBytes)
+      doc = await applyNoteFields(await loadDoc(existingBytes), fresh)
       if (remoteBytes) {
         const remoteDoc = await loadDoc(remoteBytes)
         doc = (await sharesAncestry(doc, remoteDoc))
@@ -1094,9 +1102,8 @@ export async function pushNotes() {
           : newerDoc(doc, remoteDoc, materializeNoteRow)
       }
     } else {
-      doc = remoteBytes ? await loadDoc(remoteBytes) : await createDoc('note', fresh)
+      doc = await applyNoteFields(remoteBytes ? await loadDoc(remoteBytes) : await createDoc('note', fresh), fresh)
     }
-    doc = await applyNoteFields(doc, fresh)
     const bytes = await saveDoc(doc)
 
     // Persist bytes locally before upload so a mid-push crash can't leave the
