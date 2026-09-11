@@ -1,5 +1,6 @@
 import { Node, mergeAttributes } from '@tiptap/core'
-import { NodeSelection, Plugin, TextSelection } from '@tiptap/pm/state'
+import { NodeSelection } from '@tiptap/pm/state'
+import { audioSelectionPlugin } from './audioSelection'
 import { ReactNodeViewRenderer, NodeViewWrapper } from '@tiptap/react'
 import { useEffect, useRef, useState } from 'react'
 import useAppStore from '../../store/useAppStore'
@@ -1229,66 +1230,11 @@ export const AudioNode = Node.create({
   },
 
   addProseMirrorPlugins() {
-    const name = this.name
-    // When an audio node is the active NodeSelection, typing a character
-    // would replace the node (PM default). Instead, drop the selection
-    // *after* the node so the typed text appears as a sibling.
-    const moveCursorAfterAudio = (view) => {
-      const { state, dispatch } = view
-      const sel = state.selection
-      if (!(sel instanceof NodeSelection)) return false
-      if (sel.node?.type?.name !== name) return false
-      const after = sel.to
-      const $after = state.doc.resolve(after)
-      let tr = state.tr
-      // If there's no text-selectable position right after the audio (e.g.
-      // it's the last block), append a paragraph so the user has somewhere
-      // to type.
-      if ($after.parent.type.name === 'doc' && !$after.nodeAfter) {
-        const para = state.schema.nodes.paragraph?.create()
-        if (para) {
-          tr = tr.insert(after, para)
-          tr = tr.setSelection(TextSelection.create(tr.doc, after + 1))
-        } else {
-          tr = tr.setSelection(TextSelection.create(tr.doc, after))
-        }
-      } else {
-        // Find nearest text position at/after the node end.
-        let pos = after
-        try {
-          const next = TextSelection.near(tr.doc.resolve(pos), 1)
-          tr = tr.setSelection(next)
-        } catch {
-          tr = tr.setSelection(TextSelection.create(tr.doc, pos))
-        }
-      }
-      dispatch(tr)
-      return true
-    }
+    const editor = this.editor
     return [
-      new Plugin({
-        props: {
-          handleTextInput(view) {
-            // Returning false lets PM handle insertion *after* we relocate
-            // the selection, so the typed character lands after the audio.
-            return moveCursorAfterAudio(view) ? false : false
-          },
-          handleKeyDown(view, event) {
-            const sel = view.state.selection
-            if (!(sel instanceof NodeSelection)) return false
-            if (sel.node?.type?.name !== name) return false
-            // Printable single-char keys (letters, digits, symbols, space)
-            // should move the cursor past the audio first; PM will then
-            // insert the character normally.
-            const isPrintable = event.key.length === 1
-              && !event.ctrlKey && !event.metaKey && !event.altKey
-            if (isPrintable || event.key === 'Enter') {
-              moveCursorAfterAudio(view)
-              return false
-            }
-            return false
-          },
-        },
+      audioSelectionPlugin({
+        nodeName: this.name,
+        isEditable: () => !editor || editor.isEditable,
       }),
     ]
   },
