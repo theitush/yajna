@@ -9,8 +9,8 @@
  * only the thread it runs on changed.
  */
 import {
-  createDoc, loadDoc, saveDoc, mergeDoc, sharesAncestry,
-  applyJournalFields, materializeJournalRow,
+  createDoc, loadDoc, saveDoc, sharesAncestry,
+  applyJournalFields, materializeJournalRow, mergeJournalLWW,
 } from './automergeDoc.js'
 
 // Resolve two disjoint-root docs (no shared ancestry → can't CRDT-merge) by
@@ -33,6 +33,12 @@ function newerDoc(localDoc, remoteDoc) {
  *      recency instead, so we never clobber the canonical remote root.
  *   2. else the remote's bytes (adopt its root → our upload shares ancestry).
  *   3. else first writer → createDoc.
+ *
+ * The merge in step 1 is `mergeJournalLWW`, not a bare `mergeDoc`: a block both
+ * devices edited is resolved by the per-block `_fts` stamps applyJournalFields
+ * writes, not by Automerge's actor-id pick (#28). The step ORDER is still
+ * merge-then-apply, so the whole live row goes back over the merge afterwards —
+ * the journal twin of the #26/#27 reorder, tracked as #39.
  */
 export async function journalApply({ existingBytes, remoteBytes, source }) {
   let doc
@@ -41,7 +47,7 @@ export async function journalApply({ existingBytes, remoteBytes, source }) {
     if (remoteBytes) {
       const remoteDoc = await loadDoc(remoteBytes)
       doc = (await sharesAncestry(doc, remoteDoc))
-        ? await mergeDoc(doc, remoteDoc)
+        ? await mergeJournalLWW(doc, remoteDoc)
         : newerDoc(doc, remoteDoc)
     }
   } else if (remoteBytes) {
@@ -57,6 +63,12 @@ export async function journalApply({ existingBytes, remoteBytes, source }) {
 
 /**
  * Automerge core of mergeJournalDocs' per-day loop. Returns merged bytes + row.
+ *
+ * Shared ancestry → `mergeJournalLWW`: which blocks exist stays on Automerge's
+ * append-only list merge, but the FIELDS of a block both devices edited (html,
+ * order, deleted) are resolved by the per-block `_fts` stamps, newest wins. A
+ * bare `mergeDoc` here picked by actor id, so the phone's finished transcript
+ * lost to the laptop's truncated copy on the pull (#28).
  */
 export async function journalMerge({ remoteBytes, localBytes, localRow }) {
   const remoteDoc = await loadDoc(remoteBytes)
@@ -65,7 +77,7 @@ export async function journalMerge({ remoteBytes, localBytes, localRow }) {
   if (localBytes) {
     const localDoc = await loadDoc(localBytes)
     if (await sharesAncestry(localDoc, remoteDoc)) {
-      mergedDoc = await mergeDoc(localDoc, remoteDoc)
+      mergedDoc = await mergeJournalLWW(localDoc, remoteDoc)
     } else {
       mergedDoc = newerDoc(localDoc, remoteDoc)
     }

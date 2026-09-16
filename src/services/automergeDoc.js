@@ -519,27 +519,49 @@ export async function applyNoteFields(doc, source) {
 export async function mergeNoteLWW(localDoc, remoteDoc) {
   const Automerge = await getAutomerge()
   const merged = Automerge.merge(Automerge.clone(localDoc), remoteDoc)
-  const byObjId = (doc) => {
-    const m = new Map()
-    for (const b of Array.isArray(doc.blocks) ? doc.blocks : []) {
-      if (b) m.set(Automerge.getObjectId(b), b)
-    }
-    return m
-  }
-  const localBlocks = byObjId(localDoc)
-  const remoteBlocks = byObjId(remoteDoc)
+  const localBlocks = blocksByObjectId(Automerge, localDoc)
+  const remoteBlocks = blocksByObjectId(Automerge, remoteDoc)
   return Automerge.change(merged, (d) => {
     lwwMergeFields(d, localDoc, remoteDoc, NOTE_LWW_SKIP)
-    if (!Array.isArray(d.blocks)) return
-    for (let i = 0; i < d.blocks.length; i++) {
-      const el = d.blocks[i]
-      if (!el) continue
-      const objId = Automerge.getObjectId(el)
-      const lb = localBlocks.get(objId)
-      const rb = remoteBlocks.get(objId)
-      if (lb && rb) lwwMergeFields(el, lb, rb)
-    }
+    lwwMergeBlocks(Automerge, d, localBlocks, remoteBlocks)
   })
+}
+
+/**
+ * Index a doc's block elements by Automerge object id. Matching by object id
+ * rather than by our `id` field is deliberate: the physical element is the thing
+ * Automerge.merge picked a value for, and a duplicate-id surplus copy (see
+ * collapseDuplicateBlockIds) keeps its own tombstone instead of inheriting the
+ * winner's.
+ */
+function blocksByObjectId(Automerge, doc) {
+  const m = new Map()
+  for (const b of Array.isArray(doc.blocks) ? doc.blocks : []) {
+    if (b) m.set(Automerge.getObjectId(b), b)
+  }
+  return m
+}
+
+/**
+ * Per-element wall-clock LWW over a merged block list — the half of the merge
+ * that resolves a block BOTH devices edited. Runs INSIDE an Automerge.change on
+ * the merged doc `d`; `localBlocks`/`remoteBlocks` are the two parents' elements
+ * indexed by blocksByObjectId. An element only one parent holds cannot carry a
+ * conflict and is left exactly as Automerge.merge produced it.
+ *
+ * Shared by notes (#26) and journals (#28): the block shape, the stamps and the
+ * hazard are identical, so there is one implementation of the rule.
+ */
+function lwwMergeBlocks(Automerge, d, localBlocks, remoteBlocks) {
+  if (!Array.isArray(d.blocks)) return
+  for (let i = 0; i < d.blocks.length; i++) {
+    const el = d.blocks[i]
+    if (!el) continue
+    const objId = Automerge.getObjectId(el)
+    const lb = localBlocks.get(objId)
+    const rb = remoteBlocks.get(objId)
+    if (lb && rb) lwwMergeFields(el, lb, rb)
+  }
 }
 
 /**
@@ -637,9 +659,11 @@ function cloneComment(c) {
 }
 
 /**
- * Apply a journal day row into its Automerge doc. Blocks are reconciled the
- * same way as notes (id-keyed update / tombstone / append; reorder only when
- * source order disagrees with doc order of the live subset). blockComments is
+ * Apply a journal day row into its Automerge doc. Blocks are reconciled and
+ * STAMPED the same way as notes (id-keyed update / tombstone / append, each
+ * block carrying a per-field `_fts` at its own clock — see Pass 1 and
+ * mergeJournalLWW). Top-level journal fields are still a plain copy with no
+ * stamps; giving them the same treatment is #38. blockComments is
  * reconciled per blockId: matching comment ids → field-level update; new ids
  * → appended; ids in doc but not in source are LEFT ALONE (we don't tombstone
  * comments — users effectively never delete them, and dropping them would let
@@ -671,15 +695,22 @@ export async function applyJournalFields(doc, source) {
     // source row doesn't mention is NOT tombstoned — the editor snapshot can lag
     // the merged doc, and "absent" must not mean "deleted" (the block-loss bug).
     // Genuine deletes arrive as explicit { deleted: true } source entries.
+    //
+    // Each block is stamped exactly like a note's (#26, lifted here by #28):
+    // stampLWW writes a per-field `_fts` inside the block at the BLOCK's own
+    // clock (its `updatedAt`, which stampBlocksFromDoc bumps only when html or
+    // order actually changed, or the block was tombstoned). mergeJournalLWW
+    // resolves a concurrent edit to the same block by those stamps instead of
+    // Automerge's actor-id pick — the transcript-truncation / reorder-revert
+    // class. A block written before stamps existed has no `_fts` and is treated
+    // as the oldest (floor 0), so a real edit on either side beats it.
     for (let i = 0; i < d.blocks.length; i++) {
       const cur = d.blocks[i]
       if (!cur || !cur.id) continue
       docIds.add(cur.id)
       const src = srcById.get(cur.id)
       if (!src) continue
-      for (const k of JOURNAL_BLOCK_FIELDS) {
-        if (!shallowEqual(cur[k], src[k])) cur[k] = src[k]
-      }
+      stampLWW(cur, src, src)
     }
     // Pass 2: append new blocks only. The list is APPEND-ONLY; ordering is the
     // `order` field, applied via sortByOrder on read. We never deleteAt/insertAt
@@ -688,9 +719,8 @@ export async function applyJournalFields(doc, source) {
     // handled in Pass 1.
     for (const src of srcBlocks) {
       if (docIds.has(src.id)) continue
-      const fresh = {}
-      for (const k of JOURNAL_BLOCK_FIELDS) fresh[k] = src[k]
-      d.blocks.push(fresh)
+      d.blocks.push({})
+      stampLWW(d.blocks[d.blocks.length - 1], src, src)
     }
 
     // blockComments: per-blockId reconcile. The source is authoritative for
@@ -725,6 +755,37 @@ export async function applyJournalFields(doc, source) {
         docList.push(fresh)
       }
     }
+  })
+}
+
+/**
+ * Per-block wall-clock LWW merge of two shared-ancestry journal docs — the
+ * journal half of #28, and the journal twin of mergeNoteLWW.
+ *
+ * Which blocks EXIST stays on Automerge's own merge: the append-only list +
+ * id-keyed reconcile (see applyJournalFields) is the correct CRDT resolution,
+ * and overwriting the list wholesale by LWW would reintroduce the block-loss /
+ * duplication bugs. But the FIELDS of a block both devices edited concurrently
+ * (html, order, deleted, updatedAt) are scalars with the actor-id problem
+ * mergeTaskLWW describes, so every element both parents hold is resolved by its
+ * own `_fts` — the stamps applyJournalFields writes — matched by Automerge
+ * object id.
+ *
+ * Top-level journal fields (date, reviewedAt, updatedAt, …) are deliberately
+ * NOT scalar-LWW'd here: applyJournalFields does not stamp them, so there is no
+ * `_fts` to read and running lwwMergeFields over them would resolve every one
+ * of them by the createdAt floor — i.e. always to the remote. Stamping the
+ * journal's own scalars is its own change (#38); this one is blocks only, which
+ * is where the reported data loss is. `blockComments` likewise keeps its
+ * existing per-id reconcile.
+ */
+export async function mergeJournalLWW(localDoc, remoteDoc) {
+  const Automerge = await getAutomerge()
+  const merged = Automerge.merge(Automerge.clone(localDoc), remoteDoc)
+  const localBlocks = blocksByObjectId(Automerge, localDoc)
+  const remoteBlocks = blocksByObjectId(Automerge, remoteDoc)
+  return Automerge.change(merged, (d) => {
+    lwwMergeBlocks(Automerge, d, localBlocks, remoteBlocks)
   })
 }
 
