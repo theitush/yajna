@@ -18,15 +18,10 @@ import useAppStore from '../store/useAppStore'
 import { HashtagExtension } from '../components/editor/HashtagExtension'
 import NoteBodyEditor from '../components/notes/NoteBodyEditor'
 import TagNoteStream from '../components/notes/TagNoteStream'
+import PortNotesBanner from '../components/notes/PortNotesBanner'
+import { needsTag } from '../components/notes/portNotes'
 import RecordFab from '../components/voice/RecordFab'
 import '../components/notes/tagNotes.css'
-
-/** A stored note whose title is not already the one canonical spelling of a
- *  tag still lists, marked — porting those is its own task. */
-function needsTag(note) {
-  const title = note?.title || ''
-  return !title || canonicalTag(title) !== title
-}
 
 export default function NotesPage() {
   const notes = useAppStore(s => s.notes)
@@ -338,6 +333,7 @@ export default function NotesPage() {
             </div>
           )}
         </div>
+        <PortNotesBanner notes={notes} updateNote={updateNote} />
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {rows.length === 0 && (
             <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', padding: '12px' }}>
