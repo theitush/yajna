@@ -11,41 +11,15 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import useHighlightTarget from '../lib/useHighlightTarget'
-import { Extension } from '@tiptap/core'
-import { Plugin, PluginKey } from '@tiptap/pm/state'
-import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { blocksToHtml, sortByOrder } from '../lib/blocks'
 import { canonicalTag, tagFromTitle } from '../lib/hashtags'
 import { noteStream, resolveTagNote, isForkBlock } from '../lib/tagIndex'
 import useAppStore from '../store/useAppStore'
+import { HashtagExtension } from '../components/editor/HashtagExtension'
 import NoteBodyEditor from '../components/notes/NoteBodyEditor'
 import TagNoteStream from '../components/notes/TagNoteStream'
 import RecordFab from '../components/voice/RecordFab'
 import '../components/notes/tagNotes.css'
-
-const HashtagExtension = Extension.create({
-  name: 'hashtag',
-  addProseMirrorPlugins() {
-    return [new Plugin({
-      key: new PluginKey('hashtag-notes'),
-      props: {
-        decorations(state) {
-          const { doc } = state
-          const decorations = []
-          const regex = /#[\w֐-׿]+/g
-          doc.descendants((node, pos) => {
-            if (!node.isText) return
-            let match
-            while ((match = regex.exec(node.text)) !== null) {
-              decorations.push(Decoration.inline(pos + match.index, pos + match.index + match[0].length, { class: 'hashtag' }))
-            }
-          })
-          return DecorationSet.create(doc, decorations)
-        },
-      },
-    })]
-  },
-})
 
 /** A stored note whose title is not already the one canonical spelling of a
  *  tag still lists, marked — porting those is its own task. */
@@ -232,6 +206,16 @@ export default function NotesPage() {
     setParams(next, { replace: true })
     setMobileView('editor')
   }
+  // The shared hashtag extension (same one the journal uses: tag colouring,
+  // the capture frame, tap-to-open). A tag tapped inside a note selects that
+  // tag here. Configured once; the click handler reads the latest selectTag
+  // through a ref so the editors never see a new extension object.
+  const selectTagRef = useRef(selectTag)
+  selectTagRef.current = selectTag
+  const hashtagExtension = useMemo(
+    () => HashtagExtension.configure({ onTagClick: tag => selectTagRef.current(tag) }),
+    [],
+  )
   const selectNoteId = (id) => {
     const next = new URLSearchParams()
     next.set('id', id)
@@ -512,7 +496,7 @@ export default function NotesPage() {
                 content={bodyHtml}
                 noteId={selectedNote?.id || null}
                 noteTitle={headerLabel}
-                hashtagExtension={HashtagExtension}
+                hashtagExtension={hashtagExtension}
                 getTags={getTags}
                 onSave={({ blocks, tags }) => persistNote({ ownBlocks: blocks, tags })}
                 onEditorReady={setBodyEditor}
@@ -524,7 +508,7 @@ export default function NotesPage() {
                 noteTitle={headerLabel}
                 hiddenOrigins={selectedNote?.hiddenOrigins || []}
                 showMarkers={showMarkers}
-                hashtagExtension={HashtagExtension}
+                hashtagExtension={hashtagExtension}
                 getTags={getTags}
                 onPersist={({ forkBlocks, hiddenOrigins }) => persistNote({ forkBlocks, hiddenOrigins })}
                 onEditorReady={setStreamEditor}
