@@ -3,11 +3,9 @@ import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import Highlight from '@tiptap/extension-highlight'
 import TextAlign from '@tiptap/extension-text-align'
-import { Extension } from '@tiptap/core'
-import { Plugin, PluginKey } from '@tiptap/pm/state'
-import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { DOMSerializer } from '@tiptap/pm/model'
 import { useEffect, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import useAppStore from '../../store/useAppStore'
 import { formatDate } from '../../lib/dates'
 import useCurrentDay from '../../lib/useCurrentDay'
@@ -15,6 +13,7 @@ import useScrollRestore from '../../lib/useScrollRestore'
 import { RTLExtension } from '../editor/RTLExtension'
 import { AudioNode } from '../editor/AudioNode'
 import { BlockIdExtension } from '../editor/BlockIdExtension'
+import { HashtagExtension } from '../editor/HashtagExtension'
 import { HashtagSuggest } from '../editor/HashtagSuggest'
 import { HeadingNoShortcut } from '../editor/HeadingNoShortcut'
 import RecordFab from '../voice/RecordFab'
@@ -31,36 +30,6 @@ import { logSync } from '../../services/syncLog'
 // LATEST) is queued behind it; intermediate snapshots are dropped, which loses
 // nothing because pushJournal always writes the current full row, not a diff.
 const JOURNAL_SAVE_DEBOUNCE_MS = 1200
-
-const HashtagExtension = Extension.create({
-  name: 'hashtag',
-  addProseMirrorPlugins() {
-    return [
-      new Plugin({
-        key: new PluginKey('hashtag'),
-        props: {
-          decorations(state) {
-            const { doc } = state
-            const decorations = []
-            const regex = /#[\w\u0590-\u05FF]+/g
-            doc.descendants((node, pos) => {
-              if (!node.isText) return
-              let match
-              while ((match = regex.exec(node.text)) !== null) {
-                decorations.push(
-                  Decoration.inline(pos + match.index, pos + match.index + match[0].length, {
-                    class: 'hashtag',
-                  })
-                )
-              }
-            })
-            return DecorationSet.create(doc, decorations)
-          },
-        },
-      }),
-    ]
-  },
-})
 
 export default function JournalPanel({ onInsertText, date, headerLabel, hideHeader, scrollKey }) {
   const currentDay = useAppStore(s => s.currentDay)
@@ -82,6 +51,7 @@ export default function JournalPanel({ onInsertText, date, headerLabel, hideHead
   const liveDay = useCurrentDay(config)
   const targetDate = date || liveDay
   const scrollRef = useScrollRestore(scrollKey)
+  const navigate = useNavigate()
 
   useEffect(() => {
     loadJournal(targetDate)
@@ -116,7 +86,11 @@ export default function JournalPanel({ onInsertText, date, headerLabel, hideHead
       Placeholder.configure({ placeholder: 'Start writing…' }),
       Highlight.configure({ multicolor: true }),
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
-      HashtagExtension,
+      // A tag is a link to its note: tapping one in the journal opens
+      // /notes?tag=… (the tag IS the note's identity — see lib/tagIndex).
+      HashtagExtension.configure({
+        onTagClick: tag => navigate(`/notes?tag=${encodeURIComponent(tag)}`),
+      }),
       HashtagSuggest.configure({ getTags }),
       RTLExtension,
       AudioNode.configure({

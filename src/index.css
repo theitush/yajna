@@ -12,6 +12,10 @@
   --border-mid: rgba(255,255,255,0.14);
   --accent: #6BA3D6;
   --accent-light: rgba(107,163,214,0.12);
+  /* The tag-capture frame (see .tag-captured): the accent at two low
+     alphas, kept here so the accent colour stays defined in one place. */
+  --accent-frame: rgba(107,163,214,0.35);
+  --accent-tint: rgba(107,163,214,0.06);
   --green-400: #34D399;
   --green-500: #10B981;
   --green-600: #34D399;
@@ -114,6 +118,45 @@ body {
   color: var(--accent);
   font-weight: 500;
   cursor: pointer;
+}
+
+/* What a tag is TAKING. HashtagExtension paints captureScopes' answer as node
+   decorations, so the frame appears on the keystroke that finishes a tag and
+   is gone on the one that breaks it — there is no capture-mode setting, the
+   writer just sees the scope (#9). Deliberately quieter than the conflict
+   frame below: this is live feedback while writing, not a warning.
+
+   The frame hangs in the editor container's 24px gutter — the negative inline
+   margin cancels its own border+padding width — so finishing a tag never
+   shoves the paragraph sideways. Logical properties, so on an RTL line it
+   sits on the right where the text starts. */
+.tiptap .tag-captured,
+.tiptap .tag-header {
+  border-inline-start: 2px solid var(--accent-frame);
+  padding-inline-start: 8px;
+  margin-inline-start: -10px;
+}
+
+.tiptap .tag-captured {
+  background: var(--accent-tint);
+}
+
+/* The header line ("#groceries" alone on a line) labels the scope rather than
+   belonging to it: a solid accent edge and no tint set it apart from the
+   blocks it captures, which carry the faint one. */
+.tiptap .tag-header {
+  border-inline-start-color: var(--accent);
+}
+
+/* Consecutive captured paragraphs: fold p's 0.25rem gap into padding so one
+   scope reads as a single edge instead of a stack of dashes. Paragraphs only —
+   headings keep their own rhythm, and a captured block next to an uncaptured
+   one still sits at the normal distance (the margins collapse to zero and the
+   padding restores the gap). */
+.tiptap p.tag-captured,
+.tiptap p.tag-header {
+  padding-block: 0.25rem;
+  margin-block: -0.25rem;
 }
 
 /* Sync conflict: a block was edited concurrently on two devices; the loser
