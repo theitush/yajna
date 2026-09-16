@@ -338,13 +338,32 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
     // snapshot, so the row can never be behind the doc it is applied to.
     // (proven: scripts/repro-row-ahead-merge.mjs)
     //
-    // With NO local bytes the remote doc is authoritative — adopt it as the
-    // base and apply the local row's fields on top. We must NOT createDoc() a
-    // fresh-root local doc and Automerge.merge it: two docs with disjoint
-    // roots don't union their list content, so the merge silently drops the
-    // remote's blocks/fields (the cross-device staleness bug).
+    // With NO local bytes the remote doc is the only base there is — adopt its
+    // root and fold the row into a COPY of it, then LWW-merge that copy back
+    // against the remote so the row wins only the fields whose clock beats the
+    // remote's `_fts`. We must NOT createDoc() a fresh-root local doc and
+    // Automerge.merge it: two docs with disjoint roots don't union their list
+    // content, so the merge silently drops the remote's blocks/fields (the
+    // cross-device staleness bug). Folding and STOPPING there — what this
+    // branch used to do — is the same whole-row-at-the-row's-clock overwrite
+    // #24/#25 removed everywhere else: every field the row disagreed with
+    // clobbered the remote's, however much newer the remote's was (#29). The
+    // fold is not a delta here (no local ancestry), so it looks like the row
+    // changed every field it differs on; the merge against the unmodified
+    // remote is what puts the clocks back in charge.
+    //   Reachable, not theoretical: the Automerge migration seeds `_doc` only
+    // for ids it converts itself (`if (!hasBin)`), so the SECOND device to
+    // migrate keeps every Phase-B row with no bytes while every .bin already
+    // exists on Drive; and the manifest-delete branch above writes a tombstone
+    // row for an id this device never held, which then meets the other
+    // device's restored .bin.
+    // (proven: scripts/repro-no-local-bytes-merge.mjs)
     const { row: l, bytes: localBytes } = await getTaskRecord(id)
     let mergedDoc
+    // Which branch produced `mergedDoc`, for the probe below — recorded here
+    // rather than re-derived from the bytes afterwards (that re-load + full
+    // history scan was a second, independently-drifting copy of this if-chain).
+    let mergePath
     if (localBytes) {
       let localDoc = await loadDoc(localBytes)
       if (l) localDoc = await applyTaskFields(localDoc, l)
@@ -356,13 +375,17 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
         // disappear" bug. mergeTaskLWW merges history then picks each field from
         // the parent with the newer per-field stamp. (proven: scripts/repro-task-lww.mjs)
         mergedDoc = await mergeTaskLWW(localDoc, remoteDoc)
+        mergePath = 'lww'
       } else {
         mergedDoc = newerDoc(localDoc, remoteDoc, materializeTaskRow)
+        mergePath = 'newerDoc'
       }
     } else if (l) {
-      mergedDoc = await applyTaskFields(remoteDoc, l)
+      mergedDoc = await mergeTaskLWW(await applyTaskFields(remoteDoc, l), remoteDoc)
+      mergePath = 'remoteBaseLww'
     } else {
       mergedDoc = remoteDoc
+      mergePath = 'remote'
     }
 
     const mergedBytes = await saveDoc(mergedDoc)
@@ -371,8 +394,10 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
     // merged row's status/title/explanation differs from the local row, this is
     // the moment a synced edit could get reverted. `path` tells us which merge
     // branch produced it (lww = per-field wall-clock; newerDoc = disjoint-root;
-    // adoptRemote = no local bytes). `updBackwards` is the proof-of-fix signal:
-    // after the LWW change it must NEVER be true on the `lww` path.
+    // remoteBaseLww = no local bytes, row folded onto the remote's root and
+    // LWW-merged back — #29, logged as `adoptRemote` before that). `updBackwards`
+    // is the proof-of-fix signal: after the LWW change it must NEVER be true on
+    // the `lww` or `remoteBaseLww` paths.
     if (l) {
       const changedFields = []
       if ((mergedRow.status || '') !== (l.status || '')) changedFields.push('status')
@@ -384,10 +409,9 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
       // remote's new order or kept the local one — order isn't checked above.
       if ((mergedRow.order ?? null) !== (l.order ?? null)) changedFields.push('order')
       if (changedFields.length) {
-        const path = localBytes ? (await sharesAncestry(await loadDoc(localBytes), remoteDoc) ? 'lww' : 'newerDoc') : (l ? 'adoptRemote' : 'remote')
         const updBackwards = new Date(mergedRow.updatedAt || 0).getTime() < new Date(l.updatedAt || 0).getTime()
         logSync('mergeTaskDocs CHANGED local', {
-          id: id.slice(0, 8), path, changedFields, updBackwards,
+          id: id.slice(0, 8), path: mergePath, changedFields, updBackwards,
           localStatus: l.status, mergedStatus: mergedRow.status,
           localUpd: l.updatedAt, mergedUpd: mergedRow.updatedAt,
           localOrder: l.order ?? null, mergedOrder: mergedRow.order ?? null,
@@ -471,10 +495,19 @@ export async function mergeNoteDocs(noteDocs, changedMap) {
     // remote html. The next push shipped both clobbers.
     // (proven: scripts/repro-row-ahead-merge.mjs section C)
     //
-    // With NO local bytes the remote doc is authoritative — adopt it as the
-    // base and apply the local row's fields on top. Never createDoc()+merge a
-    // disjoint-root local doc: that drops the remote's blocks (see
-    // mergeTaskDocs for the full rationale).
+    // With NO local bytes the remote doc is the only base there is — adopt its
+    // root, fold the row into a COPY of it, then LWW-merge that copy back
+    // against the remote, so the row wins only the scalars and blocks whose
+    // clock beats the remote's stamps. Never createDoc()+merge a disjoint-root
+    // local doc: that drops the remote's blocks (see mergeTaskDocs for the
+    // full rationale). Stopping at the fold — what this branch used to do —
+    // put the whole row over the remote at the row's clock, the note twin of
+    // the task clobber and a double one: a scalar the row holds stale AND a
+    // block it holds stale both won regardless of stamps (#29, the #27 shape
+    // one branch over). The fold has no local ancestry to be a delta against,
+    // so it reads as "the row changed everything it differs on"; merging it
+    // back against the unmodified remote is what restores the clocks.
+    // (proven: scripts/repro-no-local-bytes-merge.mjs)
     //
     // Row and bytes come from ONE `get` of the record that holds both
     // (getNoteRecord), which is what makes the unconditional fold safe: they
@@ -496,7 +529,7 @@ export async function mergeNoteDocs(noteDocs, changedMap) {
         mergedDoc = newerDoc(localDoc, remoteDoc, materializeNoteRow)
       }
     } else if (l) {
-      mergedDoc = await applyNoteFields(remoteDoc, l)
+      mergedDoc = await mergeNoteLWW(await applyNoteFields(remoteDoc, l), remoteDoc)
     } else {
       mergedDoc = remoteDoc
     }
