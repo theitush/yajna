@@ -252,6 +252,23 @@ export async function getNoteDocBytes(id) {
   return row?._doc instanceof Uint8Array ? row._doc : null
 }
 
+/**
+ * Row AND doc bytes from ONE read of the record — the note twin of
+ * getTaskRecord, and there for the same reason: mergeNoteDocs folds the live
+ * row into its own doc before merging, which is only sound if the row can
+ * never be a stale read behind the bytes it is applied to. One `get` of the
+ * one record that holds both views makes that a guarantee, not a timing
+ * assumption.
+ */
+export async function getNoteRecord(id) {
+  const db = await getDB()
+  const rec = await db.get(STORE_NOTES, id)
+  return {
+    row: rec ? stripDoc(rec) : null,
+    bytes: rec?._doc instanceof Uint8Array ? rec._doc : null,
+  }
+}
+
 export async function putNoteDocBytes(id, bytes) {
   if (!id || !(bytes instanceof Uint8Array)) return
   const db = await getDB()

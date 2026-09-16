@@ -8,7 +8,7 @@ import {
   putMeta, getAllTasksRaw, getAllNotesRaw, purgeTombstones,
   getDirty, clearDirty, putAudio, getAllAudio,
   getTaskDocBytes, getTaskRecord, putTaskWithDoc, putTaskDocBytes, getTask,
-  getNoteDocBytes, putNoteWithDoc, getNoteRaw,
+  getNoteDocBytes, getNoteRecord, putNoteWithDoc, getNoteRaw,
   getJournalDocBytes, putJournalWithDoc, getAllJournals, getJournal,
   getConfigDocBytes, putConfigWithDoc,
 } from './db'
@@ -28,7 +28,7 @@ import {
   createDoc, loadDoc, saveDoc, mergeDoc, sharesAncestry,
   applyTaskFields, materializeTaskRow, mergeTaskLWW,
   applyNoteFields, materializeNoteRow, mergeNoteLWW,
-  materializeJournalRow, reconcileLiveRow,
+  materializeJournalRow,
   applyConfigFields, materializeConfigRow,
 } from './automergeDoc'
 import { journalApply, journalMerge } from './automergeWorkerClient'
@@ -330,8 +330,8 @@ export async function mergeTaskDocs(taskDocs, changedMap) {
     // the fields the row changed, at the row's clock, so the merge below sees
     // the live edit as one more stamped write and resolves it per field
     // against the remote by time. Re-folding the whole row AFTER the merge
-    // instead (reconcileLiveRow, 5d93d3f) re-stamped every field the row
-    // disagreed with — including fields the row never touched, which the
+    // instead (reconcileLiveRow, 5d93d3f — deleted in #27) re-stamped every
+    // field the row disagreed with — including fields the row never touched, which the
     // remote had just changed — at the row's clock, and shipped that clobber
     // on the next push (#25, the pull-side mirror of #24). Reading row and
     // bytes from one `get` is what makes the fold safe: they are the same
@@ -443,7 +443,6 @@ export async function mergeNoteDocs(noteDocs, changedMap) {
   const writeRows = []
   const writeDocBytes = new Map()
   for (const { id, bytes } of noteDocs) {
-    const l = localById.get(id)
     const change = changedMap.get(id)
     if (!bytes) {
       // .bin missing on remote. If the manifest says delete, write a tombstone
@@ -457,17 +456,41 @@ export async function mergeNoteDocs(noteDocs, changedMap) {
 
     const remoteDoc = await loadDoc(bytes)
 
-    // No local bytes → remote is authoritative: adopt it and re-apply the local
-    // row's fields on top. Never createDoc()+merge a disjoint-root local doc —
-    // that drops the remote's blocks (see mergeTaskDocs for the full rationale).
-    const localBytes = await getNoteDocBytes(id)
+    // Row → doc → merge, in that order — the same order pushNotes uses (#26)
+    // and mergeTaskDocs uses on the pull side (#25). A note is two views of one
+    // IDB record: updateNote writes only the ROW and leaves doc serialization
+    // to pushNotes, so the row is often AHEAD of the bytes. The row is
+    // therefore folded into our own doc FIRST: applyNoteFields stamps only
+    // what the row actually changed — scalars at the row's clock, each block
+    // at its own — so the merge below sees the live edit as one more stamped
+    // write and resolves it by time. Re-folding the whole row AFTER the merge
+    // instead (reconcileLiveRow, deleted in #27) re-stamped every field the
+    // row disagreed with — including scalars it never touched that the remote
+    // had just changed, at the row's clock — and a stale local block still won
+    // outright, because the re-fold wrote it back over the freshly-merged
+    // remote html. The next push shipped both clobbers.
+    // (proven: scripts/repro-row-ahead-merge.mjs section C)
+    //
+    // With NO local bytes the remote doc is authoritative — adopt it as the
+    // base and apply the local row's fields on top. Never createDoc()+merge a
+    // disjoint-root local doc: that drops the remote's blocks (see
+    // mergeTaskDocs for the full rationale).
+    //
+    // Row and bytes come from ONE `get` of the record that holds both
+    // (getNoteRecord), which is what makes the unconditional fold safe: they
+    // are the same snapshot, so the row can never be behind the doc it is
+    // applied to, and the recency guard reconcileLiveRow carried has no case
+    // left.
+    const { row: l, bytes: localBytes } = await getNoteRecord(id)
     let mergedDoc
     if (localBytes) {
-      const localDoc = await loadDoc(localBytes)
+      let localDoc = await loadDoc(localBytes)
+      if (l) localDoc = await applyNoteFields(localDoc, l)
       // Heal disjoint-root local docs (see mergeJournalDocs for rationale).
       if (await sharesAncestry(localDoc, remoteDoc)) {
-        // Per-field wall-clock LWW for scalar fields (blocks stay on Automerge's
-        // id-keyed merge). Same actor-id-not-time fix as tasks — see mergeTaskLWW.
+        // Per-field wall-clock LWW for scalars AND for blocks both parents
+        // hold (the block LIST stays on Automerge's id-keyed merge). Same
+        // actor-id-not-time fix as tasks — see mergeTaskLWW.
         mergedDoc = await mergeNoteLWW(localDoc, remoteDoc)
       } else {
         mergedDoc = newerDoc(localDoc, remoteDoc, materializeNoteRow)
@@ -476,16 +499,6 @@ export async function mergeNoteDocs(noteDocs, changedMap) {
       mergedDoc = await applyNoteFields(remoteDoc, l)
     } else {
       mergedDoc = remoteDoc
-    }
-
-    // Re-assert the live ROW's authority — same row-ahead-of-doc skew as tasks
-    // (updateNote writes the row + defers doc serialization to pushNotes), so a
-    // poll-merge can land before the edit is in the doc. applyNoteFields re-folds
-    // scalars by LWW and reconciles `blocks` id-keyed (append-only, never
-    // tombstones a freshly-merged remote block), so the body is body-safe.
-    // (proven: scripts/repro-row-ahead-merge.mjs section C)
-    if (l) {
-      mergedDoc = await reconcileLiveRow(mergedDoc, l, applyNoteFields, materializeNoteRow)
     }
 
     const mergedBytes = await saveDoc(mergedDoc)

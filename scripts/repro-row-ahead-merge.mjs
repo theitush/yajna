@@ -32,10 +32,19 @@
  *   (bug 1) without clobbering a newer remote field it never touched (bug 2).
  *   Nothing is re-folded afterwards.
  *
+ * Bug 3 (#27, the note twin of bug 2): mergeNoteDocs carried the same re-fold.
+ *   On a note the whole row goes back over the merge, so BOTH halves clobber:
+ *   a scalar the row never touched (title) is written back at the row's clock,
+ *   and a block the row holds STALE beats the freshly-merged remote html
+ *   outright — the #26 S2 shape, on the pull side. Same fix, same order, and
+ *   with it `reconcileLiveRow` lost its last caller and was deleted from
+ *   src/services/automergeDoc.js (the OLD order is modelled locally below).
+ *
  * Checks:
- *   (A) OLD order — merge, then reconcileLiveRow            -> S4 expected to FAIL
- *   (B) NEW order — applyTaskFields, then mergeTaskLWW      -> all expected PASS
- *   (C) notes still use reconcileLiveRow (until #26) — body-safety check kept
+ *   (A) TASKS old order — merge, then reconcileLiveRow       -> S4 expected to FAIL
+ *   (B) TASKS new order — applyTaskFields, then mergeTaskLWW  -> all expected PASS
+ *   (C) NOTES old order — merge, then reconcileLiveRow       -> C2/C3 expected to FAIL
+ *   (D) NOTES new order — applyNoteFields, then mergeNoteLWW  -> all expected PASS
  *
  * Run: node scripts/repro-row-ahead-merge.mjs
  */
@@ -50,8 +59,21 @@ const ms = (iso) => new Date(iso).getTime()
 const {
   createDoc, applyTaskFields, materializeTaskRow, mergeTaskLWW,
   applyNoteFields, materializeNoteRow, mergeNoteLWW,
-  reconcileLiveRow,
 } = await import('../src/services/automergeDoc.js')
+
+/**
+ * The OLD order's second step, verbatim as `reconcileLiveRow` was before #27
+ * deleted it from src/services/automergeDoc.js: merge first, then re-fold the
+ * WHOLE live row over the result when the row's clock is newer. Kept here (and
+ * only here) so this repro can still run the buggy order it exists to prove.
+ */
+async function reconcileLiveRow(mergedDoc, liveRow, applyFields, materialize) {
+  if (!liveRow) return mergedDoc
+  const rowUpd = new Date(liveRow.updatedAt || 0).getTime()
+  const docUpd = new Date(materialize(mergedDoc)?.updatedAt || 0).getTime()
+  if (rowUpd <= docUpd) return mergedDoc
+  return applyFields(mergedDoc, liveRow)
+}
 
 let failures = 0
 const check = (name, pass, detail = '') => {
@@ -176,50 +198,123 @@ failures = 0
 await run('B) NEW order (applyTaskFields, then mergeTaskLWW) — expected PASS', true)
 const fixedFailures = failures
 
-// --- Notes: same row/doc skew. mergeNoteDocs still uses reconcileLiveRow (the
-// note-side reorder is #26). It must re-assert a newer note row WITHOUT
-// clobbering a freshly-merged remote body block (blocks are id-keyed reconciled
-// by applyNoteFields, never wholesale-overwritten). ---------------------------
-failures = 0
-console.log('\n=== C) NOTES row authority via reconcileLiveRow (body must not be clobbered) — expected PASS ===')
-{
-  const block = (id, html, order, at) => ({ id, html, deleted: false, order, updatedAt: at })
-  // Base note: title "orig", one body block b1.
-  const base = A.save(await createDoc('note', {
-    id: 'nX', title: 'orig', createdAt: C0, updatedAt: '2026-06-07T10:00:00.000Z',
-    blocks: [block('b1', '<p>body</p>', 'a0', C0)],
-  }))
-  // Local doc bytes (last pushed) still title "orig".
-  const localBytes = base
-  // Remote (poll-fetched): another device APPENDED a new block b2 (newer).
-  const remoteBytes = A.save(await applyNoteFields(A.load(base), {
-    id: 'nX', title: 'orig', createdAt: C0, updatedAt: '2026-06-07T10:05:00.000Z',
-    blocks: [block('b1', '<p>body</p>', 'a0', C0), block('b2', '<p>remote add</p>', 'a1', '2026-06-07T10:05:00.000Z')],
-  }))
-  // Live ROW: user just RETITLED locally (newer than doc), body unchanged. Row
-  // still only knows b1 (its editor snapshot predates the remote b2).
-  const liveRow = {
-    id: 'nX', title: 'my new title', createdAt: C0, updatedAt: '2026-06-07T10:06:00.000Z',
-    blocks: [block('b1', '<p>body</p>', 'a0', C0)],
+// --- Notes: the same row/doc skew, and the same fix (#27). mergeNoteDocs used
+// to merge and THEN re-fold the whole live row (reconcileLiveRow). A note row
+// carries blocks as well as scalars, so that re-fold clobbers twice over:
+// a scalar the row never touched, and a block the row holds stale. -----------
+
+const blk = (id, html, order, at) => ({ id, html, deleted: false, order, updatedAt: at })
+
+/**
+ * Faithful model of mergeNoteDocs' core, parameterised the same way as the task
+ * one: OLD = mergeNoteLWW, then re-fold the live row; NEW = fold the row into
+ * our own doc (applyNoteFields), then mergeNoteLWW.
+ */
+async function noteMergeAndMaterialize({ localBytes, remoteBytes, liveRow }, { applyThenMerge }) {
+  let localDoc = A.load(localBytes)
+  const remoteDoc = A.load(remoteBytes)
+  let mergedDoc
+  if (applyThenMerge) {
+    localDoc = await applyNoteFields(localDoc, liveRow)
+    mergedDoc = await mergeNoteLWW(localDoc, remoteDoc)
+  } else {
+    mergedDoc = await mergeNoteLWW(localDoc, remoteDoc)
+    mergedDoc = await reconcileLiveRow(mergedDoc, liveRow, applyNoteFields, materializeNoteRow)
   }
-  let merged = await mergeNoteLWW(A.load(localBytes), A.load(remoteBytes))
-  merged = await reconcileLiveRow(merged, liveRow, applyNoteFields, materializeNoteRow)
-  const row = materializeNoteRow(merged)
-  const live = (row.blocks || []).filter(b => !b.deleted).map(b => b.id).sort()
-  check('C title re-folded from newer row', row.title === 'my new title', `title=${row.title}`)
-  check('C remote-added block b2 NOT clobbered', live.includes('b2'), `blocks=${JSON.stringify(live)}`)
-  check('C own block b1 still present', live.includes('b1'), `blocks=${JSON.stringify(live)}`)
+  return materializeNoteRow(mergedDoc)
 }
-const noteFailures = failures
+
+/** Shared ancestor note: title "orig", one body block b1. */
+async function noteBase() {
+  return A.save(await createDoc('note', {
+    id: 'nX', title: 'orig', createdAt: C0, updatedAt: '2026-06-07T10:00:00.000Z',
+    blocks: [blk('b1', '<p>body</p>', 'a0', C0)],
+  }))
+}
+
+async function runNotes(label, applyThenMerge) {
+  console.log(`\n=== ${label} ===`)
+
+  // C1 — the body-safety case the re-fold was trusted for: the row retitles
+  // (newer than the doc) while the remote APPENDED a block the row's editor
+  // snapshot has never seen. Both must survive under either order.
+  {
+    const base = await noteBase()
+    const remoteBytes = A.save(await applyNoteFields(A.load(base), {
+      id: 'nX', title: 'orig', createdAt: C0, updatedAt: '2026-06-07T10:05:00.000Z',
+      blocks: [blk('b1', '<p>body</p>', 'a0', C0), blk('b2', '<p>remote add</p>', 'a1', '2026-06-07T10:05:00.000Z')],
+    }))
+    const liveRow = {
+      id: 'nX', title: 'my new title', createdAt: C0, updatedAt: '2026-06-07T10:06:00.000Z',
+      blocks: [blk('b1', '<p>body</p>', 'a0', C0)],
+    }
+    const row = await noteMergeAndMaterialize({ localBytes: base, remoteBytes, liveRow }, { applyThenMerge })
+    const live = (row.blocks || []).filter(b => !b.deleted).map(b => b.id).sort()
+    check('C1 title from the newer row', row.title === 'my new title', `title=${row.title}`)
+    check('C1 remote-added block b2 NOT clobbered', live.includes('b2'), `blocks=${JSON.stringify(live)}`)
+    check('C1 own block b1 still present', live.includes('b1'), `blocks=${JSON.stringify(live)}`)
+  }
+
+  // C2 — #27, scalar half: doc at T1. The remote RETITLED at T2. The live row
+  // edited a BLOCK at T3 > T2 and never saw the retitle, so its title is still
+  // the stale "orig". Both edits must survive: the block from the row, the
+  // title from the remote. The old re-fold wrote "orig" back at T3.
+  {
+    const base = await noteBase()
+    const remoteBytes = A.save(await applyNoteFields(A.load(base), {
+      id: 'nX', title: 'retitled on laptop', createdAt: C0, updatedAt: '2026-09-10T08:05:00.000Z',
+      blocks: [blk('b1', '<p>body</p>', 'a0', C0)],
+    }))
+    const liveRow = {
+      id: 'nX', title: 'orig', createdAt: C0, updatedAt: '2026-09-10T08:10:00.000Z',
+      blocks: [blk('b1', '<p>body, edited on phone</p>', 'a0', '2026-09-10T08:10:00.000Z')],
+    }
+    const row = await noteMergeAndMaterialize({ localBytes: base, remoteBytes, liveRow }, { applyThenMerge })
+    const b1 = (row.blocks || []).find(b => b.id === 'b1')
+    check("C2 row's own block edit (@T3) kept", b1?.html === '<p>body, edited on phone</p>', `html=${JSON.stringify(b1?.html)}`)
+    check('C2 remote title (@T2) NOT clobbered by the stale row', row.title === 'retitled on laptop', `title=${JSON.stringify(row.title)}`)
+    check('C2 updatedAt not older than live row', ms(row.updatedAt) >= ms(liveRow.updatedAt), `merged=${row.updatedAt} live=${liveRow.updatedAt}`)
+  }
+
+  // C3 — #27, block half: the remote edited BLOCK b1 at T2. The live row
+  // retitled at T3 > T2 and its editor snapshot still holds b1's OLD html.
+  // The re-fold wrote that stale html back over the freshly-merged remote one
+  // (#26 S2, on the pull side); apply-then-merge leaves the untouched block
+  // unstamped, so the remote's newer stamp wins it.
+  {
+    const base = await noteBase()
+    const remoteBytes = A.save(await applyNoteFields(A.load(base), {
+      id: 'nX', title: 'orig', createdAt: C0, updatedAt: '2026-09-10T08:05:00.000Z',
+      blocks: [blk('b1', '<p>body, edited on laptop</p>', 'a0', '2026-09-10T08:05:00.000Z')],
+    }))
+    const liveRow = {
+      id: 'nX', title: 'my new title', createdAt: C0, updatedAt: '2026-09-10T08:10:00.000Z',
+      blocks: [blk('b1', '<p>body</p>', 'a0', C0)],
+    }
+    const row = await noteMergeAndMaterialize({ localBytes: base, remoteBytes, liveRow }, { applyThenMerge })
+    const b1 = (row.blocks || []).find(b => b.id === 'b1')
+    check("C3 row's own retitle (@T3) kept", row.title === 'my new title', `title=${JSON.stringify(row.title)}`)
+    check('C3 remote block edit (@T2) NOT clobbered by the stale row block', b1?.html === '<p>body, edited on laptop</p>', `html=${JSON.stringify(b1?.html)}`)
+  }
+}
+
+failures = 0
+await runNotes('C) NOTES old order (merge, then reconcileLiveRow re-fold) — C2/C3 expected FAIL', false)
+const noteCurrentFailures = failures
+
+failures = 0
+await runNotes('D) NOTES new order (applyNoteFields, then mergeNoteLWW) — expected PASS', true)
+const noteFixedFailures = failures
 
 console.log('\n=== SUMMARY ===')
-console.log(`  old order (merge → re-fold) failures: ${currentFailures}  (bug reproduced if > 0)`)
-console.log(`  new order (apply → merge) failures:   ${fixedFailures}  (fix correct if 0)`)
-console.log(`  notes (body-safe re-fold):            ${noteFailures}  (still correct if 0)`)
-if (currentFailures > 0 && fixedFailures === 0 && noteFailures === 0) {
-  console.log('  RESULT: ✓ bug reproduced AND apply-then-merge proven for tasks; notes re-fold intact')
+console.log(`  tasks old order (merge \u2192 re-fold) failures: ${currentFailures}  (bug reproduced if > 0)`)
+console.log(`  tasks new order (apply \u2192 merge) failures:   ${fixedFailures}  (fix correct if 0)`)
+console.log(`  notes old order (merge \u2192 re-fold) failures: ${noteCurrentFailures}  (bug reproduced if > 0)`)
+console.log(`  notes new order (apply \u2192 merge) failures:   ${noteFixedFailures}  (fix correct if 0)`)
+if (currentFailures > 0 && fixedFailures === 0 && noteCurrentFailures > 0 && noteFixedFailures === 0) {
+  console.log('  RESULT: \u2713 both bugs reproduced AND apply-then-merge proven for tasks and notes')
   process.exit(0)
 } else {
-  console.log('  RESULT: ✗ unexpected — investigate')
+  console.log('  RESULT: \u2717 unexpected \u2014 investigate')
   process.exit(1)
 }
