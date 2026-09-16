@@ -11,6 +11,7 @@ import {
   putMeta,
 } from '../services/db'
 import { extractHashtags } from '../lib/hashtags'
+import { buildTagIndex } from '../lib/tagIndex'
 import { pushTasks, pushNotes, pushJournal, pushConfig, initialSyncStreaming, mergeAndPushJournal, flushPendingSync } from '../services/sync'
 import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, retryNow, setPollInterval, pullNow } from '../services/syncEngine'
 import { pushAudio, pushPendingAudio, ensureAudioLocal, softDeleteAudio, restoreAudio, hardDeleteAudio, collectAudioIdsFromBlocks, audioBlockHtml } from '../services/audio'
@@ -28,6 +29,37 @@ const journalPush = (doc) => {
   const fn = () => pushJournal(doc)
   fn.label = 'pushJournal'
   return fn
+}
+
+// Coalesced, trailing-debounced rebuild of the tag index. A rebuild reads every
+// journal day out of IDB, so a typing burst (one updateJournalEntry per 1.2s)
+// or a poll that merged twenty days must not run it twenty times: writes
+// arriving during the wait collapse into one run, and a write arriving while a
+// run is in flight schedules exactly one more. Reads `notes` from the store
+// (already in memory) and journals from IDB; never writes either.
+const TAG_INDEX_REBUILD_DEBOUNCE_MS = 300
+let tagIndexTimer = null
+let tagIndexRunning = false
+let tagIndexPending = false
+function scheduleTagIndexRebuild(get, set) {
+  clearTimeout(tagIndexTimer)
+  tagIndexTimer = setTimeout(async () => {
+    tagIndexTimer = null
+    if (tagIndexRunning) { tagIndexPending = true; return }
+    tagIndexRunning = true
+    try {
+      const journals = await getAllJournals()
+      set({ tagIndex: buildTagIndex({ journals, notes: get().notes }) })
+    } catch (e) {
+      console.warn('tag index rebuild failed', e)
+    } finally {
+      tagIndexRunning = false
+      if (tagIndexPending) {
+        tagIndexPending = false
+        scheduleTagIndexRebuild(get, set)
+      }
+    }
+  }, TAG_INDEX_REBUILD_DEBOUNCE_MS)
 }
 
 // Per-task serialization for read-modify-write. updateTask reads the row from
@@ -386,6 +418,7 @@ const useAppStore = create((set, get) => ({
     }
     await putNote(note)
     set(s => ({ notes: [...s.notes, note] }))
+    get().rebuildTagIndex()
     if (get().driveEnabled) withRetry(pushNotes)()
     return note
   },
@@ -413,6 +446,7 @@ const useAppStore = create((set, get) => ({
     const updated = patched
     await putNote(updated)
     set(s => ({ notes: s.notes.map(n => n.id === id ? updated : n) }))
+    get().rebuildTagIndex()
     if (get().driveEnabled) withRetry(pushNotes)()
   },
   deleteNote: async (id) => {
@@ -435,6 +469,7 @@ const useAppStore = create((set, get) => ({
       : { id, deleted: true, deletedAt: now, updatedAt: now }
     await putNote(tomb)
     set(s => ({ notes: s.notes.filter(n => n.id !== id) }))
+    get().rebuildTagIndex()
     if (get().driveEnabled) withRetry(pushNotes)()
   },
 
@@ -448,50 +483,34 @@ const useAppStore = create((set, get) => ({
   // re-render effect on this counter, so it never reacts to the echo of its
   // own save — which is what rebuilt the doc mid-type and caused typing lag.
   currentDayRev: 0,
-  // Tag usage accumulated from ALL local journal days so the autocomplete
-  // pool isn't limited to the currently-loaded day.
-  journalTagPool: {},
-  loadJournalTagPool: async () => {
-    try {
-      const docs = await getAllJournals()
-      const usage = {}
-      for (const doc of docs || []) {
-        const text = blocksToHtml(doc?.blocks)
-        const ts = new Date(doc?.updatedAt || 0).getTime()
-        for (const tag of extractHashtags(text)) {
-          const lower = tag.toLowerCase()
-          if (!usage[lower] || usage[lower] < ts) usage[lower] = ts
-        }
-      }
-      set({ journalTagPool: usage })
-    } catch {}
-  },
-  // Aggregated, always-current tag pool across notes, tasks, and journals.
+  // The tag index: every paragraph each #tag has captured, across all local
+  // journal days and all notes, plus when each tag was last used. A tag-note's
+  // stream is DERIVED from this at read time (src/lib/tagIndex.js) — nothing is
+  // copied when a tag is written. Rebuilt off the render path whenever a
+  // journal day or a note changes (local write, restore, poll merge).
+  tagIndex: null,
+  rebuildTagIndex: () => scheduleTagIndexRebuild(get, set),
+  // Aggregated, always-current tag pool across notes, tasks, and journals,
+  // most recently used first.
   getAllTags: () => {
     const s = get()
-    const usage = { ...s.journalTagPool }
-
+    const usage = {}
     const bump = (tag, ts) => {
       const t = String(tag).toLowerCase()
       if (!usage[t] || usage[t] < ts) usage[t] = ts
     }
-
-    for (const n of s.notes) {
-      const ts = new Date(n.updatedAt || 0).getTime()
-      for (const t of n.tags || []) bump(t, ts)
-      for (const t of extractHashtags(n.body ?? blocksToHtml(n.blocks))) bump(t, ts)
-    }
+    for (const [tag, ts] of s.tagIndex?.lastUsed || []) bump(tag, ts)
     for (const t of s.tasks) {
       const ts = new Date(t.updatedAt || 0).getTime()
       const text = `${t.title || ''} ${t.explanation || ''} ${t.feedback || ''} ${t.tags || ''}`
       for (const tag of extractHashtags(text)) bump(tag, ts)
     }
+    // The open day's live edits, ahead of the (debounced) index rebuild.
     const cur = s.currentDay
     if (cur) {
       const ts = new Date(cur.updatedAt || 0).getTime()
       for (const tag of extractHashtags(blocksToHtml(cur.blocks))) bump(tag, ts)
     }
-
     return Object.keys(usage).sort((a, b) => {
       const diff = (usage[b] || 0) - (usage[a] || 0)
       return diff || a.localeCompare(b)
@@ -648,6 +667,7 @@ const useAppStore = create((set, get) => ({
     }
     await putJournal(updated)
     if (currentDoc) set({ currentDay: updated })
+    get().rebuildTagIndex()
 
     get().bumpReviewVersion()
     if (get().driveEnabled) {
@@ -842,6 +862,7 @@ const useAppStore = create((set, get) => ({
       trashedNotes: s.trashedNotes.filter(n => n.id !== id),
       notes: [...s.notes.filter(n => n.id !== id), restored],
     }))
+    get().rebuildTagIndex()
     if (get().driveEnabled) withRetry(pushNotes)()
   },
   // Restore a trashed audio back into its source note/journal entry. If the
@@ -877,6 +898,7 @@ const useAppStore = create((set, get) => ({
       set(s => ({
         notes: [...s.notes.filter(n => n.id !== updatedNote.id), updatedNote],
       }))
+      get().rebuildTagIndex()
       if (get().driveEnabled) withRetry(pushNotes)()
     } else if (rec.sourceType === 'journal') {
       const date = dayKey(rec.sourceId)
@@ -1206,7 +1228,7 @@ const useAppStore = create((set, get) => ({
       startSyncEngine((data) => set(data), intervalMs, () => get())
       pushPendingAudio().catch(e => console.warn('pushPendingAudio failed', e))
       attachAudioVisibilityReplay(get)
-      get().loadJournalTagPool()
+      get().rebuildTagIndex()
     }).catch((e) => {
       console.error('Sync failed', e)
       const code = e?.status || e?.result?.error?.code
@@ -1275,7 +1297,7 @@ const useAppStore = create((set, get) => ({
     // yet. runInitialSync / loadJournal lift each bucket as its merge settles
     // (with markAllSyncReady fallbacks on every connect-failure path).
     await get().rebuildReviewsFromJournals().catch(() => {})
-    get().loadJournalTagPool()
+    get().rebuildTagIndex()
   },
 }))
 

@@ -1,4 +1,4 @@
-import { blocksToHtml } from './blocks'
+import { blocksToHtml } from './blocks.js'
 
 // Strip HTML tags and decode a few common entities. Used to flatten note /
 // journal block content into a single searchable string. Not a full HTML

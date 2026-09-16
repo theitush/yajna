@@ -679,6 +679,12 @@ async function pollRemote(storeSetter) {
         })
       }
       storeSetter(update)
+      // A journal day or a note merged this poll may have added, changed or
+      // removed captured paragraphs: refresh the derived tag index so open
+      // tag-notes and the autocomplete pool follow (src/lib/tagIndex.js).
+      if (changedByType.journal.size > 0 || changedByType.note.size > 0) {
+        _storeGetter?.()?.rebuildTagIndex?.()
+      }
     }
 
     // Advance localLastSeq to the manifest head — unless something this poll
