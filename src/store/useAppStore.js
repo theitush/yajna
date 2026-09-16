@@ -10,7 +10,7 @@ import {
   getAllTasksRaw, getAllNotesRaw, getAllAudio,
   putMeta,
 } from '../services/db'
-import { extractHashtags } from '../lib/hashtags'
+import { extractHashtags, canonicalTag } from '../lib/hashtags'
 import { buildTagIndex } from '../lib/tagIndex'
 import { pushTasks, pushNotes, pushJournal, pushConfig, initialSyncStreaming, mergeAndPushJournal, flushPendingSync } from '../services/sync'
 import { withRetry, startSyncEngine, stopSyncEngine, onSyncStatus, retryNow, setPollInterval, pullNow } from '../services/syncEngine'
@@ -404,15 +404,16 @@ const useAppStore = create((set, get) => ({
     const notes = await getNotes()
     set({ notes })
   },
-  addNote: async (body = '', tags = []) => {
-    const lines = body.replace(/<[^>]+>/g, '\n').split('\n').map(s => s.trim()).filter(Boolean)
-    const title = lines[0]?.replace(/^#+\s*/, '') || ''
+  // A note IS a tag (#9): the title is the tag's one canonical spelling, and
+  // that is the whole identity — no derived-from-the-first-line title, because
+  // there is no untitled note any more.
+  addNote: async (tag) => {
     const now = new Date().toISOString()
     const note = {
       id: uuid(),
-      title,
-      blocks: stampBlocks([], body, now),
-      tags,
+      title: canonicalTag(tag) || '',
+      blocks: [],
+      tags: [],
       createdAt: now,
       updatedAt: now,
     }
@@ -426,17 +427,30 @@ const useAppStore = create((set, get) => ({
     const notes = get().notes
     const note = notes.find(n => n.id === id)
     if (!note) return
-    let title
+    let title = note.title
+    let aliases = Array.isArray(note.aliases) ? note.aliases : []
     if ('title' in updates) {
-      title = updates.title ?? ''
-    } else {
-      title = note.title
+      // The title is a tag, so it is stored canonically. A string that isn't a
+      // tag at all is kept verbatim — that's a pre-bijection note, and porting
+      // those is its own task, not something to mangle on an unrelated edit.
+      const next = canonicalTag(updates.title)
+      title = next ?? String(updates.title ?? '').trim()
+      const prev = canonicalTag(note.title)
+      // Renaming is a forwarding address, never a rewrite of history: the old
+      // tag stays on the note so the paragraphs that still say it resolve here.
+      if (next && prev && prev !== next) aliases = [...aliases.filter(a => a !== prev), prev]
+      if (next) aliases = aliases.filter(a => a !== next)
+    }
+    if ('aliases' in updates) {
+      aliases = [...new Set((updates.aliases || []).map(canonicalTag).filter(Boolean))]
     }
     const now = new Date().toISOString()
-    const patched = { ...note, ...updates, title, updatedAt: now }
-    // When body changed, prefer caller-provided blocks (derived from the live
-    // editor doc and thus carrying reliable ids). Fall back to parsing HTML.
-    if ('body' in updates) {
+    const patched = { ...note, ...updates, title, aliases, updatedAt: now }
+    // Prefer caller-provided blocks (derived from the live editor doc and thus
+    // carrying reliable ids) over parsing HTML. Either way the blocks are
+    // stamped — an unstamped array would land without order keys and read as
+    // a wholesale replacement on the next merge.
+    if ('blocks' in updates || 'body' in updates) {
       const nextBlocks = Array.isArray(updates.blocks) ? updates.blocks : null
       patched.blocks = nextBlocks
         ? stampBlocksFromDoc(note.blocks, nextBlocks, now)
@@ -461,6 +475,10 @@ const useAppStore = create((set, get) => ({
           title: existing.title || 'Untitled',
           blocks: existing.blocks || [],
           tags: existing.tags || [],
+          // Carried through the tombstone so a restore brings back the note's
+          // former tags and the stream blocks it had hidden.
+          aliases: existing.aliases || [],
+          hiddenOrigins: existing.hiddenOrigins || [],
           createdAt: existing.createdAt || now,
           deleted: true,
           deletedAt: now,

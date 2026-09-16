@@ -1,24 +1,27 @@
-import { useState, useEffect, useRef } from 'react'
+/**
+ * Notes = the tag pool (#9, #34).
+ *
+ * The left pane lists every #tag that exists anywhere — journal days, tasks,
+ * other notes — whether or not a note row has ever been stored for it, ranked
+ * by last use. Selecting one opens its note: Region A is the note's own body,
+ * Region B ("From the journal") is the stream derived from every paragraph the
+ * tag has captured. Editing a streamed paragraph forks it into this note; the
+ * journal is never written from here.
+ */
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import useHighlightTarget from '../lib/useHighlightTarget'
-import { useEditor, EditorContent } from '@tiptap/react'
-import StarterKit from '@tiptap/starter-kit'
-import Placeholder from '@tiptap/extension-placeholder'
-import Highlight from '@tiptap/extension-highlight'
-import TextAlign from '@tiptap/extension-text-align'
 import { Extension } from '@tiptap/core'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
-import { DOMSerializer } from '@tiptap/pm/model'
-import { docToBlocks, blocksToHtml } from '../lib/blocks'
+import { blocksToHtml, sortByOrder } from '../lib/blocks'
+import { canonicalTag, tagFromTitle } from '../lib/hashtags'
+import { noteStream, resolveTagNote, isForkBlock } from '../lib/tagIndex'
 import useAppStore from '../store/useAppStore'
-import { RTLExtension } from '../components/editor/RTLExtension'
-import { AudioNode } from '../components/editor/AudioNode'
-import { BlockIdExtension } from '../components/editor/BlockIdExtension'
-import { SearchHighlightExtension } from '../components/editor/SearchHighlightExtension'
-import { HashtagSuggest } from '../components/editor/HashtagSuggest'
-import { HeadingNoShortcut } from '../components/editor/HeadingNoShortcut'
+import NoteBodyEditor from '../components/notes/NoteBodyEditor'
+import TagNoteStream from '../components/notes/TagNoteStream'
 import RecordFab from '../components/voice/RecordFab'
+import '../components/notes/tagNotes.css'
 
 const HashtagExtension = Extension.create({
   name: 'hashtag',
@@ -29,7 +32,7 @@ const HashtagExtension = Extension.create({
         decorations(state) {
           const { doc } = state
           const decorations = []
-          const regex = /#[\w\u0590-\u05FF]+/g
+          const regex = /#[\w֐-׿]+/g
           doc.descendants((node, pos) => {
             if (!node.isText) return
             let match
@@ -44,369 +47,257 @@ const HashtagExtension = Extension.create({
   },
 })
 
-function extractTags(text) {
-  const matches = text.match(/#[\w\u0590-\u05FF]+/g) || []
-  return [...new Set(matches.map(t => t.slice(1)))]
-}
-
-function NoteEditor({ note, onUpdate, onDelete, onEditorReady, getTags, autoFocusTitle, onDidAutoFocusTitle, onDraftTitleChange }) {
-  const saveTimeout = useRef(null)
-  // Latest unsaved body captured each onUpdate, so we can flush it when the
-  // editor unmounts, the selected note changes, or the tab is hidden/unloaded —
-  // mirrors JournalPanel. Without this, the tail of a note edit was lost on
-  // navigation and on mobile screen-off (the page freezes before the 800ms
-  // debounce fires).
-  const pendingSave = useRef(null)
-  const titleInputRef = useRef(null)
-  const focusBodyAfterTitleBlurRef = useRef(false)
-  const [editingTitle, setEditingTitle] = useState(false)
-  const [titleValue, setTitleValue] = useState(note?.title || '')
-  const [confirmDelete, setConfirmDelete] = useState(false)
-
-  const editor = useEditor({
-    extensions: [
-      StarterKit.configure({ heading: false, bulletList: false, orderedList: false, listItem: false, taskList: false, taskItem: false }),
-      HeadingNoShortcut,
-      Placeholder.configure({ placeholder: 'Write your note…' }),
-      Highlight.configure({ multicolor: true }),
-      TextAlign.configure({ types: ['heading', 'paragraph'] }),
-      HashtagExtension,
-      HashtagSuggest.configure({ getTags }),
-      RTLExtension,
-      AudioNode.configure({
-        getSource: () => ({
-          sourceType: 'note',
-          sourceId: note?.id || null,
-          sourceTitle: note?.title || 'Untitled',
-        }),
-      }),
-      BlockIdExtension,
-      SearchHighlightExtension,
-    ],
-    content: (note?.body ?? blocksToHtml(note?.blocks)) || '',
-    onUpdate: ({ editor }) => {
-      const body = editor.getHTML()
-      const serializer = DOMSerializer.fromSchema(editor.schema)
-      const blocks = docToBlocks(editor.state.doc, serializer)
-      const tags = extractTags(editor.getText())
-      pendingSave.current = { id: note.id, body, blocks, tags }
-      clearTimeout(saveTimeout.current)
-      saveTimeout.current = setTimeout(() => {
-        saveTimeout.current = null
-        pendingSave.current = null
-        onUpdate(note.id, { body, blocks, tags })
-      }, 800)
-    },
-  })
-
-  // Flush the pending debounced edit on unmount, note-change, and when the tab
-  // is hidden / unloaded (mobile screen-off freezes the page before the debounce
-  // fires). The note id is captured in the payload, so a flush during a switch
-  // saves the OLD note, not the newly-selected one. Local save is enqueued
-  // synchronously; the push rides the next resume until sync-core lands.
-  const flushPending = useRef(null)
-  flushPending.current = () => {
-    if (saveTimeout.current) {
-      clearTimeout(saveTimeout.current)
-      saveTimeout.current = null
-    }
-    const p = pendingSave.current
-    if (!p) return
-    pendingSave.current = null
-    onUpdate(p.id, { body: p.body, blocks: p.blocks, tags: p.tags })
-  }
-  useEffect(() => {
-    const flush = () => flushPending.current?.()
-    const onVisibility = () => { if (document.visibilityState === 'hidden') flush() }
-    document.addEventListener('visibilitychange', onVisibility)
-    window.addEventListener('pagehide', flush)
-    return () => {
-      // Runs on unmount and before each note switch (key={selectedNoteId}).
-      flush()
-      document.removeEventListener('visibilitychange', onVisibility)
-      window.removeEventListener('pagehide', flush)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!editor || !note) return
-    setTitleValue(note.title || '')
-    if (onDraftTitleChange) onDraftTitleChange(note.title || '')
-    setEditingTitle(false)
-    setConfirmDelete(false)
-  }, [note?.id])
-
-  useEffect(() => {
-    if (!note || !autoFocusTitle) return
-    setEditingTitle(true)
-    setTitleValue(note.title || '')
-    requestAnimationFrame(() => {
-      titleInputRef.current?.focus()
-      if (onDidAutoFocusTitle) onDidAutoFocusTitle()
-    })
-  }, [note?.id, autoFocusTitle, onDidAutoFocusTitle])
-
-  const remoteHtml = note ? (note.body ?? blocksToHtml(note.blocks) ?? '') : ''
-  useEffect(() => {
-    if (!editor || !note) return
-    if (saveTimeout.current) return
-    const current = editor.getHTML()
-    if (current !== remoteHtml) {
-      editor.commands.setContent(remoteHtml, { emitUpdate: false })
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor, note?.id, remoteHtml])
-
-  useEffect(() => {
-    if (onEditorReady) onEditorReady(editor || null)
-  }, [editor, onEditorReady])
-
-  if (!note) return (
-    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: '13px' }}>
-      Select a note or create a new one
-    </div>
-  )
-
-  return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '12px 20px', borderBottom: '1px solid var(--border-light)',
-      }}>
-        {editingTitle ? (
-          <input
-            ref={titleInputRef}
-            value={titleValue}
-            onChange={e => {
-              const next = e.target.value
-              setTitleValue(next)
-              if (onDraftTitleChange) onDraftTitleChange(next)
-            }}
-            onBlur={() => {
-              const trimmed = titleValue.trim()
-              setEditingTitle(false)
-              onUpdate(note.id, { title: trimmed })
-              setTitleValue(trimmed)
-              if (onDraftTitleChange) onDraftTitleChange(trimmed)
-              if (focusBodyAfterTitleBlurRef.current) {
-                focusBodyAfterTitleBlurRef.current = false
-                requestAnimationFrame(() => {
-                  if (!editor) return
-                  try {
-                    editor.commands.focus('start')
-                  } catch {
-                    editor.commands.focus()
-                  }
-                })
-              }
-            }}
-            onKeyDown={e => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                focusBodyAfterTitleBlurRef.current = true
-                e.currentTarget.blur()
-              }
-              if (e.key === 'Escape') {
-                e.currentTarget.blur()
-              }
-            }}
-            style={{
-              fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)',
-              background: 'var(--bg-secondary)', border: '1px solid var(--border-mid)',
-              borderRadius: '4px', padding: '2px 6px',
-              fontFamily: 'var(--font-body)', outline: 'none',
-              flex: 1, minWidth: 0,
-            }}
-          />
-        ) : (
-          <span
-            onClick={() => { setEditingTitle(true); setTitleValue(note.title || '') }}
-            title="Click to edit title"
-            style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'text', flex: 1, minWidth: 0 }}
-          >
-            {note.title || ''}
-          </span>
-        )}
-        {confirmDelete ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <button
-              onClick={() => onDelete(note.id)}
-              style={{
-                fontSize: '12px', padding: '4px 10px', borderRadius: '8px',
-                background: 'rgba(239,68,68,0.15)', color: '#FCA5A5',
-                border: '1px solid rgba(239,68,68,0.3)', cursor: 'pointer',
-                fontFamily: 'var(--font-body)',
-              }}
-            >
-              Move to trash
-            </button>
-            <button
-              onClick={() => setConfirmDelete(false)}
-              style={{
-                fontSize: '12px', padding: '4px 10px', borderRadius: '8px',
-                background: 'var(--bg-secondary)', color: 'var(--text-secondary)',
-                border: '1px solid var(--border-light)', cursor: 'pointer',
-                fontFamily: 'var(--font-body)',
-              }}
-            >
-              Cancel
-            </button>
-          </div>
-        ) : (
-          <button
-            onClick={() => setConfirmDelete(true)}
-            style={{
-              fontSize: '12px', color: '#FCA5A5',
-              background: 'none', border: 'none', cursor: 'pointer',
-              padding: '4px 8px', fontFamily: 'var(--font-body)',
-              transition: 'color 0.15s',
-            }}
-          >
-            Delete
-          </button>
-        )}
-      </div>
-      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', fontSize: '14px', color: 'var(--text-primary)' }}>
-        <EditorContent editor={editor} />
-      </div>
-    </div>
-  )
+/** A stored note whose title is not already the one canonical spelling of a
+ *  tag still lists, marked — porting those is its own task. */
+function needsTag(note) {
+  const title = note?.title || ''
+  return !title || canonicalTag(title) !== title
 }
 
 export default function NotesPage() {
   const notes = useAppStore(s => s.notes)
+  const tagIndex = useAppStore(s => s.tagIndex)
+  const config = useAppStore(s => s.config)
   const addNote = useAppStore(s => s.addNote)
   const updateNote = useAppStore(s => s.updateNote)
   const deleteNote = useAppStore(s => s.deleteNote)
+  const updateConfig = useAppStore(s => s.updateConfig)
   const getTags = useAppStore.getState().getAllTags
+
   const [params, setParams] = useSearchParams()
-  const urlNoteId = params.get('id')
-  const [selectedNoteId, setSelectedNoteId] = useState(urlNoteId || null)
-  const [mobileView, setMobileView] = useState(urlNoteId ? 'editor' : 'list')
-  const [activeEditor, setActiveEditor] = useState(null)
-  const [autoFocusTitleNoteId, setAutoFocusTitleNoteId] = useState(null)
-  const [selectedDraftTitle, setSelectedDraftTitle] = useState('')
-  const [sortBy, setSortBy] = useState(() => {
-    try {
-      const v = window.localStorage.getItem('notes.sortBy')
-      return (v === 'az' || v === 'lastEdited' || v === 'date') ? v : 'lastEdited'
-    } catch {
-      return 'lastEdited'
-    }
-  })
+  const urlTag = canonicalTag(params.get('tag'))
+  const urlId = params.get('id')
+
+  const [mobileView, setMobileView] = useState(urlTag || urlId ? 'editor' : 'list')
+  const [bodyEditor, setBodyEditor] = useState(null)
+  const [streamEditor, setStreamEditor] = useState(null)
+  const [newTag, setNewTag] = useState(null)      // null = the "+" form is closed
+  const [newTagError, setNewTagError] = useState(null)
+  const [renameValue, setRenameValue] = useState(null)
+  const [renameError, setRenameError] = useState(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const highlightBlock = useHighlightTarget('block')
 
-  // Drive the highlight via a ProseMirror decoration (see
-  // SearchHighlightExtension). We previously toggled the class imperatively
-  // on the DOM node, but tiptap re-renders block nodes on its own
-  // transactions and would wipe the class. The decoration survives those.
-  // We also scroll the matching DOM node into view once it exists.
+  // ---- selection ----------------------------------------------------------
+  // `?tag=` is the selection. `?id=` still works for Search links: it resolves
+  // to the note, and from there to the tag the note answers to — a legacy note
+  // whose title isn't a tag yet stays selected by id.
+  const selectedNote = useMemo(() => {
+    if (urlTag) return resolveTagNote(notes, urlTag)
+    if (urlId) return notes.find(n => n.id === urlId) || null
+    return null
+  }, [notes, urlTag, urlId])
+  const selectedTag = urlTag || (selectedNote ? canonicalTag(selectedNote.title) : null)
+  const selectionKey = urlTag ? `tag:${urlTag}` : (selectedNote ? `id:${selectedNote.id}` : null)
+
   useEffect(() => {
-    if (!activeEditor) return
-    activeEditor.commands.setSearchHighlight(highlightBlock || null)
+    if (selectionKey) setMobileView('editor')
+  }, [selectionKey])
+
+  useEffect(() => {
+    setRenameValue(null)
+    setRenameError(null)
+    setConfirmDelete(false)
+  }, [selectionKey])
+
+  // ---- the list = the tag pool -------------------------------------------
+  const rows = useMemo(() => {
+    const out = []
+    const seenKey = new Set()
+    const seenNote = new Set()
+    for (const tag of getTags()) {
+      const note = resolveTagNote(notes, tag)
+      // A tag that resolves through an alias lists under the note's LIVE tag,
+      // so a renamed note doesn't show up twice (the forwarding address, #9).
+      const liveTag = note ? canonicalTag(note.title) : tag
+      const key = liveTag || `note:${note.id}`
+      if (seenKey.has(key)) continue
+      seenKey.add(key)
+      if (note) seenNote.add(note.id)
+      out.push({ key, tag: liveTag, note, needsTag: note ? needsTag(note) : false })
+    }
+    const rest = notes
+      .filter(n => !seenNote.has(n.id))
+      .sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0))
+    for (const note of rest) {
+      const liveTag = canonicalTag(note.title)
+      const key = liveTag || `note:${note.id}`
+      if (seenKey.has(key)) continue
+      seenKey.add(key)
+      out.push({ key, tag: liveTag, note, needsTag: needsTag(note) })
+    }
+    return out
+    // getTags() reads the store's tagIndex directly, so the index is a real
+    // dependency of this list even though it isn't named in the body.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notes, tagIndex, getTags])
+
+  // ---- the two regions ----------------------------------------------------
+  const entries = useMemo(
+    () => (selectedTag ? noteStream(tagIndex, notes, selectedTag) : []),
+    [tagIndex, notes, selectedTag],
+  )
+  const bodyHtml = useMemo(() => {
+    if (!selectedNote) return ''
+    const blocks = selectedNote.blocks || []
+    if (blocks.length) return blocksToHtml(blocks.filter(b => !isForkBlock(b)))
+    return selectedNote.body || ''
+  }, [selectedNote])
+
+  // A tag with no stored row shows an empty body; the first keystroke mints
+  // the row. One in-flight create per selection, so two saves racing the
+  // debounce can't produce two notes for one tag.
+  const creating = useRef({ key: null, promise: null })
+  const ensureNote = async () => {
+    if (selectedNote) return selectedNote
+    if (!selectedTag) return null
+    if (creating.current.key !== selectionKey) {
+      creating.current = { key: selectionKey, promise: addNote(selectedTag) }
+    }
+    return creating.current.promise
+  }
+
+  /**
+   * The single write path for both regions. Region A owns the note's own
+   * blocks, Region B owns the forks; each save carries its own half and reads
+   * the other half back from the store, because `blocks` is one array and
+   * stampBlocksFromDoc tombstones whatever is missing from it.
+   */
+  const persistNote = async ({ ownBlocks, forkBlocks, hiddenOrigins, tags }) => {
+    const note = await ensureNote()
+    if (!note) return
+    const fresh = useAppStore.getState().notes.find(n => n.id === note.id)
+    if (!fresh) return
+    const live = (fresh.blocks || []).filter(b => b && !b.deleted)
+    const nextOwn = ownBlocks || sortByOrder(live.filter(b => !isForkBlock(b)))
+    const nextForks = forkBlocks || sortByOrder(live.filter(b => isForkBlock(b)))
+    const updates = { blocks: [...nextOwn, ...nextForks] }
+    if (tags) updates.tags = tags
+    // Only when it actually moved: writing the same array every save would
+    // bump the field's LWW stamp on every keystroke pause for nothing.
+    if (hiddenOrigins && hiddenOrigins.join('\u0000') !== (fresh.hiddenOrigins || []).join('\u0000')) {
+      updates.hiddenOrigins = hiddenOrigins
+    }
+    await updateNote(note.id, updates)
+  }
+
+  // ---- search highlight ---------------------------------------------------
+  // Drive the highlight via a ProseMirror decoration (see
+  // SearchHighlightExtension). Both regions are searched: a forked paragraph
+  // lives in the stream, the note's own writing in the body.
+  useEffect(() => {
+    const editors = [bodyEditor, streamEditor].filter(Boolean)
+    if (editors.length === 0) return
+    for (const ed of editors) ed.commands.setSearchHighlight(highlightBlock || null)
     if (!highlightBlock) return
-    const dom = activeEditor.view?.dom
-    if (!dom) return
     const sel = `[data-bid="${CSS.escape(highlightBlock)}"]`
     let cancelled = false
     const tryScroll = () => {
       if (cancelled) return false
-      const el = dom.querySelector(sel)
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-        return true
+      for (const ed of editors) {
+        const el = ed.view?.dom?.querySelector(sel)
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          return true
+        }
       }
       return false
     }
-    if (!tryScroll()) {
-      const obs = new MutationObserver(() => { if (tryScroll()) obs.disconnect() })
-      obs.observe(dom, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-bid'] })
-      const stop = setTimeout(() => obs.disconnect(), 3000)
-      return () => {
-        cancelled = true
-        clearTimeout(stop)
-        obs.disconnect()
-        activeEditor.commands.setSearchHighlight(null)
+    const clear = () => {
+      cancelled = true
+      for (const ed of editors) {
+        if (!ed.isDestroyed) ed.commands.setSearchHighlight(null)
       }
     }
-    return () => {
-      cancelled = true
-      activeEditor.commands.setSearchHighlight(null)
+    if (!tryScroll()) {
+      const observers = editors.map(ed => {
+        const obs = new MutationObserver(() => { if (tryScroll()) obs.disconnect() })
+        if (ed.view?.dom) obs.observe(ed.view.dom, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-bid'] })
+        return obs
+      })
+      const stop = setTimeout(() => observers.forEach(o => o.disconnect()), 3000)
+      return () => {
+        clearTimeout(stop)
+        observers.forEach(o => o.disconnect())
+        clear()
+      }
     }
-  }, [highlightBlock, activeEditor, selectedNoteId])
+    return clear
+  }, [highlightBlock, bodyEditor, streamEditor, selectionKey])
 
-  // If the URL changes (e.g. arriving from Search), follow it.
-  useEffect(() => {
-    if (urlNoteId && urlNoteId !== selectedNoteId) {
-      setSelectedNoteId(urlNoteId)
-      setMobileView('editor')
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [urlNoteId])
-
-  const selectedNote = notes.find(n => n.id === selectedNoteId) || null
-  useEffect(() => {
-    setSelectedDraftTitle(selectedNote?.title || '')
-  }, [selectedNoteId, selectedNote?.title])
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem('notes.sortBy', sortBy)
-    } catch {}
-  }, [sortBy])
-
-  const clearUrlNoteId = () => {
-    if (params.get('id')) {
-      const p = new URLSearchParams(params)
-      p.delete('id')
-      setParams(p, { replace: true })
-    }
-  }
-
-  const handleNew = async () => {
-    const note = await addNote('', [])
-    setSelectedNoteId(note.id)
+  // ---- actions ------------------------------------------------------------
+  const selectTag = (tag) => {
+    const next = new URLSearchParams()
+    next.set('tag', tag)
+    setParams(next, { replace: true })
     setMobileView('editor')
-    setAutoFocusTitleNoteId(note.id)
-    clearUrlNoteId()
   }
-
-  const handleSelect = (id) => {
-    setSelectedNoteId(id)
+  const selectNoteId = (id) => {
+    const next = new URLSearchParams()
+    next.set('id', id)
+    setParams(next, { replace: true })
     setMobileView('editor')
-    setAutoFocusTitleNoteId(null)
-    clearUrlNoteId()
   }
-
-  const handleDelete = async (id) => {
-    await deleteNote(id)
-    setSelectedNoteId(null)
+  const clearSelection = () => {
+    setParams(new URLSearchParams(), { replace: true })
     setMobileView('list')
-    setAutoFocusTitleNoteId(null)
-    clearUrlNoteId()
   }
 
-  const sortedNotes = [...notes].sort((a, b) => {
-    if (sortBy === 'az') {
-      const ta = (a.title || '').trim()
-      const tb = (b.title || '').trim()
-      if (!ta && tb) return 1
-      if (ta && !tb) return -1
-      return ta.localeCompare(tb, undefined, { sensitivity: 'base' })
+  const commitNewTag = async () => {
+    const tag = canonicalTag(newTag)
+    if (!tag) {
+      setNewTagError('A tag is one word — letters, numbers, - or _')
+      return
     }
-    if (sortBy === 'date') {
-      const ad = new Date(a.createdAt || 0).getTime()
-      const bd = new Date(b.createdAt || 0).getTime()
-      return bd - ad
+    if (resolveTagNote(notes, tag)) {
+      setNewTagError(`#${tag} already has a note`)
+      return
     }
-    const au = new Date(a.updatedAt || a.createdAt || 0).getTime()
-    const bu = new Date(b.updatedAt || b.createdAt || 0).getTime()
-    return bu - au
-  })
+    await addNote(tag)
+    setNewTag(null)
+    setNewTagError(null)
+    selectTag(tag)
+  }
+
+  const commitRename = async () => {
+    if (renameValue == null) return
+    const tag = canonicalTag(renameValue)
+    if (!tag) {
+      setRenameError('A tag is one word — letters, numbers, - or _')
+      return
+    }
+    if (tag === selectedTag) {
+      setRenameValue(null)
+      setRenameError(null)
+      return
+    }
+    const clash = resolveTagNote(notes, tag)
+    if (clash && clash.id !== selectedNote?.id) {
+      setRenameError(`#${tag} already exists`)
+      return
+    }
+    if (selectedNote) await updateNote(selectedNote.id, { title: tag })
+    setRenameValue(null)
+    setRenameError(null)
+    selectTag(tag)
+  }
+
+  const handleDelete = async () => {
+    if (!selectedNote) return
+    await deleteNote(selectedNote.id)
+    setConfirmDelete(false)
+    clearSelection()
+  }
+
+  const showMarkers = config?.tagNoteDateMarkers !== false
+
+  const headerLabel = selectedTag
+    ? `#${selectedTag}`
+    : (selectedNote?.title || 'Untitled')
 
   return (
     <div style={{ display: 'flex', height: '100%', overflow: 'hidden', background: 'var(--bg-primary)', position: 'relative' }}>
-      {/* Notes list + tag strip */}
+      {/* The tag pool */}
       <div
         style={{
           flexShrink: 0,
@@ -414,11 +305,7 @@ export default function NotesPage() {
           flexDirection: 'column',
           display: mobileView === 'list' ? 'flex' : undefined,
         }}
-        className={
-          mobileView !== 'list'
-            ? 'hidden md:flex md:w-[260px]'
-            : 'w-full md:w-[260px]'
-        }
+        className={mobileView !== 'list' ? 'hidden md:flex md:w-[260px]' : 'w-full md:w-[260px]'}
       >
         <div style={{
           display: 'flex', flexDirection: 'column', gap: '6px',
@@ -426,10 +313,11 @@ export default function NotesPage() {
         }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span style={{ fontSize: '10px', fontWeight: 500, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.8px' }}>
-              Notes
+              Tags
             </span>
             <button
-              onClick={handleNew}
+              onClick={() => { setNewTag(newTag == null ? '' : null); setNewTagError(null) }}
+              title="New tag"
               style={{
                 fontSize: '14px', color: 'var(--accent)',
                 background: 'var(--accent-light)',
@@ -439,64 +327,70 @@ export default function NotesPage() {
                 fontFamily: 'var(--font-body)',
               }}
             >
-              +
+              {newTag == null ? '+' : '×'}
             </button>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Sort by:</span>
-            <select
-              value={sortBy}
-              onChange={e => setSortBy(e.target.value)}
-              style={{
-                fontSize: '11px',
-                color: 'var(--text-secondary)',
-                background: 'transparent',
-                border: 'none',
-                padding: 0,
-                fontFamily: 'var(--font-body)',
-                outline: 'none',
-                cursor: 'pointer',
-              }}
-            >
-              <option value="az">A-Z</option>
-              <option value="lastEdited">Last Edit</option>
-              <option value="date">Date</option>
-            </select>
-          </div>
+          {newTag != null && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <input
+                autoFocus
+                value={newTag}
+                placeholder="#tag"
+                onChange={e => { setNewTag(e.target.value); setNewTagError(null) }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') { e.preventDefault(); commitNewTag() }
+                  if (e.key === 'Escape') { setNewTag(null); setNewTagError(null) }
+                }}
+                style={{
+                  fontSize: '12px', color: 'var(--text-primary)',
+                  background: 'var(--bg-secondary)', border: '1px solid var(--border-mid)',
+                  borderRadius: '4px', padding: '3px 6px',
+                  fontFamily: 'var(--font-body)', outline: 'none',
+                }}
+              />
+              {newTagError && (
+                <span style={{ fontSize: '10px', color: '#FCA5A5' }}>{newTagError}</span>
+              )}
+            </div>
+          )}
         </div>
         <div style={{ flex: 1, overflowY: 'auto' }}>
-          {notes.length === 0 && (
-            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', padding: '12px' }}>No notes yet</p>
+          {rows.length === 0 && (
+            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', padding: '12px' }}>
+              No tags yet — write #something in today's entry.
+            </p>
           )}
-          {sortedNotes.map(note => (
-            <button
-              key={note.id}
-              onClick={() => handleSelect(note.id)}
-              style={{
-                width: '100%', textAlign: 'left',
-                padding: '10px 12px',
-                borderTop: 'none', borderRight: 'none',
-                borderBottom: '1px solid var(--border-light)',
-                borderLeft: note.id === selectedNoteId ? '2px solid var(--accent)' : '2px solid transparent',
-                background: note.id === selectedNoteId ? 'var(--bg-secondary)' : 'transparent',
-                cursor: 'pointer',
-                transition: 'background 0.15s',
-              }}
-            >
-              <p style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {(note.id === selectedNoteId ? selectedDraftTitle : note.title) || ''}
-              </p>
-              {note.tags?.length > 0 && (
-                <p style={{ fontSize: '11px', color: 'var(--accent)', marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {note.tags.map(t => `#${t}`).join(' ')}
+          {rows.map(row => {
+            const active = (!!row.tag && row.tag === selectedTag)
+              || (!!selectedNote && row.note?.id === selectedNote.id)
+            return (
+              <button
+                key={row.key}
+                onClick={() => (row.tag ? selectTag(row.tag) : selectNoteId(row.note.id))}
+                style={{
+                  width: '100%', textAlign: 'left',
+                  padding: '10px 12px',
+                  borderTop: 'none', borderRight: 'none',
+                  borderBottom: '1px solid var(--border-light)',
+                  borderLeft: active ? '2px solid var(--accent)' : '2px solid transparent',
+                  background: active ? 'var(--bg-secondary)' : 'transparent',
+                  cursor: 'pointer',
+                  transition: 'background 0.15s',
+                }}
+              >
+                <p className="tag-row-name">
+                  {row.tag
+                    ? <><span className="tag-row-hash">#</span>{row.tag}</>
+                    : (row.note?.title || 'Untitled')}
                 </p>
-              )}
-            </button>
-          ))}
+                {row.needsTag && <p className="tag-row-meta"><span className="tag-row-needs">needs a tag</span></p>}
+              </button>
+            )
+          })}
         </div>
       </div>
 
-      {/* Editor */}
+      {/* The note */}
       <div
         style={{
           flex: 1, flexDirection: 'column', overflow: 'hidden',
@@ -506,7 +400,7 @@ export default function NotesPage() {
       >
         {mobileView === 'editor' && (
           <button
-            onClick={() => setMobileView('list')}
+            onClick={clearSelection}
             style={{
               textAlign: 'left', padding: '8px 16px', fontSize: '12px',
               color: 'var(--accent)', background: 'none', border: 'none',
@@ -518,19 +412,128 @@ export default function NotesPage() {
             ← Back
           </button>
         )}
-        <NoteEditor
-          key={selectedNoteId}
-          note={selectedNote}
-          onUpdate={updateNote}
-          onDelete={handleDelete}
-          onEditorReady={setActiveEditor}
-          getTags={getTags}
-          autoFocusTitle={autoFocusTitleNoteId && selectedNoteId === autoFocusTitleNoteId}
-          onDidAutoFocusTitle={() => setAutoFocusTitleNoteId(null)}
-          onDraftTitleChange={setSelectedDraftTitle}
-        />
+
+        {!selectionKey ? (
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+            Pick a tag, or start a new one
+          </div>
+        ) : (
+          <div className="tag-note-pane">
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: '8px',
+              padding: '12px 20px', borderBottom: '1px solid var(--border-light)',
+            }}>
+              {renameValue != null ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', flex: 1, minWidth: 0 }}>
+                  <input
+                    autoFocus
+                    value={renameValue}
+                    onChange={e => { setRenameValue(e.target.value); setRenameError(null) }}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') { e.preventDefault(); commitRename() }
+                      if (e.key === 'Escape') { setRenameValue(null); setRenameError(null) }
+                    }}
+                    onBlur={() => { if (!renameError) commitRename() }}
+                    style={{
+                      fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)',
+                      background: 'var(--bg-secondary)', border: '1px solid var(--border-mid)',
+                      borderRadius: '4px', padding: '2px 6px',
+                      fontFamily: 'var(--font-body)', outline: 'none',
+                      width: '100%', minWidth: 0,
+                    }}
+                  />
+                  {renameError && <span style={{ fontSize: '10px', color: '#FCA5A5' }}>{renameError}</span>}
+                </div>
+              ) : (
+                <span
+                  onClick={() => setRenameValue(selectedTag || tagFromTitle(selectedNote?.title) || '')}
+                  title={selectedTag ? 'Click to rename the tag' : 'Click to give this note a tag'}
+                  style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'text', flex: 1, minWidth: 0 }}
+                >
+                  {headerLabel}
+                  {!selectedTag && <span className="tag-row-needs" style={{ marginInlineStart: '8px' }}>needs a tag</span>}
+                </span>
+              )}
+              <button
+                onClick={() => updateConfig({ tagNoteDateMarkers: !showMarkers })}
+                title={showMarkers ? 'Hide the day markers' : 'Show the day markers'}
+                style={{
+                  fontSize: '11px', padding: '3px 8px', borderRadius: '8px',
+                  background: showMarkers ? 'var(--accent-light)' : 'transparent',
+                  color: showMarkers ? 'var(--accent)' : 'var(--text-tertiary)',
+                  border: '1px solid var(--border-light)', cursor: 'pointer',
+                  fontFamily: 'var(--font-body)', whiteSpace: 'nowrap',
+                }}
+              >
+                dates
+              </button>
+              {selectedNote && (confirmDelete ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <button
+                    onClick={handleDelete}
+                    style={{
+                      fontSize: '12px', padding: '4px 10px', borderRadius: '8px',
+                      background: 'rgba(239,68,68,0.15)', color: '#FCA5A5',
+                      border: '1px solid rgba(239,68,68,0.3)', cursor: 'pointer',
+                      fontFamily: 'var(--font-body)',
+                    }}
+                  >
+                    Move to trash
+                  </button>
+                  <button
+                    onClick={() => setConfirmDelete(false)}
+                    style={{
+                      fontSize: '12px', padding: '4px 10px', borderRadius: '8px',
+                      background: 'var(--bg-secondary)', color: 'var(--text-secondary)',
+                      border: '1px solid var(--border-light)', cursor: 'pointer',
+                      fontFamily: 'var(--font-body)',
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setConfirmDelete(true)}
+                  style={{
+                    fontSize: '12px', color: '#FCA5A5',
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    padding: '4px 8px', fontFamily: 'var(--font-body)',
+                  }}
+                >
+                  Delete
+                </button>
+              ))}
+            </div>
+
+            <div className="tag-note-scroll">
+              <NoteBodyEditor
+                key={`body:${selectionKey}`}
+                content={bodyHtml}
+                noteId={selectedNote?.id || null}
+                noteTitle={headerLabel}
+                hashtagExtension={HashtagExtension}
+                getTags={getTags}
+                onSave={({ blocks, tags }) => persistNote({ ownBlocks: blocks, tags })}
+                onEditorReady={setBodyEditor}
+              />
+              <TagNoteStream
+                key={`stream:${selectionKey}`}
+                entries={entries}
+                noteId={selectedNote?.id || null}
+                noteTitle={headerLabel}
+                hiddenOrigins={selectedNote?.hiddenOrigins || []}
+                showMarkers={showMarkers}
+                hashtagExtension={HashtagExtension}
+                getTags={getTags}
+                onPersist={({ forkBlocks, hiddenOrigins }) => persistNote({ forkBlocks, hiddenOrigins })}
+                onEditorReady={setStreamEditor}
+              />
+            </div>
+          </div>
+        )}
       </div>
-      {selectedNote && activeEditor && <RecordFab editor={activeEditor} />}
+      {selectionKey && bodyEditor && <RecordFab editor={bodyEditor} />}
     </div>
   )
 }
