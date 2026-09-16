@@ -26,11 +26,11 @@ Just head over to [https://theitush.github.io/yajna](https://theitush.github.io/
 
 ## 🔒 Privacy & data
 
-Yajna has no backend for your data. Notes, tasks, journals, and audio are stored locally in your browser (IndexedDB) and synced into a single `yajna/` folder in *your* Google Drive — plain JSON files you can open, back up, or delete. Your content never passes through anything I run.
+Yajna has no backend for your data. Notes, tasks, journals, and audio are stored locally in your browser (IndexedDB) and synced into a single `yajna/` folder in *your* Google Drive, yours to back up or delete. Since the Automerge cutover that folder holds CRDT documents rather than readable text — `tasks/<id>.bin`, `notes/<id>.bin`, `journals/<date>.bin` and `config/config.bin` — with a plain-JSON `manifest.json` changelog beside them and voice clips as ordinary audio files in `audio/`. For a copy you can read, **Settings → Export data as JSON** downloads your tasks, notes, and the current day's journal; `node scripts/inspect-bin.mjs <file>` dumps a single document. Your content never passes through anything I run.
 
 There's a tiny [Cloudflare Worker](worker/) (`worker/`) that does **one** job: the Google OAuth handshake, so you don't have to re-login every hour. It only ever handles tokens — never your notes or audio. The OAuth scope is `drive.file`, which limits access to the `yajna/` folder only, never the rest of your Drive.
 
-**Honest disclosure — no end-to-end encryption yet.** Your data sits in Drive as plain JSON. That means Google can read it, and technically *I* could too if I accessed your `yajna/` folder. I don't, and I don't want to — but the architecture doesn't *prevent* it today.
+**Honest disclosure — no end-to-end encryption yet.** The `.bin` files are binary, but that's a storage format, not a lock — anything with access to the folder can load them. That means Google can read your data, and technically *I* could too if I accessed your `yajna/` folder. I don't, and I don't want to — but the architecture doesn't *prevent* it today.
 
 Client-side encryption is **planned** so that no one but you can read your data. PRs welcome — see [issues](../../issues).
 
