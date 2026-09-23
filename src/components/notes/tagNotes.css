@@ -1,6 +1,6 @@
-/* Tag-notes: the note's own body (Region A) and the derived journal stream
-   (Region B). Scoped to this page's markup — nothing here leaks into the
-   journal or the global editor styles. */
+/* Tag-notes: one editor per note — its own writing and the paragraphs its tag
+   captured, in one document (#48). Scoped to this page's markup — nothing here
+   leaks into the journal or the global editor styles. */
 
 .tag-note-pane {
   display: flex;
@@ -10,8 +10,7 @@
   overflow: hidden;
 }
 
-/* Desktop: body and stream share ONE scroll container, so the stream reads as
-   a continuation of the note rather than a second pane. */
+/* The one scroll container of the note. */
 .tag-note-scroll {
   flex: 1;
   overflow-y: auto;
@@ -20,60 +19,54 @@
   color: var(--text-primary);
 }
 
-.tag-note-body .ProseMirror {
+.tag-note-editor .ProseMirror {
   outline: none;
 }
 
-/* ---- the stream ---------------------------------------------------------- */
+/* ---- captured paragraphs (#48) ---------------------------------------- */
+/* A block that came from a journal day or another note carries the same tint
+   the journal paints on what a tag is taking; a block the note has edited keeps
+   it and says so. Both are decorations on the node, never content. */
 
-.tag-stream {
-  margin-top: 28px;
-  border-top: 1px solid var(--border-light);
-  padding-top: 10px;
+.tag-note-editor .ProseMirror > .note-from {
+  background: var(--accent-tint);
+  border-radius: 3px;
+  padding-inline: 8px;
+  margin-inline: -8px;
 }
 
-.tag-stream-label {
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.8px;
-  text-transform: uppercase;
-  color: var(--text-tertiary);
-  margin-bottom: 6px;
+.tag-note-editor .ProseMirror > p.note-from {
+  padding-block: 0.25rem;
+  margin-block: -0.25rem;
 }
 
-.tag-stream-empty {
-  font-size: 12px;
-  color: var(--text-tertiary);
-  margin: 6px 0 0;
+.tag-note-editor .ProseMirror > p.note-from + p.note-from {
+  margin-top: 0;
 }
 
-.tag-stream .ProseMirror {
-  outline: none;
-}
-
-/* Day markers are decorations, never content: faint by default, fainter while
-   the stream has focus so they stay out of the way of writing (#9). */
-.tag-stream .stream-date-marker {
+/* Where a run of captured blocks came from: faint by default, fainter while
+   the editor has focus so it stays out of the way of writing (#9). */
+.tag-note-editor .note-marker {
   font-size: 10px;
   letter-spacing: 0.6px;
   text-transform: uppercase;
   color: var(--text-tertiary);
   opacity: 0.55;
-  margin: 14px 0 2px;
+  margin: 14px 0 6px;
   user-select: none;
   transition: opacity 0.2s ease;
 }
 
-.tag-stream .stream-date-marker:first-child {
+.tag-note-editor .note-marker:first-child {
   margin-top: 0;
 }
 
-.tag-stream .ProseMirror-focused .stream-date-marker {
-  opacity: 0.2;
+.tag-note-editor .ProseMirror-focused .note-marker {
+  opacity: 0.25;
 }
 
 /* A block the note holds its own copy of: it no longer mirrors its source. */
-.tag-stream .stream-edited::after {
+.tag-note-editor .note-edited::after {
   content: 'edited';
   font-size: 9px;
   letter-spacing: 0.5px;
@@ -85,8 +78,8 @@
   transition: opacity 0.2s ease;
 }
 
-.tag-stream .ProseMirror-focused .stream-edited::after {
-  opacity: 0.2;
+.tag-note-editor .ProseMirror-focused .note-edited::after {
+  opacity: 0.25;
 }
 
 /* ---- the tag list -------------------------------------------------------- */

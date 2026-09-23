@@ -1,23 +1,21 @@
 /**
- * Notes = the tag pool (#9, #34).
+ * Notes = the tag pool (#9, #34, #48).
  *
  * The left pane lists every #tag that exists anywhere — journal days, tasks,
  * other notes — whether or not a note row has ever been stored for it, ranked
- * by last use. Selecting one opens its note: Region A is the note's own body,
- * Region B ("From the journal") is the stream derived from every paragraph the
- * tag has captured. Editing a streamed paragraph forks it into this note; the
- * journal is never written from here.
+ * by last use. Selecting one opens its note: one editor over the note's own
+ * writing and every paragraph the tag has captured, in the note's order (see
+ * noteDocument in src/lib/tagIndex.js). Editing a captured paragraph forks it
+ * into this note; the journal is never written from here.
  */
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import useHighlightTarget from '../lib/useHighlightTarget'
-import { blocksToHtml, sortByOrder } from '../lib/blocks'
 import { canonicalTag, tagFromTitle } from '../lib/hashtags'
-import { noteStream, resolveTagNote, isForkBlock } from '../lib/tagIndex'
+import { noteDocument, resolveTagNote } from '../lib/tagIndex'
 import useAppStore from '../store/useAppStore'
 import { HashtagExtension } from '../components/editor/HashtagExtension'
-import NoteBodyEditor from '../components/notes/NoteBodyEditor'
-import TagNoteStream from '../components/notes/TagNoteStream'
+import TagNoteEditor from '../components/notes/TagNoteEditor'
 import PortNotesBanner from '../components/notes/PortNotesBanner'
 import { needsTag } from '../components/notes/portNotes'
 import RecordFab from '../components/voice/RecordFab'
@@ -38,8 +36,7 @@ export default function NotesPage() {
   const urlId = params.get('id')
 
   const [mobileView, setMobileView] = useState(urlTag || urlId ? 'editor' : 'list')
-  const [bodyEditor, setBodyEditor] = useState(null)
-  const [streamEditor, setStreamEditor] = useState(null)
+  const [editor, setEditor] = useState(null)
   const [newTag, setNewTag] = useState(null)      // null = the "+" form is closed
   const [newTagError, setNewTagError] = useState(null)
   const [renameValue, setRenameValue] = useState(null)
@@ -101,17 +98,17 @@ export default function NotesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notes, tagIndex, getTags])
 
-  // ---- the two regions ----------------------------------------------------
-  const entries = useMemo(
-    () => (selectedTag ? noteStream(tagIndex, notes, selectedTag) : []),
-    [tagIndex, notes, selectedTag],
-  )
-  const bodyHtml = useMemo(() => {
-    if (!selectedNote) return ''
-    const blocks = selectedNote.blocks || []
-    if (blocks.length) return blocksToHtml(blocks.filter(b => !isForkBlock(b)))
-    return selectedNote.body || ''
-  }, [selectedNote])
+  // ---- the document -------------------------------------------------------
+  // A legacy note selected by id (no tag yet) shows its stored blocks alone.
+  const entries = useMemo(() => {
+    if (selectedTag) return noteDocument(tagIndex, notes, selectedTag)
+    if (!selectedNote) return []
+    return (selectedNote.blocks || [])
+      .filter(b => b && !b.deleted)
+      .map(b => ({ kind: 'own', id: b.id, origin: null, html: b.html || '', date: null, srcType: null, srcId: null }))
+  }, [tagIndex, notes, selectedTag, selectedNote])
+  // "from #tag" on a paragraph captured out of another note.
+  const sourceLabel = (noteId) => canonicalTag(notes.find(n => n.id === noteId)?.title) || null
 
   // A tag with no stored row shows an empty body; the first keystroke mints
   // the row. One in-flight create per selection, so two saves racing the
@@ -127,20 +124,15 @@ export default function NotesPage() {
   }
 
   /**
-   * The single write path for both regions. Region A owns the note's own
-   * blocks, Region B owns the forks; each save carries its own half and reads
-   * the other half back from the store, because `blocks` is one array and
-   * stampBlocksFromDoc tombstones whatever is missing from it.
+   * The single write path: the editor's blocks, in the editor's order, are
+   * the note's blocks. stampBlocksFromDoc tombstones whatever is missing.
    */
-  const persistNote = async ({ ownBlocks, forkBlocks, hiddenOrigins, tags }) => {
+  const persistNote = async ({ blocks, hiddenOrigins, tags }) => {
     const note = await ensureNote()
     if (!note) return
     const fresh = useAppStore.getState().notes.find(n => n.id === note.id)
     if (!fresh) return
-    const live = (fresh.blocks || []).filter(b => b && !b.deleted)
-    const nextOwn = ownBlocks || sortByOrder(live.filter(b => !isForkBlock(b)))
-    const nextForks = forkBlocks || sortByOrder(live.filter(b => isForkBlock(b)))
-    const updates = { blocks: [...nextOwn, ...nextForks] }
+    const updates = { blocks }
     if (tags) updates.tags = tags
     // Only when it actually moved: writing the same array every save would
     // bump the field's LWW stamp on every keystroke pause for nothing.
@@ -152,47 +144,36 @@ export default function NotesPage() {
 
   // ---- search highlight ---------------------------------------------------
   // Drive the highlight via a ProseMirror decoration (see
-  // SearchHighlightExtension). Both regions are searched: a forked paragraph
-  // lives in the stream, the note's own writing in the body.
+  // SearchHighlightExtension).
   useEffect(() => {
-    const editors = [bodyEditor, streamEditor].filter(Boolean)
-    if (editors.length === 0) return
-    for (const ed of editors) ed.commands.setSearchHighlight(highlightBlock || null)
+    if (!editor) return
+    editor.commands.setSearchHighlight(highlightBlock || null)
     if (!highlightBlock) return
     const sel = `[data-bid="${CSS.escape(highlightBlock)}"]`
     let cancelled = false
     const tryScroll = () => {
       if (cancelled) return false
-      for (const ed of editors) {
-        const el = ed.view?.dom?.querySelector(sel)
-        if (el) {
-          el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-          return true
-        }
-      }
-      return false
+      const el = editor.view?.dom?.querySelector(sel)
+      if (!el) return false
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      return true
     }
     const clear = () => {
       cancelled = true
-      for (const ed of editors) {
-        if (!ed.isDestroyed) ed.commands.setSearchHighlight(null)
-      }
+      if (!editor.isDestroyed) editor.commands.setSearchHighlight(null)
     }
     if (!tryScroll()) {
-      const observers = editors.map(ed => {
-        const obs = new MutationObserver(() => { if (tryScroll()) obs.disconnect() })
-        if (ed.view?.dom) obs.observe(ed.view.dom, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-bid'] })
-        return obs
-      })
-      const stop = setTimeout(() => observers.forEach(o => o.disconnect()), 3000)
+      const obs = new MutationObserver(() => { if (tryScroll()) obs.disconnect() })
+      if (editor.view?.dom) obs.observe(editor.view.dom, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-bid'] })
+      const stop = setTimeout(() => obs.disconnect(), 3000)
       return () => {
         clearTimeout(stop)
-        observers.forEach(o => o.disconnect())
+        obs.disconnect()
         clear()
       }
     }
     return clear
-  }, [highlightBlock, bodyEditor, streamEditor, selectionKey])
+  }, [highlightBlock, editor, selectionKey])
 
   // ---- actions ------------------------------------------------------------
   const selectTag = (tag) => {
@@ -487,33 +468,24 @@ export default function NotesPage() {
             </div>
 
             <div className="tag-note-scroll">
-              <NoteBodyEditor
-                key={`body:${selectionKey}`}
-                content={bodyHtml}
-                noteId={selectedNote?.id || null}
-                noteTitle={headerLabel}
-                hashtagExtension={hashtagExtension}
-                getTags={getTags}
-                onSave={({ blocks, tags }) => persistNote({ ownBlocks: blocks, tags })}
-                onEditorReady={setBodyEditor}
-              />
-              <TagNoteStream
-                key={`stream:${selectionKey}`}
+              <TagNoteEditor
+                key={`note:${selectionKey}`}
                 entries={entries}
                 noteId={selectedNote?.id || null}
                 noteTitle={headerLabel}
                 hiddenOrigins={selectedNote?.hiddenOrigins || []}
                 showMarkers={showMarkers}
+                sourceLabel={sourceLabel}
                 hashtagExtension={hashtagExtension}
                 getTags={getTags}
-                onPersist={({ forkBlocks, hiddenOrigins }) => persistNote({ forkBlocks, hiddenOrigins })}
-                onEditorReady={setStreamEditor}
+                onPersist={persistNote}
+                onEditorReady={setEditor}
               />
             </div>
           </div>
         )}
       </div>
-      {selectionKey && bodyEditor && <RecordFab editor={bodyEditor} />}
+      {selectionKey && editor && <RecordFab editor={editor} />}
     </div>
   )
 }

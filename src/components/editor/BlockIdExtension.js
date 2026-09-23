@@ -31,8 +31,8 @@ export const BlockIdExtension = Extension.create({
             parseHTML: el => el.getAttribute('data-conflict'),
             renderHTML: attrs => attrs.conflict ? { 'data-conflict': attrs.conflict } : {},
           },
-          // Provenance of a captured paragraph a tag-note holds its own copy
-          // of (a "fork" — see src/lib/tagIndex.js): the origin block a human
+          // Provenance of a captured paragraph a tag-note holds (a mirror or a
+          // fork — see src/lib/tagIndex.js): the origin block a human
           // typed, the doc it was captured from (journal:<date> | note:<id>),
           // and the day its marker shows. Round-trip through html like bid;
           // never stripped, never re-minted.
@@ -50,6 +50,13 @@ export const BlockIdExtension = Extension.create({
             default: null,
             parseHTML: el => el.getAttribute('data-date'),
             renderHTML: attrs => attrs.srcDate ? { 'data-date': attrs.srcDate } : {},
+          },
+          // Set while the captured block still mirrors its source; cleared the
+          // moment the note edits it (a fork). See src/lib/tagIndex.js.
+          mirror: {
+            default: null,
+            parseHTML: el => el.getAttribute('data-mirror'),
+            renderHTML: attrs => attrs.mirror ? { 'data-mirror': attrs.mirror } : {},
           },
         },
       },

@@ -60,12 +60,17 @@ function withoutTags(text) {
  *     header. The header line itself is not content.
  *   - A block inside a header's scope that carries its own inline tags is
  *     captured by both.
+ *   - A header whose scope captured at least one block is reported in
+ *     `headersByTag`, so a tag's note can show the line the way the journal
+ *     does, above what it took (#48). A header with nothing under it is just
+ *     a line that says a tag.
  *
  * No setting: the rule adapts to how the tag was written, and the journal
  * editor frames the captured blocks so the writer sees exactly what a tag
  * is taking (#9, Ita's review note).
  *
- * Returns { byBlock: Map<id, tag[]>, byTag: Map<tag, id[]>, headers: Set<id> }.
+ * Returns { byBlock: Map<id, tag[]>, byTag: Map<tag, id[]>, headers: Set<id>,
+ *           headersByTag: Map<tag, id[]> }.
  * Pure; never touches a document.
  */
 export function captureScopes(items) {
@@ -81,7 +86,8 @@ export function captureScopes(items) {
     byTag.set(tag, ids)
   }
 
-  let openHeader = null // tags of the header whose scope we are inside
+  const headersByTag = new Map()
+  let openHeader = null // { id, tags } of the header whose scope we are inside
   for (const item of items || []) {
     if (!item || item.id == null) continue
     const text = String(item.text || '')
@@ -91,7 +97,7 @@ export function captureScopes(items) {
 
     if (isHeader) {
       headers.add(item.id)
-      openHeader = tags
+      openHeader = { id: item.id, tags, counted: false }
       continue
     }
     if (isEmpty) {
@@ -99,9 +105,19 @@ export function captureScopes(items) {
       continue
     }
     for (const tag of tags) add(item.id, tag)
-    if (openHeader) for (const tag of openHeader) add(item.id, tag)
+    if (openHeader) {
+      for (const tag of openHeader.tags) add(item.id, tag)
+      if (!openHeader.counted) {
+        openHeader.counted = true
+        for (const tag of openHeader.tags) {
+          const ids = headersByTag.get(tag) || []
+          ids.push(openHeader.id)
+          headersByTag.set(tag, ids)
+        }
+      }
+    }
   }
-  return { byBlock, byTag, headers }
+  return { byBlock, byTag, headers, headersByTag }
 }
 
 /**

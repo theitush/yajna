@@ -4,6 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import useAppStore from '../store/useAppStore'
 import { getAllJournals, getAllAudio } from '../services/db'
 import { audioIdsFromBlocks, blocksToPlainText, blocksWithText, buildSearchableText, snippetAround } from '../lib/search'
+import { isMirrorBlock } from '../lib/tagIndex'
 import SearchGroup from '../components/search/SearchGroup'
 import Highlighted from '../components/search/Highlighted'
 
@@ -162,7 +163,8 @@ export default function SearchPage() {
   const notesForSearch = useMemo(() => {
     const out = []
     for (const n of notes) {
-      const blocks = blocksWithText(n.blocks)
+      // A mirror shows a journal paragraph that is searched where it lives.
+      const blocks = blocksWithText((n.blocks || []).filter(b => !isMirrorBlock(b)))
       const tagText = (n.tags || []).map(t => `#${t}`).join(' ')
       // One row per block so we can land on the exact paragraph; tags
       // hitch-hike on the first block (or a synthetic if there are none).

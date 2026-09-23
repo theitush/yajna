@@ -299,7 +299,11 @@ function AudioNodeView({ node, editor, getPos, extension }) {
   // mid-request (navigating pages) and is shared across remounts of the clip.
   const transcribing = useAppStore(s => !!s.transcribingAudio[audioId])
   const trashAudio = useAppStore(s => s.trashAudio)
-  const readOnly = !!extension?.options?.readOnly
+  // `readOnly` is a boolean for the whole editor, or a function of the node
+  // — a tag-note plays a clip captured from a journal day but must not be
+  // able to delete or re-record it, while its own clips stay editable.
+  const ro = extension?.options?.readOnly
+  const readOnly = typeof ro === 'function' ? !!ro(node) : !!ro
   const config = useAppStore(s => s.config)
   const syncPaused = useAppStore(s => s.syncPaused)
   const audioRef = useRef(null)
@@ -1116,6 +1120,7 @@ export const AudioNode = Node.create({
       // rendering one block per editor (e.g. ReviewPage) and you want chronological
       // tints to be consistent across the whole day's journal.
       getRank: null,
+      // boolean, or (node) => boolean
       readOnly: false,
     }
   },
