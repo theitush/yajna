@@ -4,6 +4,7 @@ import TasksPanel from '../components/today/TasksPanel'
 import SurfaceLoadingGate from '../components/layout/SurfaceLoadingGate'
 import useAppStore from '../store/useAppStore'
 import useMediaQuery, { MD_BREAKPOINT } from '../lib/useMediaQuery'
+import useCurrentDay from '../lib/useCurrentDay'
 
 export default function TodayPage() {
   const insertTextRef = useRef(null)
@@ -16,6 +17,12 @@ export default function TodayPage() {
   // setContent on every currentDay bump, fighting the visible editor and
   // causing the online typing lag.
   const isDesktop = useMediaQuery(MD_BREAKPOINT)
+  // The journal editor is keyed on the day, so a rollover mounts a fresh
+  // editor for the new day instead of re-pointing the old one. An editor that
+  // outlived its day still held yesterday's doc while its saves already went
+  // to today, so one keystroke in that window wrote all of yesterday into
+  // today (yajna#51).
+  const day = useCurrentDay(config)
 
   const showTasks = config.showTasksToday !== false
 
@@ -25,12 +32,14 @@ export default function TodayPage() {
 
   return isDesktop ? (
     <DesktopLayout
+      day={day}
       insertTextRef={insertTextRef}
       showTasks={showTasks}
       toggleTasks={toggleTasks}
     />
   ) : (
     <MobileLayout
+      day={day}
       insertTextRef={insertTextRef}
       panel={panel}
       setPanel={setPanel}
@@ -38,7 +47,7 @@ export default function TodayPage() {
   )
 }
 
-function DesktopLayout({ insertTextRef, showTasks, toggleTasks }) {
+function DesktopLayout({ day, insertTextRef, showTasks, toggleTasks }) {
   return (
       <div className="flex h-full relative" style={{ background: 'var(--bg-primary)' }}>
         <div style={{
@@ -47,7 +56,7 @@ function DesktopLayout({ insertTextRef, showTasks, toggleTasks }) {
           overflow: 'hidden',
           transition: 'border-right 0.3s ease'
         }}>
-          <JournalPanel onInsertText={insertTextRef} scrollKey="today-journal" />
+          <JournalPanel key={day} date={day} onInsertText={insertTextRef} scrollKey="today-journal" />
         </div>
 
         {/* Toggle Button */}
@@ -100,7 +109,7 @@ function DesktopLayout({ insertTextRef, showTasks, toggleTasks }) {
   )
 }
 
-function MobileLayout({ insertTextRef, panel, setPanel }) {
+function MobileLayout({ day, insertTextRef, panel, setPanel }) {
   return (
       <div className="flex flex-col h-full" style={{ background: 'var(--bg-primary)' }}>
         <div style={{ display: 'flex', borderBottom: '1px solid var(--border-light)' }}>
@@ -134,7 +143,7 @@ function MobileLayout({ insertTextRef, panel, setPanel }) {
 
         <div style={{ flex: 1, overflow: 'hidden' }}>
           {panel === 'journal' ? (
-            <JournalPanel onInsertText={insertTextRef} hideHeader scrollKey="today-journal" />
+            <JournalPanel key={day} date={day} onInsertText={insertTextRef} hideHeader scrollKey="today-journal" />
           ) : (
             <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
               <SurfaceLoadingGate bucket="tasks" label="Loading tasks...">

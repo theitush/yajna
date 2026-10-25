@@ -8,7 +8,6 @@ import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import useAppStore from '../../store/useAppStore'
 import { formatDate } from '../../lib/dates'
-import useCurrentDay from '../../lib/useCurrentDay'
 import useScrollRestore from '../../lib/useScrollRestore'
 import { RTLExtension } from '../editor/RTLExtension'
 import { AudioNode } from '../editor/AudioNode'
@@ -40,16 +39,16 @@ export default function JournalPanel({ onInsertText, date, headerLabel, hideHead
   const currentDayRev = useAppStore(s => s.currentDayRev)
   const updateJournalEntry = useAppStore(s => s.updateJournalEntry)
   const loadJournal = useAppStore(s => s.loadJournal)
-  const config = useAppStore(s => s.config)
   const getTags = useAppStore.getState().getAllTags
   const saveTimeout = useRef(null)
   // Latest unsaved payload, captured each onUpdate. With a longer debounce the
-  // window where edits sit unsaved is bigger, so we flush this on unmount and on
-  // day-change to guarantee the tail of writing isn't lost if you navigate away
-  // before the debounce fires.
+  // window where edits sit unsaved is bigger, so we flush this on unmount to
+  // guarantee the tail of writing isn't lost if you navigate away (or the day
+  // rolls over) before the debounce fires.
   const pendingSave = useRef(null)
-  const liveDay = useCurrentDay(config)
-  const targetDate = date || liveDay
+  // One panel, one day: callers key the panel on `date`, so a new day is a new
+  // editor. The editor never holds one day's doc while saving to another.
+  const targetDate = date
   const scrollRef = useScrollRestore(scrollKey)
   const navigate = useNavigate()
 
@@ -58,9 +57,7 @@ export default function JournalPanel({ onInsertText, date, headerLabel, hideHead
   }, [targetDate])
 
   // Flush any pending (debounced-but-not-yet-saved) edit when the panel
-  // unmounts or the day changes, so the tail of writing survives navigation.
-  // Cleanup runs before the next targetDate's load, so we save the OLD day's
-  // pending payload using the date captured in pendingSave, not targetDate.
+  // unmounts, so the tail of writing survives navigation and day rollover.
   useEffect(() => {
     return () => {
       if (saveTimeout.current) {
@@ -171,12 +168,11 @@ export default function JournalPanel({ onInsertText, date, headerLabel, hideHead
   // rebuild on our own save echo) regardless of what triggered the effect.
   useEffect(() => {
     if (!editor) return
-    // dayDoc is null ONLY while this targetDate hasn't loaded yet — the brief gap
-    // after a day-rollover flips targetDate but before loadJournal resolves, when
-    // currentDay still holds the PREVIOUS day. There's nothing authoritative to
-    // render in that window, so bail and wait; don't clobber the editor with a
-    // transient empty. Once loadJournal sets currentDay to this day — even a fresh
-    // EMPTY day — dayDoc is present and we reconcile below.
+    // dayDoc is null ONLY while this day hasn't loaded yet — the brief gap after
+    // mount before loadJournal resolves, when currentDay may still hold another
+    // day. Nothing authoritative to render yet, so wait. Once loadJournal sets
+    // currentDay to this day — even a fresh EMPTY day — dayDoc is present and we
+    // reconcile below.
     if (!dayDoc) {
       logSync('journal render effect', {
         date: targetDate, rev: currentDayRev, reason: 'no-doc',
@@ -184,12 +180,7 @@ export default function JournalPanel({ onInsertText, date, headerLabel, hideHead
       })
       return
     }
-    // The loaded day's content is authoritative INCLUDING when it's empty. A
-    // fresh day (woke up, nothing written yet) has blocks:[] → remoteContent ''.
-    // The old `if (!remoteContent) return` treated empty as "nothing to do" and
-    // left the editor showing the PREVIOUS day's text after a rollover — the
-    // "woke up, still yesterday's journal until I switched page" bug (the page
-    // switch only healed it by remounting the mobile editor empty). Clear to match.
+    // The loaded day's content is authoritative INCLUDING when it's empty.
     const remoteContent = blocksToHtml(dayDoc.blocks)
     // Probe: this effect is the LAST mile — a poll-merged or rolled-over remote
     // journal only reaches the screen if it runs setContent here. Log every exit
